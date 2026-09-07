@@ -1,0 +1,242 @@
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* ------------------------------------------------------------------ */
+/* CIVIL-LEX design tokens (mirrors CivilexColors.kt)                  */
+/* ------------------------------------------------------------------ */
+
+:root {
+  /* Core surfaces */
+  --background: #f4f5f7;
+  --foreground: #1f2937;
+  --card: #ffffff;
+  --card-foreground: #1f2937;
+  --sidebar: #fafafc;
+
+  /* Brand */
+  --primary: #1e3a8a;
+  --primary-foreground: #ffffff;
+  --secondary: #6c5ce7;
+  --secondary-foreground: #ffffff;
+
+  /* Muted / subtle */
+  --muted: #f3f4f6;
+  --muted-foreground: #6b7280;
+  --accent: #edebfa;
+  --accent-foreground: #1e3a8a;
+
+  /* Lines */
+  --border: #e5e7eb;
+  --input: #d1d5db;
+  --ring: #1e3a8a;
+
+  /* Destructive */
+  --destructive: #dc2626;
+  --destructive-foreground: #ffffff;
+  --destructive-soft: #fee2e2;
+
+  /* Civilex extended palette */
+  --navy: #1e3a8a;
+  --navy-dark: #16296b;
+  --navy-light: #2e4da7;
+  --lavender: #edebfa;
+  --lavender-strong: #e3def7;
+  --purple: #6c5ce7;
+  --border-strong: #d1d5db;
+  --text-tertiary: #9ca3af;
+  --gold: #d97706;
+  --gold-soft: #fef3c7;
+  --green: #059669;
+  --green-soft: #d1fae5;
+  --blue-soft: #dbeafe;
+  --blue-text: #1d4ed8;
+  --ai-bubble: #f3f4f6;
+  --citation: #f1f2f4;
+
+  --radius: 0.625rem;
+}
+
+.dark {
+  --background: #0f1420;
+  --foreground: #e5e7eb;
+  --card: #171d2b;
+  --card-foreground: #e5e7eb;
+  --sidebar: #131927;
+
+  --primary: #3b63c4;
+  --primary-foreground: #ffffff;
+  --secondary: #8b7cf0;
+  --secondary-foreground: #0f1420;
+
+  --muted: #1c2333;
+  --muted-foreground: #9ca3af;
+  --accent: #232b42;
+  --accent-foreground: #dbe4ff;
+
+  --border: #262e42;
+  --input: #33405c;
+  --ring: #3b63c4;
+
+  --destructive: #f87171;
+  --destructive-foreground: #1a0b0b;
+  --destructive-soft: #3a1c20;
+
+  --navy: #3b63c4;
+  --navy-dark: #2a4793;
+  --navy-light: #5277d6;
+  --lavender: #232b42;
+  --lavender-strong: #2c3654;
+  --purple: #8b7cf0;
+  --border-strong: #33405c;
+  --text-tertiary: #6b7280;
+  --gold: #f59e0b;
+  --gold-soft: #3a2f1a;
+  --green: #34d399;
+  --green-soft: #14352a;
+  --blue-soft: #1c2b4a;
+  --blue-text: #93b4f8;
+  --ai-bubble: #1c2333;
+  --citation: #1a2130;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-destructive-soft: var(--destructive-soft);
+
+  --color-navy: var(--navy);
+  --color-navy-dark: var(--navy-dark);
+  --color-navy-light: var(--navy-light);
+  --color-lavender: var(--lavender);
+  --color-lavender-strong: var(--lavender-strong);
+  --color-purple: var(--purple);
+  --color-border-strong: var(--border-strong);
+  --color-text-tertiary: var(--text-tertiary);
+  --color-gold: var(--gold);
+  --color-gold-soft: var(--gold-soft);
+  --color-green: var(--green);
+  --color-green-soft: var(--green-soft);
+  --color-blue-soft: var(--blue-soft);
+  --color-blue-text: var(--blue-text);
+  --color-ai-bubble: var(--ai-bubble);
+  --color-citation: var(--citation);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 6px);
+
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ------------------------------------------------------------------ */
+/* Custom scrollbars                                                    */
+/* ------------------------------------------------------------------ */
+
+.custom-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+.custom-scrollbar::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 9999px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: var(--text-tertiary);
+}
+
+/* Hide scrollbar but keep scrollability (used for suggestion chips) */
+.scrollbar-none {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+
+/* Respect reduced motion for animated dots */
+@media (prefers-reduced-motion: reduce) {
+  .typing-dot {
+    animation: none !important;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Gemini-style glowing chat input                                     */
+/* ------------------------------------------------------------------ */
+
+@keyframes civ-spin-slow {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes civ-glow-pulse {
+  0%,
+  100% {
+    opacity: 0.65;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.animate-civ-spin-slow {
+  animation: civ-spin-slow 3.5s linear infinite;
+}
+
+.animate-civ-glow-pulse {
+  animation: civ-glow-pulse 2.2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-civ-spin-slow {
+    animation-duration: 8s;
+  }
+  .animate-civ-glow-pulse {
+    animation: none;
+  }
+}

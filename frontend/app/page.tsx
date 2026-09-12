@@ -1,5 +1,5 @@
-import CivilexApp from "@/components/civilex-app";
+import { redirect } from "next/navigation";
 
 export default function Home() {
-  return <CivilexApp />;
+  redirect("/dashboard");
 }

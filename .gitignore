@@ -11,14 +11,13 @@
 !.yarn/versions
 
 # testing
-/coverage
-
 # next.js
-/.next/
-/out/
+.next/
+out/
 
 # production
-/build
+build/
+coverage/
 
 # misc
 .DS_Store
@@ -39,4 +38,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
-service-rag-python/
+# python data
+service-rag-python/data/
+**/data/

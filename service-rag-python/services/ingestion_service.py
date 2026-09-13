@@ -71,9 +71,11 @@ class DBHelper:
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS user_documents (
                     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                    user_id UUID REFERENCES auth.users(id),
                     filename TEXT,
                     file_url TEXT,
                     status TEXT CHECK (status IN ('uploading', 'extracting', 'completed', 'rejected_unrelated')),
+                    progress INT DEFAULT 0,
                     created_at TIMESTAMPTZ DEFAULT NOW()
                 );
             """)
@@ -87,6 +89,28 @@ class DBHelper:
                     content TEXT,
                     legal_topics TEXT[],
                     embedding VECTOR(768)
+                );
+            """)
+
+            # 6. chat_sessions
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS chat_sessions (
+                    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                    user_id UUID REFERENCES auth.users(id),
+                    title TEXT,
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                );
+            """)
+
+            # 7. chat_messages
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS chat_messages (
+                    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                    session_id UUID REFERENCES chat_sessions(id) ON DELETE CASCADE,
+                    role TEXT CHECK (role IN ('user', 'assistant')),
+                    content TEXT,
+                    citations JSONB,
+                    created_at TIMESTAMPTZ DEFAULT NOW()
                 );
             """)
             conn.commit()
@@ -114,6 +138,8 @@ class DBHelper:
     def reset_database(conn):
         print("Resetting existing database tables...")
         with conn.cursor() as cur:
+            cur.execute("DROP TABLE IF EXISTS chat_messages CASCADE;")
+            cur.execute("DROP TABLE IF EXISTS chat_sessions CASCADE;")
             cur.execute("DROP TABLE IF EXISTS document_chunks CASCADE;")
             cur.execute("DROP TABLE IF EXISTS article_jurisprudence_relations CASCADE;")
             cur.execute("DROP TABLE IF EXISTS jurisprudence_cases CASCADE;")

@@ -1,0 +1,200 @@
+import os
+from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
+from dotenv import load_dotenv
+import psycopg2
+from psycopg2.extras import RealDictCursor
+from pydantic import BaseModel
+from services.document import extract_and_process_pdf
+
+# Load environment variables
+load_dotenv()
+
+app = FastAPI(title="CIVIL-LEX RAG Service API")
+
+# Setup CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+DEFAULT_DB_URL = os.getenv(
+    "POSTGRES_DB_URL",
+    "postgresql://postgres:postgres@localhost:54322/postgres"
+)
+
+def get_db_connection():
+    try:
+        conn = psycopg2.connect(DEFAULT_DB_URL)
+        return conn
+    except Exception as e:
+        print(f"Error connecting to database: {e}")
+        raise HTTPException(status_code=500, detail="Database connection failed")
+
+@app.get("/health")
+def health_check():
+    return {"status": "ok", "service": "service-rag-python"}
+
+@app.get("/api/civil-code/toc")
+def get_civil_code_toc():
+    """
+    Fetches the hierarchical table of contents for the Civil Code.
+    """
+    conn = get_db_connection()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            # We want to fetch all articles and their hierarchy to build the tree.
+            # For TOC, we just need the hierarchy information.
+            # To avoid transferring huge text, we only select necessary fields.
+            cur.execute("""
+                SELECT article_id, article_number, hierarchy 
+                FROM civil_code_articles 
+                ORDER BY article_number ASC;
+            """)
+            articles = cur.fetchall()
+            
+            # Reconstruct the tree.
+            # Hierarchy looks like: {"book": 0, "book_name": "...", "title": ..., "chapter": ..., "section": ...}
+            # We will build a nested dictionary/list structure for the frontend.
+            
+            tree_dict = {}
+            
+            for art in articles:
+                h = art['hierarchy']
+                book_name = h.get('book_name')
+                title_name = h.get('title_name')
+                chapter_name = h.get('chapter_name')
+                
+                # We'll construct string keys to group them
+                book_key = book_name if book_name else "Uncategorized Book"
+                title_key = title_name if title_name else "Uncategorized Title"
+                chapter_key = chapter_name if chapter_name else "Uncategorized Chapter"
+                
+                if book_key not in tree_dict:
+                    tree_dict[book_key] = {}
+                if title_key not in tree_dict[book_key]:
+                    tree_dict[book_key][title_key] = {}
+                if chapter_key not in tree_dict[book_key][title_key]:
+                    tree_dict[book_key][title_key][chapter_key] = []
+                    
+                tree_dict[book_key][title_key][chapter_key].append({
+                    "id": art['article_id'],
+                    "title": f"Article {art['article_number']}" if art['article_number'] else art['article_id'],
+                    "article_number": art['article_number']
+                })
+            
+            # Convert dictionary tree to nested list of TreeNodes
+            # TreeNode: { id: string, title: string, children?: TreeNode[] }
+            result_tree = []
+            b_idx = 0
+            for book_name, titles in tree_dict.items():
+                b_idx += 1
+                book_node = {
+                    "id": f"book-{b_idx}",
+                    "title": book_name,
+                    "children": []
+                }
+                
+                t_idx = 0
+                for title_name, titles_content in titles.items():
+                    # Check if there are actual chapters or just articles at the title level
+                    t_idx += 1
+                    title_node = {
+                        "id": f"book-{b_idx}-title-{t_idx}",
+                        "title": title_name,
+                        "children": []
+                    }
+                    
+                    c_idx = 0
+                    for chapter_name, arts in titles_content.items():
+                        c_idx += 1
+                        
+                        if chapter_name == "Uncategorized Chapter":
+                            # Attach directly to Title if no chapter
+                            arts_sorted = sorted(arts, key=lambda x: x['article_number'] if x['article_number'] else 999999)
+                            for a in arts_sorted:
+                                title_node["children"].append({
+                                    "id": a['id'],
+                                    "title": a['title']
+                                })
+                        else:
+                            chapter_node = {
+                                "id": f"book-{b_idx}-title-{t_idx}-chapter-{c_idx}",
+                                "title": chapter_name,
+                                "children": []
+                            }
+                            
+                            # Sort articles by article_number
+                            arts_sorted = sorted(arts, key=lambda x: x['article_number'] if x['article_number'] else 999999)
+                            for a in arts_sorted:
+                                chapter_node["children"].append({
+                                    "id": a['id'],
+                                    "title": a['title']
+                                })
+                                
+                            title_node["children"].append(chapter_node)
+                    
+                    book_node["children"].append(title_node)
+                
+                result_tree.append(book_node)
+                
+            return {"toc": result_tree}
+    except Exception as e:
+        print(f"Error fetching TOC: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
+
+@app.get("/api/civil-code/article/{article_id}")
+def get_civil_code_article(article_id: str):
+    """
+    Fetches the details of a specific article.
+    """
+    conn = get_db_connection()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT article_id, article_number, hierarchy, content 
+                FROM civil_code_articles 
+                WHERE article_id = %s;
+            """, (article_id,))
+            article = cur.fetchone()
+            
+            if not article:
+                raise HTTPException(status_code=404, detail="Article not found")
+                
+            # Fetch related jurisprudence (if any)
+            cur.execute("""
+                SELECT j.case_uid, j.title, j.gr_number, j.decision_date, j.content_summary, j.source_url
+                FROM article_jurisprudence_relations r
+                JOIN jurisprudence_cases j ON r.case_uid = j.case_uid
+                WHERE r.article_id = %s
+                LIMIT 5;
+            """, (article_id,))
+            related_cases = cur.fetchall()
+            
+            article['related_cases'] = related_cases
+            return article
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error fetching article: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
+
+class ExtractRequest(BaseModel):
+    file_url: str
+    document_id: str
+
+@app.post("/extract")
+def extract_document(request: ExtractRequest, background_tasks: BackgroundTasks):
+    background_tasks.add_task(extract_and_process_pdf, request.file_url, request.document_id)
+    return {"status": "processing"}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)

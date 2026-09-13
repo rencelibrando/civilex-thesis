@@ -17,7 +17,8 @@ The backend is split into two distinct local microservices:
 ### Key Dependencies
 *   `express`: Web framework.
 *   `cors`: Handling cross-origin requests from Next.js.
-*   `@supabase/supabase-js`: Validating auth tokens.
+*   `@supabase/supabase-js`: Validating auth tokens and uploading files to Supabase Storage.
+*   `multer`: Buffering incoming file uploads in memory.
 *   `http-proxy-middleware`: For proxying SSE (Server-Sent Events) from Python directly to Next.js without buffering.
 
 ### Folder Structure
@@ -33,9 +34,10 @@ backend-node/
 └── .env                   # SUPABASE_URL, SUPABASE_ANON_KEY
 ```
 
-### Core Logic (Authentication & Proxying)
+### Core Logic (Authentication, File Buffering, & Proxying)
 The gateway enforces that every request has a valid `Authorization: Bearer <token>`.
-If the token is valid, `http-proxy-middleware` seamlessly forwards the request to the Python service running on Port 8000, ensuring the streaming Markdown chunks pass through instantly.
+For document uploads, it accepts the file via `multer.memoryStorage()`, directly pushes the buffer to a Supabase Storage bucket (`documents`), and saves the generated public URL into the `user_documents` table.
+For RAG chat and other proxied routes, `http-proxy-middleware` seamlessly forwards the request to the Python service running on Port 8000, ensuring the streaming Markdown chunks pass through instantly.
 
 ---
 

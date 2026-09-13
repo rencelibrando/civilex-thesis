@@ -1,23 +1,152 @@
 "use client";
 
-import { useState } from "react";
-import { Search, Send, Paperclip, Download, Printer, Maximize2, ShieldCheck, AlertCircle } from "lucide-react";
+import { useState, useEffect, useRef } from "react";
+import { Search, Send, Paperclip, Download, Printer, Maximize2, ShieldCheck, AlertCircle, File, Upload, Loader2, FileText, CheckCircle2 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { userProfile } from "@/lib/mock-data";
+import { supabase } from "@/lib/supabase";
+
+type DocumentStatus = 'uploading' | 'extracting' | 'completed' | 'rejected_unrelated' | 'error';
+
+interface UserDocument {
+  id: string;
+  filename: string;
+  original_filename: string;
+  file_url: string;
+  status: DocumentStatus;
+  progress?: number;
+  created_at: string;
+}
+
+const CircularProgress = ({ progress = 0 }: { progress?: number }) => {
+  const radius = 6;
+  const circumference = 2 * Math.PI * radius;
+  const strokeDashoffset = circumference - (progress / 100) * circumference;
+
+  return (
+    <div className="relative flex items-center justify-center w-4 h-4 mr-1">
+      <svg className="w-4 h-4 transform -rotate-90">
+        <circle
+          className="text-blue-200"
+          strokeWidth="2"
+          stroke="currentColor"
+          fill="transparent"
+          r={radius}
+          cx="8"
+          cy="8"
+        />
+        <circle
+          className="text-blue-600 transition-all duration-500 ease-in-out"
+          strokeWidth="2"
+          strokeDasharray={circumference}
+          strokeDashoffset={strokeDashoffset}
+          strokeLinecap="round"
+          stroke="currentColor"
+          fill="transparent"
+          r={radius}
+          cx="8"
+          cy="8"
+        />
+      </svg>
+    </div>
+  );
+};
 
 export default function ResearchPage() {
+  const [documents, setDocuments] = useState<UserDocument[]>([]);
+  const [activeDocument, setActiveDocument] = useState<UserDocument | null>(null);
+  const [isUploading, setIsUploading] = useState(false);
+  const [isLoadingDocs, setIsLoadingDocs] = useState(true);
+  
   const [messages, setMessages] = useState([
     {
       id: 1,
       role: "assistant",
-      content: "I have analyzed 'Contract_Amendment_v3.pdf'. I found 2 potential issues regarding retroactive application of Republic Act No. 11642. How would you like to proceed?",
+      content: "Hello! I am your CIVIL-LEX AI assistant. You can upload legal documents for analysis or ask me questions about Philippine Civil Law.",
     }
   ]);
   const [inputValue, setInputValue] = useState("");
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Fetch documents on load
+  useEffect(() => {
+    fetchDocuments();
+    // Poll for status updates if any document is processing
+    const interval = setInterval(() => {
+      setDocuments(prev => {
+        const needsPolling = prev.some(d => ['uploading', 'extracting'].includes(d.status));
+        if (needsPolling) {
+          fetchDocuments();
+        }
+        return prev;
+      });
+    }, 5000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const fetchDocuments = async () => {
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = session?.access_token || '';
+
+      const res = await fetch("http://localhost:4000/api/documents", {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setDocuments(data);
+      } else {
+        if (res.status === 401 || res.status === 403) {
+          window.location.href = "/login";
+        }
+      }
+    } catch (err) {
+      console.error("Failed to fetch documents:", err);
+    } finally {
+      setIsLoadingDocs(false);
+    }
+  };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setIsUploading(true);
+    const formData = new FormData();
+    formData.append("file", file);
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = session?.access_token || '';
+
+      const res = await fetch("http://localhost:4000/api/documents/upload", {
+        method: "POST",
+        headers: {
+          'Authorization': `Bearer ${token}`
+        },
+        body: formData,
+      });
+
+      if (res.ok) {
+        await fetchDocuments();
+      } else {
+        console.error("Upload failed");
+      }
+    } catch (err) {
+      console.error("Upload error:", err);
+    } finally {
+      setIsUploading(false);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
+    }
+  };
 
   const handleSend = () => {
     if (!inputValue.trim()) return;
@@ -30,79 +159,161 @@ export default function ResearchPage() {
         {
           id: Date.now(),
           role: "assistant",
-          content: "The highlighted section states the amendment applies to all cases pending before January 2022. However, under Article 4 of the Civil Code, laws shall have no retroactive effect unless the contrary is provided. Ensure RA 11642 explicitly states retroactivity for this specific provision.",
+          content: "This is a placeholder AI response. The RAG query functionality will be implemented in the backend.",
         }
       ]);
     }, 1000);
   };
 
+  const getStatusBadge = (doc: UserDocument) => {
+    switch (doc.status) {
+      case 'completed':
+        return <Badge variant="outline" className="bg-green-50 text-green-700 border-green-200 text-[10px]">Analyzed</Badge>;
+      case 'extracting':
+      case 'uploading':
+        return (
+          <Badge variant="outline" className="bg-blue-50 text-blue-700 border-blue-200 text-[10px] flex items-center gap-0.5">
+            {doc.status === 'extracting' ? (
+              <CircularProgress progress={doc.progress || 0} />
+            ) : (
+              <Loader2 className="w-3 h-3 animate-spin mr-1" />
+            )}
+            {doc.status === 'uploading' ? 'Uploading...' : `Extracting ${doc.progress || 0}%`}
+          </Badge>
+        );
+      case 'rejected_unrelated':
+        return <Badge variant="outline" className="bg-amber-50 text-amber-700 border-amber-200 text-[10px]">Irrelevant</Badge>;
+      case 'error':
+        return <Badge variant="destructive" className="text-[10px]">Error</Badge>;
+      default:
+        return <Badge variant="outline" className="text-[10px]">{doc.status}</Badge>;
+    }
+  };
+
   return (
-    <div className="flex h-full gap-6 animate-fade-in">
-      {/* Document Viewer - Left Pane */}
-      <div className="flex-1 flex flex-col bg-slate-50 rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-        {/* Toolbar */}
-        <div className="p-3 border-b border-slate-100 bg-[#FAFAFD] flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Badge variant="outline" className="bg-slate-50 text-xs border-slate-200">
-              Contract_Amendment_v3.pdf
-            </Badge>
-            <span className="text-xs text-slate-400">Page 1 of 5</span>
-          </div>
-          <div className="flex items-center gap-1">
-            <Button variant="ghost" size="icon" className="h-8 w-8 text-slate-500">
-              <Download className="w-4 h-4" />
-            </Button>
-            <Button variant="ghost" size="icon" className="h-8 w-8 text-slate-500">
-              <Printer className="w-4 h-4" />
-            </Button>
-            <Button variant="ghost" size="icon" className="h-8 w-8 text-slate-500">
-              <Maximize2 className="w-4 h-4" />
-            </Button>
-          </div>
+    <div className="flex h-[calc(100vh-6rem)] md:h-[calc(100vh-7rem)] gap-4 animate-fade-in bg-background/50">
+      
+      {/* Left Pane - Document List */}
+      <div className="hidden md:flex flex-col w-72 bg-card/80 backdrop-blur-xl rounded-2xl border border-border shadow-sm overflow-hidden flex-shrink-0">
+        <div className="p-4 border-b border-border bg-card/50">
+          <h2 className="font-bold text-foreground flex items-center gap-2 mb-4">
+            <FileText className="w-5 h-5 text-primary" />
+            My Documents
+          </h2>
+          <Button 
+            className="w-full bg-primary hover:bg-primary/90 gap-2 shadow-sm"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={isUploading}
+          >
+            {isUploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
+            {isUploading ? "Uploading..." : "Upload Document"}
+          </Button>
+          <input 
+            type="file" 
+            ref={fileInputRef} 
+            onChange={handleFileUpload} 
+            className="hidden" 
+            accept=".pdf,.doc,.docx,.txt"
+          />
         </div>
         
-        {/* Document Content */}
-        <ScrollArea className="flex-1 bg-slate-100 p-8">
-          <div className="max-w-2xl mx-auto bg-slate-50 shadow-md min-h-[800px] p-12 relative">
-            <h1 className="text-xl font-bold text-center mb-8 uppercase">Amendment to Master Agreement</h1>
-            
-            <p className="text-sm leading-loose text-justify mb-4">
-              This AMENDMENT TO THE MASTER AGREEMENT (this &quot;Amendment&quot;) is entered into as of September 12, 2026, by and between Alpha Corp, and Beta LLC.
-            </p>
-            
-            <p className="text-sm leading-loose text-justify mb-4">
-              WHEREAS, the Parties desire to amend the Master Agreement to reflect recent changes in the regulatory framework governing domestic adoption under Republic Act No. 11642.
-            </p>
-            
-            <div className="relative group my-6">
-              <div className="absolute -left-3 top-0 bottom-0 w-1 bg-amber-400 rounded-full"></div>
-              <div className="bg-amber-50 border border-amber-200 p-4 rounded-lg relative">
-                <div className="absolute -top-3 -right-3">
-                  <Badge className="bg-amber-500 hover:bg-amber-600 border-none shadow-sm flex items-center gap-1 text-[10px] uppercase font-bold tracking-wider">
-                    <AlertCircle className="w-3 h-3" /> Flagged: Retroactivity
-                  </Badge>
-                </div>
-                <p className="text-sm font-medium text-amber-900 leading-loose">
-                  [FLAGGED SECTION]
-                  <br />
-                  &quot;3. Applicability. The provisions of this Amendment, specifically pertaining to the streamlined administrative procedures, shall apply retroactively to all petitions and proceedings pending as of January 1, 2022, notwithstanding prior agreements.&quot;
-                </p>
-              </div>
+        <ScrollArea className="flex-1 p-2 min-h-0">
+          {isLoadingDocs ? (
+            <div className="flex justify-center p-8">
+              <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
             </div>
-            
-            <p className="text-sm leading-loose text-justify">
-              IN WITNESS WHEREOF, the Parties have executed this Amendment as of the date first above written.
-            </p>
-          </div>
+          ) : documents.length === 0 ? (
+             <div className="text-center p-6 text-muted-foreground text-sm flex flex-col items-center">
+               <File className="w-8 h-8 mb-2 opacity-20" />
+               <p>No documents uploaded yet.</p>
+             </div>
+          ) : (
+            <div className="flex flex-col gap-1 p-1">
+              {documents.map(doc => (
+                <div 
+                  key={doc.id}
+                  onClick={() => setActiveDocument(doc)}
+                  className={`p-3 rounded-xl cursor-pointer transition-all border ${
+                    activeDocument?.id === doc.id 
+                      ? 'bg-primary/10 border-primary/20 shadow-sm' 
+                      : 'bg-transparent border-transparent hover:bg-accent'
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-2 mb-1">
+                    <p className={`text-sm font-medium line-clamp-1 ${activeDocument?.id === doc.id ? 'text-primary' : 'text-foreground'}`}>
+                      {doc.original_filename}
+                    </p>
+                  </div>
+                  <div className="flex items-center justify-between mt-2">
+                    {getStatusBadge(doc)}
+                    <span className="text-[10px] text-muted-foreground">
+                      {new Date(doc.created_at).toLocaleDateString()}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </ScrollArea>
       </div>
 
-      {/* AI Assistant - Right Pane */}
-      <div className="hidden lg:flex flex-col w-[400px] bg-slate-50 rounded-2xl border border-slate-200 shadow-sm overflow-hidden flex-shrink-0">
-        <div className="p-4 border-b border-slate-100 bg-[#FAFAFD] flex items-center justify-between">
-          <h2 className="font-bold text-[#334155] flex items-center gap-2">
-            <ShieldCheck className="w-5 h-5 text-[#100771]" />
-            AI Document Analysis
+      {/* Center Pane - Document Viewer */}
+      <div className="flex-1 flex flex-col bg-slate-50 rounded-2xl border border-slate-200 shadow-sm overflow-hidden relative">
+        {activeDocument ? (
+          <>
+            {/* Toolbar */}
+            <div className="p-3 border-b border-slate-100 bg-[#FAFAFD] flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Badge variant="outline" className="bg-slate-50 text-xs border-slate-200 font-medium">
+                  {activeDocument.original_filename}
+                </Badge>
+                {getStatusBadge(activeDocument)}
+              </div>
+              <div className="flex items-center gap-1">
+                <Button variant="ghost" size="icon" className="h-8 w-8 text-slate-500">
+                  <Download className="w-4 h-4" />
+                </Button>
+                <Button variant="ghost" size="icon" className="h-8 w-8 text-slate-500">
+                  <Maximize2 className="w-4 h-4" />
+                </Button>
+              </div>
+            </div>
+            
+            {/* Document Content */}
+            <div className="flex-1 bg-slate-100/50 p-4 relative overflow-hidden">
+               {activeDocument.file_url ? (
+                 <iframe 
+                   src={activeDocument.file_url} 
+                   className="w-full h-full rounded-xl bg-white shadow-sm border border-slate-200"
+                   title={activeDocument.original_filename}
+                 />
+               ) : (
+                 <div className="flex flex-col items-center justify-center h-full text-muted-foreground">
+                   <FileText className="w-12 h-12 mb-4 opacity-20" />
+                   <p>Preview not available</p>
+                 </div>
+               )}
+            </div>
+          </>
+        ) : (
+          <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground bg-slate-50/50">
+            <div className="w-16 h-16 rounded-full bg-primary/5 flex items-center justify-center mb-4">
+              <FileText className="w-8 h-8 text-primary/40" />
+            </div>
+            <h3 className="text-lg font-semibold text-foreground mb-2">Document Analysis</h3>
+            <p className="text-sm text-center max-w-sm">
+              Select a document from the left panel to preview it and ask questions using the AI assistant.
+            </p>
+          </div>
+        )}
+      </div>
+
+      {/* Right Pane - AI Assistant */}
+      <div className="hidden lg:flex flex-col w-[380px] bg-card/80 backdrop-blur-xl rounded-2xl border border-border shadow-sm overflow-hidden flex-shrink-0">
+        <div className="p-4 border-b border-border bg-card/50 flex items-center justify-between">
+          <h2 className="font-bold text-foreground flex items-center gap-2">
+            <ShieldCheck className="w-5 h-5 text-primary" />
+            AI Assistant
           </h2>
         </div>
         
@@ -110,17 +321,21 @@ export default function ResearchPage() {
           <div className="flex flex-col gap-4">
             {messages.map((msg) => (
               <div key={msg.id} className={`flex gap-3 ${msg.role === 'user' ? 'flex-row-reverse' : ''}`}>
-                <Avatar className="w-6 h-6 mt-1 flex-shrink-0">
+                <Avatar className="w-6 h-6 mt-1 flex-shrink-0 shadow-sm">
                   {msg.role === 'assistant' ? (
-                    <div className="bg-[#100771] w-full h-full flex items-center justify-center">
-                      <ShieldCheck className="w-3 h-3 text-slate-50" />
+                    <div className="bg-primary w-full h-full flex items-center justify-center">
+                      <ShieldCheck className="w-3 h-3 text-primary-foreground" />
                     </div>
                   ) : (
                     <AvatarImage src={userProfile.avatar} />
                   )}
                 </Avatar>
                 
-                <div className={`px-3 py-2 text-sm rounded-xl ${msg.role === 'user' ? 'bg-[#100771] text-slate-50 rounded-tr-sm' : 'bg-[#F1F0FB] text-[#334155] rounded-tl-sm'}`}>
+                <div className={`px-3.5 py-2.5 text-sm rounded-2xl max-w-[85%] shadow-sm ${
+                  msg.role === 'user' 
+                    ? 'bg-primary text-primary-foreground rounded-tr-sm' 
+                    : 'bg-card border border-border text-foreground rounded-tl-sm'
+                }`}>
                   {msg.content}
                 </div>
               </div>
@@ -129,33 +344,33 @@ export default function ResearchPage() {
         </ScrollArea>
 
         {/* Action Chips */}
-        {messages.length === 1 && (
-          <div className="px-4 pb-2 pt-2 bg-slate-50 flex flex-wrap gap-2">
-             <button onClick={() => setInputValue("Explain Article 4 issue")} className="text-xs px-3 py-1.5 rounded-full bg-slate-50 text-slate-600 hover:bg-[#F1F0FB] hover:text-[#100771] border border-slate-200 transition-colors">
-                Explain Article 4 issue
+        {messages.length === 1 && activeDocument && (
+          <div className="px-4 pb-2 pt-2 bg-card/50 flex flex-wrap gap-2">
+             <button onClick={() => setInputValue("Summarize this document")} className="text-xs px-3 py-1.5 rounded-full bg-background text-muted-foreground hover:bg-accent hover:text-accent-foreground border border-border transition-colors">
+                Summarize this document
               </button>
-              <button onClick={() => setInputValue("Suggest a revision")} className="text-xs px-3 py-1.5 rounded-full bg-slate-50 text-slate-600 hover:bg-[#F1F0FB] hover:text-[#100771] border border-slate-200 transition-colors">
-                Suggest a revision
+              <button onClick={() => setInputValue("Identify key legal risks")} className="text-xs px-3 py-1.5 rounded-full bg-background text-muted-foreground hover:bg-accent hover:text-accent-foreground border border-border transition-colors">
+                Identify key legal risks
               </button>
           </div>
         )}
 
         {/* Input */}
-        <div className="p-4 border-t border-slate-100 bg-slate-50">
-          <div className="relative flex items-center bg-slate-50 border border-slate-200 rounded-xl overflow-hidden focus-within:ring-1 focus-within:ring-[#100771] focus-within:border-[#100771] transition-all">
+        <div className="p-4 border-t border-border bg-card/50">
+          <div className="relative flex items-center bg-background border border-border rounded-xl overflow-hidden focus-within:ring-2 focus-within:ring-primary/20 focus-within:border-primary transition-all shadow-sm">
             <Input
               value={inputValue}
               onChange={(e) => setInputValue(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && handleSend()}
-              placeholder="Ask about this document..."
-              className="flex-1 border-none bg-transparent shadow-none focus-visible:ring-0 text-[#334155] px-3 h-10 text-sm"
+              placeholder={activeDocument ? `Ask about ${activeDocument.original_filename}...` : "Ask a general question..."}
+              className="flex-1 border-none bg-transparent shadow-none focus-visible:ring-0 text-foreground px-4 h-11 text-sm"
             />
             <Button 
               onClick={handleSend}
               disabled={!inputValue.trim()}
-              className="mr-1 bg-[#100771] hover:bg-[#170073] text-slate-50 rounded-lg h-8 w-8 p-0"
+              className="mr-1.5 bg-primary hover:bg-primary/90 text-primary-foreground rounded-lg h-8 w-8 p-0 shrink-0 shadow-sm"
             >
-              <Send className="w-3 h-3" />
+              <Send className="w-3.5 h-3.5" />
             </Button>
           </div>
         </div>

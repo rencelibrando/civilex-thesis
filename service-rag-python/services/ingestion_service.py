@@ -168,59 +168,41 @@ class MetadataIngestor:
         print(f"✓ Inserted/Updated {len(records)} Civil Code Articles.")
 
     def _ingest_jurisprudence_cases(self, conn):
-        cases_file = os.path.join(self.data_dir, "jurisprudence_chunks.jsonl")
-        if not os.path.exists(cases_file):
-            print(f"Skipping cases: file {cases_file} not found.")
+        doc_file = os.path.join(self.data_dir, "jurisprudence_document.jsonl")
+        if not os.path.exists(doc_file):
+            print(f"Skipping cases: file {doc_file} not found.")
             return
 
-        print(f"Aggregating full text for jurisprudence cases from {cases_file}...")
-        cases_dict: Dict[str, Dict[str, Any]] = {}
-
-        with open(cases_file, "r", encoding="utf-8") as f:
-            for line in tqdm(f, desc="Reading case chunks"):
+        print(f"Ingesting jurisprudence cases from {doc_file}...")
+        records = []
+        
+        with open(doc_file, "r", encoding="utf-8") as f:
+            for line in tqdm(f, desc="Reading jurisprudence documents"):
                 if not line.strip():
                     continue
-                chunk = json.loads(line)
-                case_uid = chunk.get("case_uid")
+                item = json.loads(line)
+                case_uid = item.get("case_uid")
                 if not case_uid:
                     continue
 
-                if case_uid not in cases_dict:
-                    # Extract title from text if available
-                    raw_text = chunk.get("text", "")
-                    title = "Jurisprudence Case"
-                    if "Case:" in raw_text:
-                        first_line = raw_text.split("\n")[0]
-                        title_part = first_line.split("|")[0].replace("Case:", "").strip()
-                        if title_part:
-                            title = title_part
+                title = item.get("case_id", "Jurisprudence Case")
+                gr_number = item.get("gr_number", "N/A")
+                decision_date = str(item.get("decision_date", item.get("year", "N/A")))
+                source_url = item.get("url", "")
+                content_summary = item.get("content_summary", "")
+                full_text = item.get("content", "")
 
-                    cases_dict[case_uid] = {
-                        "case_uid": case_uid,
-                        "title": title,
-                        "gr_number": chunk.get("gr_number", "N/A"),
-                        "decision_date": str(chunk.get("year", "N/A")),
-                        "source_url": chunk.get("source_url", ""),
-                        "content_summary": "",
-                        "chunks_text": []
-                    }
-                cases_dict[case_uid]["chunks_text"].append(chunk.get("text", ""))
+                records.append((
+                    case_uid,
+                    title,
+                    gr_number,
+                    decision_date,
+                    source_url,
+                    content_summary,
+                    full_text
+                ))
 
-        records = []
-        for case_uid, cdata in cases_dict.items():
-            full_text = "\n\n".join(cdata["chunks_text"])
-            summary = full_text[:500] + ("..." if len(full_text) > 500 else "")
-            records.append((
-                case_uid,
-                cdata["title"],
-                cdata["gr_number"],
-                cdata["decision_date"],
-                cdata["source_url"],
-                summary,
-                full_text
-            ))
-
-        print(f"Bulk inserting {len(records)} reconstructed jurisprudence cases...")
+        print(f"Bulk inserting {len(records)} jurisprudence cases...")
         query = """
             INSERT INTO jurisprudence_cases (case_uid, title, gr_number, decision_date, source_url, content_summary, full_text)
             VALUES %s
@@ -228,6 +210,8 @@ class MetadataIngestor:
                 title = EXCLUDED.title,
                 gr_number = EXCLUDED.gr_number,
                 decision_date = EXCLUDED.decision_date,
+                source_url = EXCLUDED.source_url,
+                content_summary = EXCLUDED.content_summary,
                 full_text = EXCLUDED.full_text;
         """
         with conn.cursor() as cur:

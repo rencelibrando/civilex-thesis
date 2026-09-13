@@ -82,9 +82,7 @@ service-rag-python/
 **Logic (Runs as a Background Task):**
 1. Downloads the PDF from Supabase Storage.
 2. Runs `PyMuPDF` to extract text. If empty, runs `pytesseract`.
-3. Checks Relevance: Queries the LLM with the first 1000 tokens ("Does this relate to Civil Law?").
-   * *If NO:* Updates `user_documents` status to `rejected_unrelated`.
-   * *If YES:* Runs the sliding window chunker, generates embeddings, and inserts them into `document_chunks`. Updates status to `completed`.
+3. Runs the sliding window chunker, generates embeddings, and inserts them into `document_chunks`. Updates status to `completed`.
 
 ---
 

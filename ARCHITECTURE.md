@@ -37,15 +37,10 @@ sequenceDiagram
     Client->>Node: POST /api/documents {file_url}
     Node->>FastAPI: POST /extract {file_url} (Background Task)
     FastAPI->>FastAPI: PyMuPDF / OCR Extraction
-    FastAPI->>LLM: Check Relevance (Is this related to Civil Law?)
-    alt Irrelevant Document
-        FastAPI->>DB: Update status = 'rejected'
-    else Relevant Document
-        FastAPI->>FastAPI: Chunk Document (Sliding Window)
-        FastAPI->>FastAPI: Embed Chunks (XML-RoBERTa)
-        FastAPI->>DB: Insert into document_chunks
-        FastAPI->>DB: Update status = 'completed'
-    end
+    FastAPI->>FastAPI: Chunk Document (Sliding Window)
+    FastAPI->>FastAPI: Embed Chunks (XML-RoBERTa)
+    FastAPI->>DB: Insert into document_chunks
+    FastAPI->>DB: Update status = 'completed'
 
     %% Chat Flow
     Note over Client, DB: Standard Chat Flow
@@ -94,7 +89,7 @@ CREATE TABLE user_documents (
   user_id UUID REFERENCES auth.users(id),
   filename TEXT,
   file_url TEXT,
-  status TEXT CHECK (status IN ('uploading', 'extracting', 'completed', 'rejected_unrelated')),
+  status TEXT CHECK (status IN ('uploading', 'extracting', 'completed', 'error')),
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 ```
@@ -140,8 +135,8 @@ CREATE TABLE chat_messages (
 When a user uploads a document:
 1. **Upload & Status:** The file uploads to Supabase Storage. The UI creates a `user_documents` row with `status = 'uploading'`.
 2. **Extraction (Python):** A background task runs in FastAPI. It attempts `PyMuPDF` (fast text extraction). If no text is found (image PDF), it falls back to lightweight `Tesseract OCR` (or PaddleOCR if resources permit). During this, the UI polls and shows `status = 'extracting'` in the chat if they ask questions.
-3. **Relevance Check:** The first 1000 tokens are sent to a fast local LLM prompt to classify if it pertains to Philippine Civil Code. If NOT related, extraction stops, `status = 'rejected_unrelated'`, and the UI prompts the user that data is unavailable.
-4. **Chunking & Embedding:** If relevant, the text is sliced using a sliding window (400 tokens, 50 overlap), embedded, and inserted into `document_chunks`.
+3. **Chunking & Embedding:** The extracted text is instantly sliced using a sliding window (350 tokens, 50 overlap), embedded using `sentence-transformers`, and inserted into `document_chunks`.
+4. **Completion:** The database is updated with `progress = 100` and `status = 'completed'`, ready for querying by the LLM during chat.
 
 ---
 
@@ -157,7 +152,7 @@ When a user uploads a document:
 
 ### Phase 2: Python RAG Microservice
 1. Scaffold FastAPI and implement `/search` using XML-RoBERTa and RRF RPC.
-2. Implement the `/extract` endpoint for the Document Analysis Pipeline (PyMuPDF + OCR fallback + Relevance Check + Chunking).
+2. Implement the `/extract` endpoint for the Document Analysis Pipeline (PyMuPDF + OCR fallback + Chunking + Embedding).
 3. Implement LLM streaming with LM Studio + Cloud fallback.
 
 ### Phase 3: Node.js Gateway Service

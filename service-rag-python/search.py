@@ -40,7 +40,7 @@ def print_results(title, results):
 def main():
     parser = argparse.ArgumentParser(description="CIVIL-LEX Vector Search CLI")
     parser.add_argument("--db-url", type=str, default=None, help="PostgreSQL connection string")
-    parser.add_argument("--top-k", type=int, default=3, help="Number of results to retrieve per category")
+    parser.add_argument("--top-k", type=int, default=5, help="Number of results to retrieve per category")
     args = parser.parse_args()
 
     print("Loading embedding model, please wait...")
@@ -66,7 +66,7 @@ def main():
                 
                 # Fetch Top Articles
                 cur.execute("""
-                    SELECT chunk_id, parent_type, parent_id, left(content, 300), 1 - (embedding <=> %s::vector) AS similarity
+                    SELECT chunk_id, parent_type, parent_id, content, 1 - (embedding <=> %s::vector) AS similarity
                     FROM document_chunks
                     WHERE parent_type = 'article'
                     ORDER BY embedding <=> %s::vector
@@ -77,7 +77,7 @@ def main():
                 
                 # Fetch Top Cases
                 cur.execute("""
-                    SELECT chunk_id, parent_type, parent_id, left(content, 300), 1 - (embedding <=> %s::vector) AS similarity
+                    SELECT chunk_id, parent_type, parent_id, content, 1 - (embedding <=> %s::vector) AS similarity
                     FROM document_chunks
                     WHERE parent_type = 'case'
                     ORDER BY embedding <=> %s::vector

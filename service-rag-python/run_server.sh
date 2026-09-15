@@ -10,9 +10,12 @@ cd "$(dirname "$0")"
 # Activate the virtual environment
 if [ -d ".venv" ]; then
     source .venv/bin/activate
-    echo "Virtual environment activated."
+    echo "Virtual environment activated from .venv"
+elif [ -d "venv" ]; then
+    source venv/bin/activate
+    echo "Virtual environment activated from venv"
 else
-    echo "Error: Virtual environment (.venv) not found!"
+    echo "Error: Virtual environment (.venv or venv) not found!"
     exit 1
 fi
 

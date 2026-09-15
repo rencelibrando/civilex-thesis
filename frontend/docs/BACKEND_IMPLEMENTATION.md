@@ -90,7 +90,7 @@ service-rag-python/
 
 Because this is a thesis defense project running on a local Ryzen 5 laptop, the LM Studio connection (via Cloudflare tunnel) might experience high latency or timeouts. 
 
-The `services/llm_client.py` will implement a robust fallback:
+The `services/llm_client.py` implements a robust fallback:
 ```python
 async def generate_response_stream(prompt):
     try:

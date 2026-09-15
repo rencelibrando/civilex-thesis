@@ -1,12 +1,17 @@
 # Civilex — Architectural Data & API Blueprint
 
+> [!NOTE]
+> **Implementation Status**: This blueprint served as the initial design document. During actual implementation:
+> 1. **`backend-node` (Gateway)**: Simplified to use plain JavaScript (ESM) instead of TypeScript, with a flatter directory structure (`routes/`, `middleware/`) as business logic was minimized.
+> 2. **`service-rag-python`**: Also flattened. More importantly, **FAISS and BM25 were replaced entirely by Supabase `pgvector` and PostgreSQL Native Full-Text Search (`tsvector`)**. Hybrid search (Reciprocal Rank Fusion) is now executed directly in Postgres via a single RPC/Query, eliminating the need for separate local FAISS/BM25 index files.
+
 ## Repository Folder Mapping
 
-| Blueprint Label | Actual Repo Folder | Runtime / Framework |
-|---|---|---|
-| `express/` | `backend-node/` | Node.js + Express 5 (ESM) + TypeScript |
-| `fastapi/` | `service-rag-python/` | Python + FastAPI (Uvicorn) |
-| `frontend/` | `frontend/` | Next.js (App Router) + TypeScript |
+| Blueprint Label | Actual Repo Folder | Runtime / Framework | Status |
+|---|---|---|---|
+| `express/` | `backend-node/` | Node.js + Express 5 (ESM) | ✅ Implemented (JS) |
+| `fastapi/` | `service-rag-python/` | Python + FastAPI (Uvicorn) | ✅ Implemented |
+| `frontend/` | `frontend/` | Next.js (App Router) + TypeScript | 🚧 In Progress |
 
 ---
 

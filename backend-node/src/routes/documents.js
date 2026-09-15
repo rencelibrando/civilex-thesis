@@ -12,14 +12,35 @@ dotenv.config();
 const globalFetch = typeof fetch !== 'undefined' ? fetch : (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
 
 const router = express.Router();
-const supabase = createClient(
+
+// Service-role client for storage operations (bypasses RLS for uploads on behalf of users)
+const supabaseStorage = createClient(
   process.env.SUPABASE_URL || 'http://localhost:54321',
-  process.env.SUPABASE_ANON_KEY || 'dummy'
+  process.env.SUPABASE_SERVICE_ROLE_KEY || 'dummy'
 );
 
-const storage = multer.memoryStorage();
-const upload = multer({ storage });
+// Allowed MIME types for document uploads
+const ALLOWED_MIME_TYPES = [
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'text/plain'
+];
 
+const storage = multer.memoryStorage();
+const upload = multer({
+  storage,
+  limits: { fileSize: 50 * 1024 * 1024 }, // 50MB limit matching config.toml
+  fileFilter: (req, file, cb) => {
+    if (ALLOWED_MIME_TYPES.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error(`Invalid file type: ${file.mimetype}. Allowed: PDF, DOC, DOCX, TXT`), false);
+    }
+  }
+});
+
+// List documents for the authenticated user
 router.get('/', requireAuth, async (req, res) => {
   try {
     const userId = req.user?.id;
@@ -27,7 +48,8 @@ router.get('/', requireAuth, async (req, res) => {
       return res.status(401).json({ error: "Unauthorized" });
     }
 
-    const { data, error } = await supabase
+    // Use the auth-scoped client so RLS is respected
+    const { data, error } = await req.supabase
       .from('user_documents')
       .select('*')
       .eq('user_id', userId)
@@ -41,6 +63,7 @@ router.get('/', requireAuth, async (req, res) => {
   }
 });
 
+// Upload a new document
 router.post('/upload', requireAuth, upload.single('file'), async (req, res) => {
   try {
     if (!req.file) {
@@ -54,12 +77,12 @@ router.post('/upload', requireAuth, upload.single('file'), async (req, res) => {
 
     const docId = uuidv4(); 
     const ext = path.extname(req.file.originalname);
-    const fileName = `${docId}${ext}`;
+    const storagePath = `${userId}/${docId}${ext}`;
 
-    // Upload to Supabase Storage
-    const { data: uploadData, error: uploadError } = await supabase.storage
+    // Upload to Supabase Storage using service-role client (bypasses storage RLS)
+    const { data: uploadData, error: uploadError } = await supabaseStorage.storage
       .from('documents')
-      .upload(fileName, req.file.buffer, {
+      .upload(storagePath, req.file.buffer, {
         contentType: req.file.mimetype,
         upsert: false
       });
@@ -70,13 +93,14 @@ router.post('/upload', requireAuth, upload.single('file'), async (req, res) => {
     }
 
     // Get public URL
-    const { data: publicUrlData } = supabase.storage
+    const { data: publicUrlData } = supabaseStorage.storage
       .from('documents')
-      .getPublicUrl(fileName);
+      .getPublicUrl(storagePath);
 
     const fileUrl = publicUrlData.publicUrl; 
 
-    const { error } = await supabase
+    // Insert metadata using auth-scoped client (respects RLS)
+    const { error } = await req.supabase
       .from('user_documents')
       .insert({
         id: docId,
@@ -88,6 +112,7 @@ router.post('/upload', requireAuth, upload.single('file'), async (req, res) => {
 
     if (error) throw error;
 
+    // Fire-and-forget: notify the Python extraction service
     globalFetch('http://localhost:8000/extract', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -97,6 +122,10 @@ router.post('/upload', requireAuth, upload.single('file'), async (req, res) => {
     res.status(201).json({ id: docId, file_url: fileUrl, status: 'uploading' });
   } catch (err) {
     console.error("Error uploading document:", err);
+    // Handle multer file type errors
+    if (err.message && err.message.startsWith('Invalid file type')) {
+      return res.status(400).json({ error: err.message });
+    }
     res.status(500).json({ error: err.message });
   }
 });

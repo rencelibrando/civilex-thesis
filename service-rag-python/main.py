@@ -51,6 +51,25 @@ def get_db_connection():
         print(f"Error connecting to database: {e}")
         raise HTTPException(status_code=500, detail="Database connection failed")
 
+def init_db():
+    print("Initializing database FTS dictionary...")
+    # NOTE: The schema is managed by Supabase migrations.
+    # Do NOT drop and recreate the FTS column here, as it forces a complete rewrite 
+    # of the entire 4.8GB table on every startup and destroys the GIN index.
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            # cur.execute("ALTER TABLE document_chunks DROP COLUMN IF EXISTS fts;")
+            # cur.execute("ALTER TABLE document_chunks ADD COLUMN fts tsvector GENERATED ALWAYS AS (to_tsvector('simple', content)) STORED;")
+            cur.execute("CREATE INDEX IF NOT EXISTS fts_idx ON document_chunks USING GIN (fts);")
+            conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"Failed to update FTS schema: {e}")
+
+# Run once on startup
+init_db()
+
 @app.get("/health")
 def health_check():
     return {"status": "ok", "service": "service-rag-python"}
@@ -218,6 +237,7 @@ class ChatMessage(BaseModel):
 
 class SearchRequest(BaseModel):
     query: str
+    session_id: Optional[str] = None
     history: List[ChatMessage] = []
 
 import asyncio
@@ -228,33 +248,101 @@ def embed_and_search(query: str):
         # Embed the query (blocking)
         q_emb = embedder.encode(query, normalize_embeddings=True).tolist()
         
-        # Two-query approach: separate article and case retrieval
-        # to guarantee article statutes always appear (despite 99:1 data imbalance)
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            # 1. Top article matches (Civil Code statutes)
-            cur.execute("""
-                SELECT parent_type, parent_id, content,
-                       1 - (embedding <=> %s::vector) AS similarity
-                FROM document_chunks
-                WHERE parent_type = 'article'
-                ORDER BY embedding <=> %s::vector
-                LIMIT 5;
-            """, (q_emb, q_emb))
-            articles = cur.fetchall()
+            # Helper function to perform Hybrid Search using RRF
+            def hybrid_search(parent_type, limit=5):
+                import re
+                words = [w for w in re.split(r'\W+', query) if w]
+                or_query = " OR ".join(words) if words else query
+                
+                # A cosine similarity threshold of 0.35 ensures we drop completely unrelated vector matches
+                cur.execute("""
+                    WITH vector_search AS (
+                        SELECT chunk_id, parent_type, parent_id, content,
+                               1 - (embedding <=> %s::vector) AS similarity,
+                               ROW_NUMBER() OVER (ORDER BY embedding <=> %s::vector) AS rrf_vector_rank
+                        FROM document_chunks
+                        WHERE parent_type = %s AND 1 - (embedding <=> %s::vector) > 0.35
+                        ORDER BY embedding <=> %s::vector
+                        LIMIT 20
+                    ),
+                    text_search AS (
+                        SELECT chunk_id, parent_type, parent_id, content,
+                               ts_rank_cd(fts, websearch_to_tsquery('simple', %s)) AS similarity,
+                               ROW_NUMBER() OVER (ORDER BY ts_rank_cd(fts, websearch_to_tsquery('simple', %s)) DESC) AS rrf_text_rank
+                        FROM document_chunks
+                        WHERE parent_type = %s AND fts @@ websearch_to_tsquery('simple', %s)
+                        ORDER BY rrf_text_rank
+                        LIMIT 20
+                    ),
+                    rrf AS (
+                        SELECT 
+                            COALESCE(v.chunk_id, t.chunk_id) AS chunk_id,
+                            COALESCE(v.parent_type, t.parent_type) AS parent_type,
+                            COALESCE(v.parent_id, t.parent_id) AS parent_id,
+                            COALESCE(v.content, t.content) AS content,
+                            COALESCE(1.0 / (60 + v.rrf_vector_rank), 0.0) + COALESCE(1.0 / (60 + t.rrf_text_rank), 0.0) AS rrf_score
+                        FROM vector_search v
+                        FULL OUTER JOIN text_search t ON v.chunk_id = t.chunk_id
+                    )
+                    SELECT * FROM rrf
+                    ORDER BY rrf_score DESC
+                    LIMIT %s;
+                """, (q_emb, q_emb, parent_type, q_emb, q_emb, or_query, or_query, parent_type, or_query, limit))
+                return cur.fetchall()
+
+
+            # 1. Exact match extraction for Civil Code Articles (e.g. "article 2270")
+            import re
+            exact_articles = []
+            article_match = re.search(r'article\s+(\d+)', query, re.IGNORECASE)
+            if article_match:
+                art_num = article_match.group(1)
+                exact_id = f"RA386-ART{art_num}"
+                cur.execute("""
+                    SELECT chunk_id, parent_type, parent_id, content
+                    FROM document_chunks
+                    WHERE parent_id = %s AND parent_type = 'article'
+                    LIMIT 1;
+                """, (exact_id,))
+                exact_art = cur.fetchone()
+                if exact_art:
+                    exact_articles.append(exact_art)
+                    
+            # 2. Top article matches (Civil Code statutes) via Hybrid Search
+            articles = exact_articles.copy()
+            hybrid_articles = hybrid_search('article', 5)
+            # append only if not already in exact_articles
+            exact_ids = {a['parent_id'] for a in exact_articles}
+            for ha in hybrid_articles:
+                if ha['parent_id'] not in exact_ids:
+                    articles.append(ha)
+            articles = articles[:5] # limit to 5
             
-            # 2. Top case matches (jurisprudence)
-            cur.execute("""
-                SELECT parent_type, parent_id, content,
-                       1 - (embedding <=> %s::vector) AS similarity
-                FROM document_chunks
-                WHERE parent_type = 'case'
-                ORDER BY embedding <=> %s::vector
-                LIMIT 5;
-            """, (q_emb, q_emb))
-            cases = cur.fetchall()
+            # 2. Top case matches (jurisprudence) via Hybrid Search
+            cases = hybrid_search('case', 5)
             
-            # Merge: articles first so statutory provisions lead the context
-            return articles + cases
+            # 3. Graph-Augmented RAG: Retrieve linked jurisprudence for the top articles
+            linked_cases = []
+            if articles:
+                article_ids = [a['parent_id'] for a in articles]
+                cur.execute("""
+                    SELECT r.article_id, j.case_uid, j.title, j.gr_number, j.content_summary
+                    FROM article_jurisprudence_relations r
+                    JOIN jurisprudence_cases j ON r.case_uid = j.case_uid
+                    WHERE r.article_id = ANY(%s)
+                """, (article_ids,))
+                
+                # Format them as documents
+                for row in cur.fetchall():
+                    linked_cases.append({
+                        "parent_type": "case",
+                        "parent_id": row['case_uid'],
+                        "content": f"[Linked Case for {row['article_id']}] {row['title']} (GR No. {row['gr_number']}): {row['content_summary']}"
+                    })
+
+            # Merge: articles first so statutory provisions lead the context, followed by linked cases, then vector-searched cases
+            return articles + linked_cases + cases
     finally:
         conn.close()
 
@@ -302,12 +390,33 @@ CONTEXT:
             yield f"data: {json.dumps({'type': 'citations', 'data': results})}\n\n"
             
             # 2. Stream the AI text
+            full_text = ""
             async for chunk in generate_response_stream(system_prompt, request.query, history_dicts):
+                full_text += chunk
                 yield f"data: {json.dumps({'type': 'text', 'text': chunk})}\n\n"
                 
             # 3. Signal completion
             logging.info("Finished streaming response.")
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
+
+            # 4. Save to DB if session_id is provided
+            if request.session_id:
+                try:
+                    conn = get_db_connection()
+                    with conn.cursor() as cur:
+                        # Convert citations to JSON string
+                        import json
+                        citations_json = json.dumps(results)
+                        cur.execute("""
+                            INSERT INTO chat_messages (session_id, role, content, citations)
+                            VALUES (%s, 'assistant', %s, %s)
+                        """, (request.session_id, full_text, citations_json))
+                        conn.commit()
+                except Exception as db_err:
+                    logging.error(f"Failed to save message to DB: {db_err}")
+                finally:
+                    if 'conn' in locals():
+                        conn.close()
         
         return StreamingResponse(
             sse_generator(),

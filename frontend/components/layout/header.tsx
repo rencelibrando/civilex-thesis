@@ -10,11 +10,10 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { userProfile } from "@/lib/mock-data";
+import { ThemeToggle } from "@/components/theme-toggle";
 
 export function Header() {
   return (
@@ -46,6 +45,7 @@ export function Header() {
       </div>
 
       <div className="flex items-center gap-2 sm:gap-4">
+        <ThemeToggle />
         <Button variant="ghost" size="icon" className="text-muted-foreground hover:bg-accent hover:text-foreground rounded-full">
           <Globe className="w-5 h-5" />
         </Button>
@@ -61,19 +61,15 @@ export function Header() {
         <DropdownMenu>
           <DropdownMenuTrigger className="relative h-8 w-8 rounded-full ml-1 outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2">
             <Avatar className="h-9 w-9 border border-border">
-              <AvatarImage src={userProfile.avatar} alt={userProfile.name} />
-              <AvatarFallback className="bg-muted text-muted-foreground">JD</AvatarFallback>
+              <AvatarFallback className="bg-muted text-muted-foreground">U</AvatarFallback>
             </Avatar>
           </DropdownMenuTrigger>
           <DropdownMenuContent className="w-56" align="end">
-            <DropdownMenuLabel className="font-normal">
+            <div className="px-2 py-1.5 font-normal">
               <div className="flex flex-col space-y-1">
-                <p className="text-sm font-medium leading-none">{userProfile.name}</p>
-                <p className="text-xs leading-none text-muted-foreground">
-                  {userProfile.email}
-                </p>
+                <p className="text-sm font-medium leading-none">User</p>
               </div>
-            </DropdownMenuLabel>
+            </div>
             <DropdownMenuSeparator />
             <Link href="/settings" className="w-full">
               <DropdownMenuItem>Profile & Settings</DropdownMenuItem>

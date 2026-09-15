@@ -32,29 +32,46 @@ router.get('/toc', async (req, res) => {
       from += step;
     }
 
-    const treeDict = {};
+    const booksMap = new Map();
 
     rows.forEach(art => {
-      const h = art.hierarchy;
-      const bookName = h.book_name || "Uncategorized Book";
-      const titleName = h.title_name || "Uncategorized Title";
-      const chapterName = h.chapter_name || "Uncategorized Chapter";
+      const h = art.hierarchy || {};
+      const bookName = h.book_name || 'PRELIMINARY TITLE';
+      const titleName = h.title_name || null;
+      const chapterName = h.chapter_name || null;
 
-      if (!treeDict[bookName]) treeDict[bookName] = {};
-      if (!treeDict[bookName][titleName]) treeDict[bookName][titleName] = {};
-      if (!treeDict[bookName][titleName][chapterName]) treeDict[bookName][titleName][chapterName] = [];
+      if (!booksMap.has(bookName)) {
+        booksMap.set(bookName, { titlesMap: new Map(), chaptersMap: new Map(), arts: [] });
+      }
+      const bookObj = booksMap.get(bookName);
 
-      treeDict[bookName][titleName][chapterName].push({
-        id: art.article_id,
-        title: art.article_number ? `Article ${art.article_number}` : art.article_id,
-        article_number: art.article_number
-      });
+      if (titleName) {
+        if (!bookObj.titlesMap.has(titleName)) {
+          bookObj.titlesMap.set(titleName, { chaptersMap: new Map(), arts: [] });
+        }
+        const titleObj = bookObj.titlesMap.get(titleName);
+        if (chapterName) {
+          if (!titleObj.chaptersMap.has(chapterName)) {
+            titleObj.chaptersMap.set(chapterName, []);
+          }
+          titleObj.chaptersMap.get(chapterName).push(art);
+        } else {
+          titleObj.arts.push(art);
+        }
+      } else if (chapterName) {
+        if (!bookObj.chaptersMap.has(chapterName)) {
+          bookObj.chaptersMap.set(chapterName, []);
+        }
+        bookObj.chaptersMap.get(chapterName).push(art);
+      } else {
+        bookObj.arts.push(art);
+      }
     });
 
     const resultTree = [];
     let bIdx = 0;
 
-    for (const [bookName, titles] of Object.entries(treeDict)) {
+    for (const [bookName, bookObj] of booksMap.entries()) {
       bIdx++;
       const bookNode = {
         id: `book-${bIdx}`,
@@ -63,7 +80,7 @@ router.get('/toc', async (req, res) => {
       };
 
       let tIdx = 0;
-      for (const [titleName, chapters] of Object.entries(titles)) {
+      for (const [titleName, titleObj] of bookObj.titlesMap.entries()) {
         tIdx++;
         const titleNode = {
           id: `book-${bIdx}-title-${tIdx}`,
@@ -72,35 +89,49 @@ router.get('/toc', async (req, res) => {
         };
 
         let cIdx = 0;
-        for (const [chapterName, arts] of Object.entries(chapters)) {
+        for (const [chapterName, arts] of titleObj.chaptersMap.entries()) {
           cIdx++;
-
-          if (chapterName === "Uncategorized Chapter") {
-            const sortedArts = arts.sort((a, b) => (a.article_number || 999999) - (b.article_number || 999999));
-            sortedArts.forEach(a => {
-              titleNode.children.push({ id: a.id, title: a.title });
-            });
-          } else {
-            const chapterNode = {
-              id: `book-${bIdx}-title-${tIdx}-chapter-${cIdx}`,
-              title: chapterName,
-              children: []
-            };
-
-            const sortedArts = arts.sort((a, b) => (a.article_number || 999999) - (b.article_number || 999999));
-            sortedArts.forEach(a => {
-              chapterNode.children.push({ id: a.id, title: a.title });
-            });
-
-            titleNode.children.push(chapterNode);
-          }
+          const chapterNode = {
+            id: `book-${bIdx}-title-${tIdx}-chapter-${cIdx}`,
+            title: chapterName,
+            children: arts.map(a => ({ id: a.article_id, title: a.article_number ? `Article ${a.article_number}` : a.article_id }))
+          };
+          titleNode.children.push(chapterNode);
         }
+
+        titleObj.arts.forEach(a => {
+          titleNode.children.push({ id: a.article_id, title: a.article_number ? `Article ${a.article_number}` : a.article_id });
+        });
 
         bookNode.children.push(titleNode);
       }
 
+      let bcIdx = 0;
+      for (const [chapterName, arts] of bookObj.chaptersMap.entries()) {
+        bcIdx++;
+        const chapterNode = {
+          id: `book-${bIdx}-direct-chapter-${bcIdx}`,
+          title: chapterName,
+          children: arts.map(a => ({ id: a.article_id, title: a.article_number ? `Article ${a.article_number}` : a.article_id }))
+        };
+        bookNode.children.push(chapterNode);
+      }
+
+      bookObj.arts.forEach(a => {
+        bookNode.children.push({ id: a.article_id, title: a.article_number ? `Article ${a.article_number}` : a.article_id });
+      });
+
       resultTree.push(bookNode);
     }
+
+    const bookOrder = {
+      "PRELIMINARY TITLE": 0,
+      "BOOK I - PERSONS": 1,
+      "BOOK II - PROPERTY, OWNERSHIP, AND ITS MODIFICATIONS": 2,
+      "BOOK III - DIFFERENT MODES OF ACQUIRING OWNERSHIP": 3,
+      "BOOK IV - OBLIGATIONS AND CONTRACTS": 4
+    };
+    resultTree.sort((a, b) => (bookOrder[a.title] ?? 99) - (bookOrder[b.title] ?? 99));
 
     res.json({ toc: resultTree });
   } catch (err) {

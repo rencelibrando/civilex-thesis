@@ -174,23 +174,23 @@ When a user uploads a document:
 
 ## 5. Concrete Implementation Plan (Execution Phases)
 
-### Phase 1: Database Setup & Data Ingestion
-1. Initialize local Supabase instance using Docker.
-2. Enable `vector` extension and execute the schema creation SQL.
-3. **Data Ingestion Script (Python)**:
-    *   **Local Embeddings**: Read `civil_code_rag.jsonl` and `jurisprudence_chunks.jsonl`. Generate embeddings locally (zero API costs) using `sentence-transformers` (XML-RoBERTa). Insert directly into `pgvector` using the Supabase Python Client in batches.
-    *   **Relations Ingestion**: Iterate through the lightweight `article_case_index.json` to instantly populate the `article_jurisprudence_relations` junction table.
-    *   **Full Text Reconstruction**: Stitch jurisprudence chunks together to populate the `full_text` column in `jurisprudence_cases` to serve the Next.js UI dialogs.
+### Phase 1: Database Setup & Data Ingestion (✅ Completed)
+1. [x] Initialize local Supabase instance using Docker.
+2. [x] Enable `vector` extension and execute the schema creation SQL.
+3. [x] **Data Ingestion Script (Python)**:
+    *   [x] **Local Embeddings**: Read `civil_code_rag.jsonl` and `jurisprudence_chunks.jsonl`. Generate embeddings locally (zero API costs) using `sentence-transformers` (XML-RoBERTa). Insert directly into `pgvector` using the Supabase Python Client in batches.
+    *   [x] **Relations Ingestion**: Iterate through the lightweight `article_case_index.json` to instantly populate the `article_jurisprudence_relations` junction table.
+    *   [x] **Full Text Reconstruction**: Stitch jurisprudence chunks together to populate the `full_text` column in `jurisprudence_cases` to serve the Next.js UI dialogs.
 
-### Phase 2: Python RAG Microservice
-1. Scaffold FastAPI and implement `/search` using XML-RoBERTa and RRF RPC.
-2. Implement the `/extract` endpoint for the Document Analysis Pipeline (PyMuPDF + OCR fallback + Chunking + Embedding).
-3. Implement LLM streaming with LM Studio + Cloud fallback.
+### Phase 2: Python RAG Microservice (✅ Completed)
+1. [x] Scaffold FastAPI and implement `/search` using XML-RoBERTa and RRF RPC.
+2. [x] Implement the `/extract` endpoint for the Document Analysis Pipeline (PyMuPDF + OCR fallback + Chunking + Embedding).
+3. [x] Implement LLM streaming with LM Studio + Cloud fallback.
 
-### Phase 3: Node.js Gateway Service
-1. Scaffold Express app with Supabase Auth middleware.
-2. Create `/chat` and `/documents` proxies.
+### Phase 3: Node.js Gateway Service (✅ Completed)
+1. [x] Scaffold Express app with Supabase Auth middleware.
+2. [x] Create `/chat` and `/documents` proxies.
 
 ### Phase 4: Next.js Frontend Integration
-1. **Chat UI:** Implement Vercel AI SDK. Render Markdown. Show document extraction loading states inside the chat.
-2. **Table of Contents & Popups:** Implement the Article listing. Use **TanStack Query** to cache the full jurisprudence case fetches so the popup dialog opens instantly on subsequent clicks. Format the popup to accurately reflect the original case document structure.
+1. [ ] **Chat UI:** Implement Vercel AI SDK. Render Markdown. Show document extraction loading states inside the chat.
+2. [ ] **Table of Contents & Popups:** Implement the Article listing. Use **TanStack Query** to cache the full jurisprudence case fetches so the popup dialog opens instantly on subsequent clicks. Format the popup to accurately reflect the original case document structure.

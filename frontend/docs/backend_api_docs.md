@@ -110,4 +110,4 @@ If hitting the Python service directly (bypassing Node), these are the raw endpo
 ### `GET /api/civil-code/article/{article_id}`
 - **Description**: Raw Article retrieval endpoint. (Same as proxied route above).
 
-*(Note: `/search` and `/extract` routes are intended to be implemented in the Python RAG service to support the `/api/chat` and `/api/documents` proxy routes from Node).*
+*(Note: `/search` and `/extract` routes are implemented in the Python RAG service to support the `/api/chat` and `/api/documents` proxy routes from Node).*

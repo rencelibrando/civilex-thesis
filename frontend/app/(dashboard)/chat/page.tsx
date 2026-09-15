@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
+import { useRouter } from "next/navigation";
 import { Send, Paperclip, ChevronRight, Scale, BookOpen, Square, Loader2, PlusCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -12,6 +13,7 @@ import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/
 import { userProfile, chatPrompts } from "@/lib/mock-data";
 
 export default function ChatPage() {
+  const router = useRouter();
   const [messages, setMessages] = useState<{id: number; role: string; content: string; reasoning?: string}[]>([
     {
       id: 1,
@@ -29,6 +31,8 @@ export default function ChatPage() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isTyping]);
 
+  const [sessionId, setSessionId] = useState<string | null>(null);
+
   const handleNewChat = () => {
     if (isTyping) handleStop();
     setMessages([
@@ -40,6 +44,7 @@ export default function ChatPage() {
     ]);
     setCurrentCitations([]);
     setInputValue("");
+    setSessionId(null);
   };
 
   const handleStop = () => {
@@ -70,7 +75,34 @@ export default function ChatPage() {
       abortControllerRef.current = controller;
 
       const { data: { session } } = await supabase.auth.getSession();
-      const token = session?.access_token || '';
+      if (!session) {
+        router.push("/login");
+        return;
+      }
+      const token = session.access_token;
+      let activeSessionId = sessionId;
+      if (!activeSessionId) {
+        // Create a new session on first message
+        const createRes = await fetch("http://localhost:4000/api/sessions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
+          body: JSON.stringify({ title: userText.slice(0, 30) + '...' })
+        });
+        if (createRes.ok) {
+          const sessionData = await createRes.json();
+          activeSessionId = sessionData.id;
+          setSessionId(activeSessionId);
+        }
+      }
+
+      // Also save the user's message manually to the db since Python only saves assistant
+      if (activeSessionId) {
+        fetch(`http://localhost:4000/api/sessions/${activeSessionId}/messages`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
+          body: JSON.stringify({ role: "user", content: userText })
+        }).catch(err => console.error("Failed to save user message:", err));
+      }
 
       const res = await fetch("http://localhost:4000/api/chat", {
         method: "POST",
@@ -81,6 +113,7 @@ export default function ChatPage() {
         },
         body: JSON.stringify({ 
           query: userText, 
+          session_id: activeSessionId,
           history: currentHistory.slice(0, -1).map(m => ({ role: m.role, content: m.content })) 
         })
       });
@@ -158,7 +191,7 @@ export default function ChatPage() {
               variant="outline" 
               size="sm" 
               onClick={handleNewChat}
-              className="bg-background/80 backdrop-blur-sm border-primary/20 hover:bg-accent hover:text-primary gap-2 text-xs h-8 rounded-full shadow-sm"
+              className="bg-background/90 backdrop-blur-md border-primary/20 hover:bg-primary/10 hover:text-primary gap-2 text-sm h-10 px-4 rounded-full shadow-sm transition-all"
             >
               <PlusCircle className="w-3.5 h-3.5" />
               New Chat
@@ -261,7 +294,7 @@ export default function ChatPage() {
               {isTyping ? (
                 <Button 
                   onClick={handleStop}
-                  className="mr-2 bg-destructive hover:bg-destructive/90 text-destructive-foreground rounded-lg h-9 w-9 p-0 focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-destructive focus-visible:outline-none"
+                  className="mr-2 bg-destructive hover:bg-destructive/90 text-destructive-foreground rounded-xl h-10 w-10 p-0 focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-destructive focus-visible:outline-none transition-transform active:scale-95"
                 >
                   <Square className="w-4 h-4 fill-current" />
                 </Button>
@@ -269,7 +302,7 @@ export default function ChatPage() {
                 <Button 
                   onClick={handleSend}
                   disabled={!inputValue.trim()}
-                  className="mr-2 bg-primary hover:bg-primary/90 text-primary-foreground rounded-lg h-9 w-9 p-0 focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-primary focus-visible:outline-none"
+                  className="mr-2 bg-primary hover:bg-primary/90 text-primary-foreground rounded-xl h-10 w-10 p-0 focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-primary focus-visible:outline-none transition-transform active:scale-95"
                 >
                   <Send className="w-4 h-4" />
                 </Button>

@@ -25,6 +25,13 @@ export const requireAuth = async (req, res, next) => {
     return res.status(401).json({ error: 'Unauthorized: Invalid token', details: error?.message });
   }
 
+  // Create a request-scoped authenticated client for RLS
+  req.supabase = createClient(
+    supabaseUrl || 'http://localhost:54321', 
+    supabaseAnonKey || 'dummy',
+    { global: { headers: { Authorization: authHeader } } }
+  );
+
   req.user = user;
   next();
 };

@@ -45,7 +45,7 @@ async def generate_response_stream(system_prompt: str, user_query: str, history:
             return # Successfully streamed from LM Studio, exit function
 
     except (httpx.TimeoutException, httpx.ConnectError, httpx.HTTPStatusError) as e:
-        print(f"LM Studio connection failed: {e}. Falling back to Gemini API.")
+        print(f"LM Studio connection failed. URL attempted: {url}. Error: {type(e).__name__} - {e}. Falling back to Gemini API.")
 
     # ATTEMPT 2: Gemini 1.5 Flash (Fallback)
     if not GEMINI_API_KEY or GEMINI_API_KEY == "your_gemini_api_key_here":

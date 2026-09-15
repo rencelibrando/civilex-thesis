@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { Search, Send, Paperclip, Download, Printer, Maximize2, ShieldCheck, AlertCircle, File, Upload, Loader2, FileText, CheckCircle2 } from "lucide-react";
+import { Send, Download, Maximize2, ShieldCheck, File, Upload, Loader2, FileText, CheckCircle2 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -15,7 +15,6 @@ type DocumentStatus = 'uploading' | 'extracting' | 'completed' | 'rejected_unrel
 interface UserDocument {
   id: string;
   filename: string;
-  original_filename: string;
   file_url: string;
   status: DocumentStatus;
   progress?: number;
@@ -31,7 +30,7 @@ const CircularProgress = ({ progress = 0 }: { progress?: number }) => {
     <div className="relative flex items-center justify-center w-4 h-4 mr-1">
       <svg className="w-4 h-4 transform -rotate-90">
         <circle
-          className="text-blue-200"
+          className="text-blue-200 dark:text-blue-900"
           strokeWidth="2"
           stroke="currentColor"
           fill="transparent"
@@ -40,7 +39,7 @@ const CircularProgress = ({ progress = 0 }: { progress?: number }) => {
           cy="8"
         />
         <circle
-          className="text-blue-600 transition-all duration-500 ease-in-out"
+          className="text-blue-600 dark:text-blue-400 transition-all duration-500 ease-in-out"
           strokeWidth="2"
           strokeDasharray={circumference}
           strokeDashoffset={strokeDashoffset}
@@ -117,6 +116,13 @@ export default function ResearchPage() {
     const file = e.target.files?.[0];
     if (!file) return;
 
+    // Client-side file type validation
+    const allowedTypes = ['application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'text/plain'];
+    if (!allowedTypes.includes(file.type)) {
+      alert('Invalid file type. Allowed: PDF, DOC, DOCX, TXT');
+      return;
+    }
+
     setIsUploading(true);
     const formData = new FormData();
     formData.append("file", file);
@@ -136,7 +142,8 @@ export default function ResearchPage() {
       if (res.ok) {
         await fetchDocuments();
       } else {
-        console.error("Upload failed");
+        const errData = await res.json().catch(() => ({}));
+        console.error("Upload failed:", errData.error || res.statusText);
       }
     } catch (err) {
       console.error("Upload error:", err);
@@ -168,11 +175,11 @@ export default function ResearchPage() {
   const getStatusBadge = (doc: UserDocument) => {
     switch (doc.status) {
       case 'completed':
-        return <Badge variant="outline" className="bg-green-50 text-green-700 border-green-200 text-[10px]">Analyzed</Badge>;
+        return <Badge variant="outline" className="bg-green-soft text-green border-green/20 text-[10px]">Analyzed</Badge>;
       case 'extracting':
       case 'uploading':
         return (
-          <Badge variant="outline" className="bg-blue-50 text-blue-700 border-blue-200 text-[10px] flex items-center gap-0.5">
+          <Badge variant="outline" className="bg-blue-soft text-blue-text border-blue-text/20 text-[10px] flex items-center gap-0.5">
             {doc.status === 'extracting' ? (
               <CircularProgress progress={doc.progress || 0} />
             ) : (
@@ -182,7 +189,7 @@ export default function ResearchPage() {
           </Badge>
         );
       case 'rejected_unrelated':
-        return <Badge variant="outline" className="bg-amber-50 text-amber-700 border-amber-200 text-[10px]">Irrelevant</Badge>;
+        return <Badge variant="outline" className="bg-gold-soft text-gold border-gold/20 text-[10px]">Irrelevant</Badge>;
       case 'error':
         return <Badge variant="destructive" className="text-[10px]">Error</Badge>;
       default:
@@ -241,7 +248,7 @@ export default function ResearchPage() {
                 >
                   <div className="flex items-start justify-between gap-2 mb-1">
                     <p className={`text-sm font-medium line-clamp-1 ${activeDocument?.id === doc.id ? 'text-primary' : 'text-foreground'}`}>
-                      {doc.original_filename}
+                      {doc.filename}
                     </p>
                   </div>
                   <div className="flex items-center justify-between mt-2">
@@ -258,34 +265,34 @@ export default function ResearchPage() {
       </div>
 
       {/* Center Pane - Document Viewer */}
-      <div className="flex-1 flex flex-col bg-slate-50 rounded-2xl border border-slate-200 shadow-sm overflow-hidden relative">
+      <div className="flex-1 flex flex-col bg-card rounded-2xl border border-border shadow-sm overflow-hidden relative">
         {activeDocument ? (
           <>
             {/* Toolbar */}
-            <div className="p-3 border-b border-slate-100 bg-[#FAFAFD] flex items-center justify-between">
+            <div className="p-3 border-b border-border bg-muted/50 flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <Badge variant="outline" className="bg-slate-50 text-xs border-slate-200 font-medium">
-                  {activeDocument.original_filename}
+                <Badge variant="outline" className="bg-card text-xs border-border font-medium">
+                  {activeDocument.filename}
                 </Badge>
                 {getStatusBadge(activeDocument)}
               </div>
               <div className="flex items-center gap-1">
-                <Button variant="ghost" size="icon" className="h-8 w-8 text-slate-500">
+                <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-foreground">
                   <Download className="w-4 h-4" />
                 </Button>
-                <Button variant="ghost" size="icon" className="h-8 w-8 text-slate-500">
+                <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-foreground">
                   <Maximize2 className="w-4 h-4" />
                 </Button>
               </div>
             </div>
             
             {/* Document Content */}
-            <div className="flex-1 bg-slate-100/50 p-4 relative overflow-hidden">
+            <div className="flex-1 bg-muted/30 p-4 relative overflow-hidden">
                {activeDocument.file_url ? (
                  <iframe 
                    src={activeDocument.file_url} 
-                   className="w-full h-full rounded-xl bg-white shadow-sm border border-slate-200"
-                   title={activeDocument.original_filename}
+                   className="w-full h-full rounded-xl bg-card shadow-sm border border-border"
+                   title={activeDocument.filename}
                  />
                ) : (
                  <div className="flex flex-col items-center justify-center h-full text-muted-foreground">
@@ -296,7 +303,7 @@ export default function ResearchPage() {
             </div>
           </>
         ) : (
-          <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground bg-slate-50/50">
+          <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground">
             <div className="w-16 h-16 rounded-full bg-primary/5 flex items-center justify-center mb-4">
               <FileText className="w-8 h-8 text-primary/40" />
             </div>
@@ -362,7 +369,7 @@ export default function ResearchPage() {
               value={inputValue}
               onChange={(e) => setInputValue(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && handleSend()}
-              placeholder={activeDocument ? `Ask about ${activeDocument.original_filename}...` : "Ask a general question..."}
+              placeholder={activeDocument ? `Ask about ${activeDocument.filename}...` : "Ask a general question..."}
               className="flex-1 border-none bg-transparent shadow-none focus-visible:ring-0 text-foreground px-4 h-11 text-sm"
             />
             <Button 

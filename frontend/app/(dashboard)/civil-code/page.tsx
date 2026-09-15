@@ -1,11 +1,12 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { BookOpen, ChevronRight, ChevronDown, Search, ArrowRight, Bookmark, Loader2, FileText, AlertCircle } from "lucide-react";
+import { useState, useEffect, useMemo, useRef, useCallback } from "react";
+import { BookOpen, ChevronRight, ChevronDown, Search, ArrowRight, Bookmark, Loader2, FileText, AlertCircle, ChevronsUpDown, ChevronsDownUp } from "lucide-react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { Input } from "@/components/ui/input";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from "@/components/ui/tooltip";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -35,6 +36,15 @@ type ArticleData = {
   }>;
 };
 
+type FlatRow = {
+  id: string;
+  title: string;
+  depth: number;
+  isLeaf: boolean;
+  isExpanded: boolean;
+  nodeRef: TreeNode;
+};
+
 export default function CivilCodePage() {
   const [tocData, setTocData] = useState<TreeNode[]>([]);
   const [loadingToc, setLoadingToc] = useState(true);
@@ -48,33 +58,40 @@ export default function CivilCodePage() {
   const [articleError, setArticleError] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
 
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+
   useEffect(() => {
     async function fetchTOC() {
       try {
-        const cachedToc = localStorage.getItem("civilex_toc_cache");
-        if (cachedToc) {
-          const parsedToc = JSON.parse(cachedToc);
-          setTocData(parsedToc);
-          if (parsedToc && parsedToc.length > 0) {
-            setExpandedNodes({ [parsedToc[0].id]: true });
-          }
-          setLoadingToc(false);
-          return;
-        }
+        // Clear any lingering localStorage cache
+        localStorage.removeItem("civilex_toc_cache");
+        localStorage.removeItem("civilex_toc_cache_v2");
 
         const res = await fetch("http://localhost:4000/api/civil-code/toc");
         if (!res.ok) throw new Error("Failed to fetch Table of Contents");
         const data = await res.json();
         
-        localStorage.setItem("civilex_toc_cache", JSON.stringify(data.toc));
         setTocData(data.toc);
         
-        // Auto-expand the first book
+        // Auto-expand Books (depth 0) and Titles (depth 1) by default
         if (data.toc && data.toc.length > 0) {
-          setExpandedNodes({ [data.toc[0].id]: true });
+          const initialExpanded: Record<string, boolean> = {};
+          const walk = (nodes: TreeNode[], depth: number = 0) => {
+            for (const node of nodes) {
+              if (node.children && node.children.length > 0) {
+                if (depth <= 1) {
+                  initialExpanded[node.id] = true;
+                }
+                walk(node.children, depth + 1);
+              }
+            }
+          };
+          walk(data.toc, 0);
+          setExpandedNodes(initialExpanded);
         }
-      } catch (err: any) {
-        setTocError(err.message || "An error occurred");
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : "An error occurred";
+        setTocError(message);
       } finally {
         setLoadingToc(false);
       }
@@ -82,7 +99,25 @@ export default function CivilCodePage() {
     fetchTOC();
   }, []);
 
-  const fetchArticle = async (id: string) => {
+  const expandAll = useCallback(() => {
+    const allExpanded: Record<string, boolean> = {};
+    const walk = (nodes: TreeNode[]) => {
+      for (const node of nodes) {
+        if (node.children && node.children.length > 0) {
+          allExpanded[node.id] = true;
+          walk(node.children);
+        }
+      }
+    };
+    walk(tocData);
+    setExpandedNodes(allExpanded);
+  }, [tocData]);
+
+  const collapseAll = useCallback(() => {
+    setExpandedNodes({});
+  }, []);
+
+  const fetchArticle = useCallback(async (id: string) => {
     setSelectedArticleId(id);
     setLoadingArticle(true);
     setArticleError("");
@@ -102,70 +137,125 @@ export default function CivilCodePage() {
       
       sessionStorage.setItem(cacheKey, JSON.stringify(data));
       setArticleData(data);
-    } catch (err: any) {
-      setArticleError(err.message || "An error occurred fetching the article");
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "An error occurred fetching the article";
+      setArticleError(message);
     } finally {
       setLoadingArticle(false);
     }
-  };
+  }, []);
 
-  const toggleNode = (id: string) => {
+  const toggleNode = useCallback((id: string) => {
     setExpandedNodes(prev => ({
       ...prev,
       [id]: !prev[id]
     }));
-  };
+  }, []);
 
-  const renderTree = (nodes: TreeNode[], depth = 0) => {
-    // Basic search filtering
-    const filteredNodes = searchQuery 
-      ? nodes.filter(n => n.title.toLowerCase().includes(searchQuery.toLowerCase()) || n.children)
-      : nodes;
+  // Flatten tree into a displayable list based on expand state
+  const flatRows: FlatRow[] = useMemo(() => {
+    if (searchQuery) {
+      // Search mode: flatten all leaf nodes that match
+      const result: FlatRow[] = [];
+      const flatten = (nodes: TreeNode[]) => {
+        for (const node of nodes) {
+          if (!node.children || node.children.length === 0) {
+            if (
+              node.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+              node.id.toLowerCase().includes(searchQuery.toLowerCase())
+            ) {
+              result.push({
+                id: node.id,
+                title: node.title,
+                depth: 0,
+                isLeaf: true,
+                isExpanded: false,
+                nodeRef: node,
+              });
+            }
+          } else {
+            flatten(node.children);
+          }
+        }
+      };
+      flatten(tocData);
+      return result;
+    }
 
-    return filteredNodes.map(node => {
-      const isLeaf = !node.children || node.children.length === 0;
-      const isSelected = selectedArticleId === node.id;
-      
-      return (
-        <div key={node.id} className="w-full">
-          <button 
-            className={`w-full flex items-center py-2 px-2 rounded-lg transition-all duration-200 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ${depth === 0 ? 'mt-2' : 'mt-1'} ${isSelected ? 'bg-primary/10 text-primary font-medium shadow-sm' : 'hover:bg-accent'}`}
-            style={{ paddingLeft: `${depth * 1.25 + 0.5}rem` }}
-            onClick={() => isLeaf ? fetchArticle(node.id) : toggleNode(node.id)}
-            aria-expanded={!isLeaf ? expandedNodes[node.id] : undefined}
-          >
-            {!isLeaf ? (
-              expandedNodes[node.id] ? (
-                <ChevronDown className="w-4 h-4 mr-2 text-muted-foreground flex-shrink-0 transition-transform" />
-              ) : (
-                <ChevronRight className="w-4 h-4 mr-2 text-muted-foreground flex-shrink-0 transition-transform" />
-              )
-            ) : (
-              <FileText className={`w-3.5 h-3.5 mr-2 flex-shrink-0 ${isSelected ? 'text-primary' : 'text-muted-foreground/60'}`} />
-            )}
-            <span className={`text-sm leading-tight ${depth === 0 ? 'font-semibold text-foreground' : isSelected ? 'text-primary font-medium' : 'text-muted-foreground'}`}>
-              {node.title}
-            </span>
-          </button>
-          {!isLeaf && expandedNodes[node.id] && (
-            <div className="flex flex-col animate-in slide-in-from-top-1 fade-in-50 duration-200">
-              {renderTree(node.children!, depth + 1)}
-            </div>
-          )}
-        </div>
-      );
-    });
-  };
+    // Tree mode: render based on expand state
+    const result: FlatRow[] = [];
+    const walk = (nodes: TreeNode[], depth: number) => {
+      for (const node of nodes) {
+        const isLeaf = !node.children || node.children.length === 0;
+        const isExpanded = !!expandedNodes[node.id];
+        result.push({
+          id: node.id,
+          title: node.title,
+          depth,
+          isLeaf,
+          isExpanded,
+          nodeRef: node,
+        });
+        if (!isLeaf && isExpanded) {
+          walk(node.children!, depth + 1);
+        }
+      }
+    };
+    walk(tocData, 0);
+    return result;
+  }, [tocData, expandedNodes, searchQuery]);
+
+  // Virtual list
+  const virtualizer = useVirtualizer({
+    count: flatRows.length,
+    getScrollElement: () => scrollContainerRef.current,
+    estimateSize: () => 36,
+    overscan: 20,
+  });
 
   return (
     <div className="flex h-[calc(100vh-6rem)] md:h-[calc(100vh-7rem)] gap-6 animate-fade-in bg-background/50">
       {/* Table of Contents - Left Pane */}
       <div className="hidden md:flex flex-col w-80 bg-card/80 backdrop-blur-xl rounded-2xl border border-border shadow-sm overflow-hidden flex-shrink-0">
         <div className="p-4 border-b border-border bg-card/50">
-          <h2 className="font-bold text-foreground flex items-center gap-2 mb-4">
-            <BookOpen className="w-5 h-5 text-primary" />
-            Table of Contents
-          </h2>
+          <div className="flex items-center justify-between mb-2">
+            <h2 className="font-bold text-foreground flex items-center gap-2">
+              <BookOpen className="w-5 h-5 text-primary" />
+              Table of Contents
+            </h2>
+            <Badge variant="secondary" className="text-[10px] bg-primary/10 text-primary border-none font-semibold">
+              2,268 Articles
+            </Badge>
+          </div>
+
+          <div className="flex items-center justify-between gap-2 mb-3">
+            <span className="text-xs text-muted-foreground">
+              {!loadingToc && !tocError && `${flatRows.length} visible`}
+            </span>
+            <div className="flex items-center gap-1">
+              <Button
+                variant="outline"
+                size="xs"
+                onClick={expandAll}
+                title="Expand All Folders"
+                className="text-[11px] h-6 px-2"
+              >
+                <ChevronsUpDown className="w-3 h-3 mr-1" />
+                Expand All
+              </Button>
+              <Button
+                variant="outline"
+                size="xs"
+                onClick={collapseAll}
+                title="Collapse All Folders"
+                className="text-[11px] h-6 px-2"
+              >
+                <ChevronsDownUp className="w-3 h-3 mr-1" />
+                Collapse
+              </Button>
+            </div>
+          </div>
+
           <div className="relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
             <Input 
@@ -176,25 +266,104 @@ export default function CivilCodePage() {
             />
           </div>
         </div>
-        <ScrollArea className="flex-1 p-2 min-h-0">
-          {loadingToc ? (
-            <div className="space-y-4 p-4">
-              <Skeleton className="h-6 w-3/4 rounded-md" />
-              <Skeleton className="h-4 w-5/6 ml-4 rounded-md" />
-              <Skeleton className="h-4 w-4/6 ml-4 rounded-md" />
-              <Skeleton className="h-6 w-2/4 rounded-md mt-6" />
-              <Skeleton className="h-4 w-full ml-4 rounded-md" />
-            </div>
-          ) : tocError ? (
-            <Alert variant="destructive" className="m-4">
+
+        {/* Virtualized scroll container */}
+        {loadingToc ? (
+          <div className="space-y-4 p-4 flex-1">
+            <Skeleton className="h-6 w-3/4 rounded-md" />
+            <Skeleton className="h-4 w-5/6 ml-4 rounded-md" />
+            <Skeleton className="h-4 w-4/6 ml-4 rounded-md" />
+            <Skeleton className="h-6 w-2/4 rounded-md mt-6" />
+            <Skeleton className="h-4 w-full ml-4 rounded-md" />
+          </div>
+        ) : tocError ? (
+          <div className="p-4 flex-1">
+            <Alert variant="destructive">
               <AlertCircle className="h-4 w-4" />
               <AlertTitle>Error</AlertTitle>
               <AlertDescription>{tocError}</AlertDescription>
             </Alert>
-          ) : (
-            renderTree(tocData)
-          )}
-        </ScrollArea>
+          </div>
+        ) : flatRows.length === 0 && searchQuery ? (
+          <div className="p-4 text-muted-foreground text-sm text-center flex-1">
+            No articles found matching &ldquo;{searchQuery}&rdquo;.
+          </div>
+        ) : (
+          <div
+            ref={scrollContainerRef}
+            className="flex-1 overflow-y-auto p-2 min-h-0 custom-scrollbar will-change-transform"
+          >
+            <div
+              style={{
+                height: `${virtualizer.getTotalSize()}px`,
+                width: "100%",
+                position: "relative",
+              }}
+            >
+              {virtualizer.getVirtualItems().map((virtualRow) => {
+                const row = flatRows[virtualRow.index];
+                const isSelected = selectedArticleId === row.id;
+
+                return (
+                  <div
+                    key={row.id}
+                    data-index={virtualRow.index}
+                    ref={virtualizer.measureElement}
+                    style={{
+                      position: "absolute",
+                      top: 0,
+                      left: 0,
+                      width: "100%",
+                      transform: `translateY(${virtualRow.start}px)`,
+                    }}
+                  >
+                    <button
+                      className={`w-full flex items-center py-2 px-2 rounded-lg transition-colors duration-150 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ${
+                        isSelected
+                          ? "bg-primary/10 text-primary font-medium shadow-sm"
+                          : "hover:bg-accent"
+                      }`}
+                      style={{ paddingLeft: `${row.depth * 1.25 + 0.5}rem` }}
+                      onClick={() =>
+                        row.isLeaf
+                          ? fetchArticle(row.id)
+                          : toggleNode(row.id)
+                      }
+                      aria-expanded={!row.isLeaf ? row.isExpanded : undefined}
+                    >
+                      {!row.isLeaf ? (
+                        row.isExpanded ? (
+                          <ChevronDown className="w-4 h-4 mr-2 text-muted-foreground flex-shrink-0 transition-transform" />
+                        ) : (
+                          <ChevronRight className="w-4 h-4 mr-2 text-muted-foreground flex-shrink-0 transition-transform" />
+                        )
+                      ) : (
+                        <FileText
+                          className={`w-3.5 h-3.5 mr-2 flex-shrink-0 ${
+                            isSelected
+                              ? "text-primary"
+                              : "text-muted-foreground/60"
+                          }`}
+                        />
+                      )}
+                      <span
+                        className={`text-sm leading-tight ${
+                          row.depth === 0
+                            ? "font-semibold text-foreground"
+                            : isSelected
+                            ? "text-primary font-medium"
+                            : "text-muted-foreground"
+                        }`}
+                      >
+                        {row.title}
+                      </span>
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Provision Viewer - Right Pane */}
@@ -214,7 +383,7 @@ export default function CivilCodePage() {
             </Alert>
           </div>
         ) : !articleData ? (
-          <div className="flex-1 flex items-center justify-center flex-col text-muted-foreground p-8 text-center animate-in zoom-in-95 duration-500">
+          <div className="flex-1 flex items-center justify-center flex-col text-muted-foreground p-8 text-center">
             <div className="w-16 h-16 rounded-full bg-primary/10 flex items-center justify-center mb-4">
               <BookOpen className="w-8 h-8 text-primary/60" />
             </div>
@@ -234,7 +403,7 @@ export default function CivilCodePage() {
               </div>
               <TooltipProvider>
                 <Tooltip>
-                  <TooltipTrigger className="p-2.5 text-muted-foreground hover:text-primary hover:bg-accent rounded-xl transition-all focus-visible:ring-2 focus-visible:ring-primary focus-visible:outline-none active:scale-95 shadow-sm border border-transparent hover:border-border">
+                  <TooltipTrigger className="p-2.5 text-muted-foreground hover:text-primary hover:bg-accent rounded-xl transition-colors focus-visible:ring-2 focus-visible:ring-primary focus-visible:outline-none active:scale-95 shadow-sm border border-transparent hover:border-border">
                     <Bookmark className="w-5 h-5" />
                   </TooltipTrigger>
                   <TooltipContent>
@@ -244,7 +413,7 @@ export default function CivilCodePage() {
               </TooltipProvider>
             </div>
             
-            <ScrollArea className="flex-1 p-6 sm:p-8 min-h-0">
+            <div className="flex-1 overflow-y-auto p-6 sm:p-8 min-h-0 custom-scrollbar">
               <div className="max-w-4xl mx-auto space-y-10 pb-8">
                 <div className="prose prose-slate dark:prose-invert max-w-none">
                   <p className="text-lg text-foreground leading-relaxed font-serif tracking-wide">
@@ -263,7 +432,7 @@ export default function CivilCodePage() {
                 </div>
 
                 {articleData.related_cases && articleData.related_cases.length > 0 && (
-                  <div className="animate-in slide-in-from-bottom-4 duration-500 delay-150">
+                  <div>
                     <h3 className="text-xl font-bold text-foreground mb-5 flex items-center gap-2">
                       <span className="bg-primary w-1.5 h-6 rounded-full inline-block"></span>
                       Related Jurisprudence
@@ -295,7 +464,7 @@ export default function CivilCodePage() {
                   </div>
                 )}
               </div>
-            </ScrollArea>
+            </div>
           </>
         )}
       </div>

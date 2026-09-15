@@ -4,6 +4,8 @@ import dotenv from 'dotenv';
 import { setupProxies } from './src/routes/proxy.js';
 import civilCodeRoutes from './src/routes/civil-code.js';
 import documentRoutes from './src/routes/documents.js';
+import profileRoutes from './src/routes/profiles.js';
+import sessionRoutes from './src/routes/sessions.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -25,6 +27,8 @@ app.use(express.json());
 // Apply internal routes
 app.use('/api/civil-code', civilCodeRoutes);
 app.use('/api/documents', documentRoutes);
+app.use('/api/profiles', profileRoutes);
+app.use('/api/sessions', sessionRoutes);
 
 // Serve uploads statically
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));

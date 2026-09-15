@@ -5,14 +5,14 @@ export const setupProxies = (app) => {
   const ragServiceUrl = 'http://localhost:8000';
 
   // Apply proxy middleware to chat endpoint
-  app.use(
+  app.post(
     '/api/chat',
     requireAuth,
     createProxyMiddleware({
       target: ragServiceUrl,
       changeOrigin: true,
       pathRewrite: {
-        '^/': '/search',
+        '^/api/chat': '/search',
       },
       on: {
         proxyReq: (proxyReq, req, res) => {

@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { Send, Paperclip, ChevronRight, Scale, BookOpen } from "lucide-react";
+import { useState, useRef } from "react";
+import { Send, Paperclip, ChevronRight, Scale, BookOpen, Square, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -22,6 +22,15 @@ export default function ChatPage() {
   const [inputValue, setInputValue] = useState("");
   const [isTyping, setIsTyping] = useState(false);
   const [currentCitations, setCurrentCitations] = useState<any[]>([]);
+  const abortControllerRef = useRef<AbortController | null>(null);
+
+  const handleStop = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    setIsTyping(false);
+  };
 
   const handleSend = async () => {
     if (!inputValue.trim() || isTyping) return;
@@ -39,11 +48,15 @@ export default function ChatPage() {
     setMessages(prev => [...prev, { id: assistantId, role: "assistant", content: "" }]);
 
     try {
+      const controller = new AbortController();
+      abortControllerRef.current = controller;
+
       const { data: { session } } = await supabase.auth.getSession();
       const token = session?.access_token || '';
 
       const res = await fetch("http://localhost:4000/api/chat", {
         method: "POST",
+        signal: controller.signal,
         headers: { 
           "Content-Type": "application/json",
           "Authorization": `Bearer ${token}`
@@ -94,12 +107,20 @@ export default function ChatPage() {
           }
         }
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error(error);
-      setMessages(prev => prev.map(msg => 
-        msg.id === assistantId ? { ...msg, content: msg.content || "Error connecting to CIVIL-LEX RAG service." } : msg
-      ));
+      if (error.name === 'AbortError') {
+        setMessages(prev => prev.map(msg => 
+          msg.id === assistantId ? { ...msg, content: msg.content || "Request cancelled by user." } : msg
+        ));
+      } else {
+        setMessages(prev => prev.map(msg => 
+          msg.id === assistantId ? { ...msg, content: msg.content || "Error connecting to CIVIL-LEX RAG service." } : msg
+        ));
+      }
       setIsTyping(false);
+    } finally {
+      abortControllerRef.current = null;
     }
   };
 
@@ -159,15 +180,14 @@ export default function ChatPage() {
                   </div>
                 </Avatar>
                 <div className="flex flex-col items-start max-w-[80%]">
-                  <div className="px-4 py-3 rounded-2xl bg-accent/40 border border-primary/10 rounded-tl-sm flex flex-col gap-2">
-                    <div className="flex items-center gap-2">
-                      <div className="w-1.5 h-1.5 bg-primary/40 rounded-full animate-bounce [animation-delay:-0.3s]"></div>
-                      <div className="w-1.5 h-1.5 bg-primary/40 rounded-full animate-bounce [animation-delay:-0.15s]"></div>
-                      <div className="w-1.5 h-1.5 bg-primary/40 rounded-full animate-bounce"></div>
-                    </div>
+                  <div className="px-4 py-3 rounded-2xl bg-accent/40 border border-primary/10 rounded-tl-sm flex items-center gap-1.5 h-11">
+                    <div className="w-2 h-2 bg-primary/60 rounded-full animate-bounce [animation-delay:-0.3s]"></div>
+                    <div className="w-2 h-2 bg-primary/60 rounded-full animate-bounce [animation-delay:-0.15s]"></div>
+                    <div className="w-2 h-2 bg-primary/60 rounded-full animate-bounce"></div>
                   </div>
-                  <div className="mt-2 text-xs font-medium text-primary animate-pulse bg-accent px-2 py-1 rounded-md border border-primary/10">
-                    CIVIL-LEX is searching statutory provisions...
+                  <div className="mt-2 text-xs font-medium text-primary flex items-center gap-2 bg-accent/50 px-3 py-1.5 rounded-full border border-primary/10">
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                    Analyzing legal provisions and jurisprudence...
                   </div>
                 </div>
               </div>
@@ -203,13 +223,22 @@ export default function ChatPage() {
                 placeholder="Message CIVIL-LEX..."
                 className="flex-1 border-none bg-transparent shadow-none focus-visible:ring-0 text-foreground px-2 h-12"
               />
-              <Button 
-                onClick={handleSend}
-                disabled={!inputValue.trim() || isTyping}
-                className="mr-2 bg-primary hover:bg-primary/90 text-primary-foreground rounded-lg h-9 w-9 p-0 focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-primary focus-visible:outline-none"
-              >
-                <Send className="w-4 h-4" />
-              </Button>
+              {isTyping ? (
+                <Button 
+                  onClick={handleStop}
+                  className="mr-2 bg-destructive hover:bg-destructive/90 text-destructive-foreground rounded-lg h-9 w-9 p-0 focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-destructive focus-visible:outline-none"
+                >
+                  <Square className="w-4 h-4 fill-current" />
+                </Button>
+              ) : (
+                <Button 
+                  onClick={handleSend}
+                  disabled={!inputValue.trim()}
+                  className="mr-2 bg-primary hover:bg-primary/90 text-primary-foreground rounded-lg h-9 w-9 p-0 focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-primary focus-visible:outline-none"
+                >
+                  <Send className="w-4 h-4" />
+                </Button>
+              )}
             </div>
           </div>
         </div>

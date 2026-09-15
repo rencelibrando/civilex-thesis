@@ -7,6 +7,15 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 from pydantic import BaseModel
 from typing import List, Dict, Optional
+import sys
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+
 from services.document import extract_and_process_pdf
 from services.llm_client import generate_response_stream
 from sentence_transformers import SentenceTransformer
@@ -235,8 +244,12 @@ async def search_documents(request: SearchRequest):
     RAG Search Endpoint using Hybrid Search (RRF) and streaming LLM response.
     """
     try:
+        import logging
+        logging.info(f"Received search request: {request.query}")
+        
         # Run blocking operations in a thread pool
         results = await asyncio.to_thread(embed_and_search, request.query)
+        logging.info(f"Found {len(results)} relevant citations for the query.")
             
         # Construct System Prompt with context
         context_str = ""
@@ -256,6 +269,7 @@ CONTEXT:
         
         import json
         async def sse_generator():
+            logging.info("Starting SSE stream...")
             # 1. Send the citations first
             yield f"data: {json.dumps({'type': 'citations', 'data': results})}\n\n"
             
@@ -264,6 +278,7 @@ CONTEXT:
                 yield f"data: {json.dumps({'type': 'text', 'text': chunk})}\n\n"
                 
             # 3. Signal completion
+            logging.info("Finished streaming response.")
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
         
         return StreamingResponse(

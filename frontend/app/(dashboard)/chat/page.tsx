@@ -20,29 +20,77 @@ export default function ChatPage() {
   ]);
   const [inputValue, setInputValue] = useState("");
   const [isTyping, setIsTyping] = useState(false);
+  const [currentCitations, setCurrentCitations] = useState<any[]>([]);
 
-  const handleSend = () => {
-    if (!inputValue.trim()) return;
+  const handleSend = async () => {
+    if (!inputValue.trim() || isTyping) return;
     
-    // Add user message
-    const newUserMsg = { id: Date.now(), role: "user", content: inputValue };
-    setMessages((prev) => [...prev, newUserMsg]);
+    const userText = inputValue;
+    const newUserMsg = { id: Date.now(), role: "user", content: userText };
+    const currentHistory = [...messages, newUserMsg];
+    
+    setMessages(currentHistory);
     setInputValue("");
-    
-    // Simulate AI response
     setIsTyping(true);
-    setTimeout(() => {
+    setCurrentCitations([]);
+    
+    const assistantId = Date.now() + 1;
+    setMessages(prev => [...prev, { id: assistantId, role: "assistant", content: "" }]);
+
+    try {
+      const res = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ 
+          query: userText, 
+          history: currentHistory.slice(0, -1).map(m => ({ role: m.role, content: m.content })) 
+        })
+      });
+
+      if (!res.ok) throw new Error("Failed to fetch");
+      if (!res.body) throw new Error("No response body");
+
       setIsTyping(false);
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: Date.now(),
-          role: "assistant",
-          content: "Based on the Civil Code of the Philippines, an annulment of marriage (Article 45, Family Code) may be granted on grounds such as lack of parental consent, psychological incapacity, fraud, force, or physical incapability. Would you like me to elaborate on a specific ground?",
-          reasoning: "Analyzed query against Title I of the Family Code. Identified Article 45 as the primary statutory basis for annulment grounds."
+      
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let done = false;
+      let buffer = "";
+
+      while (!done) {
+        const { value, done: readerDone } = await reader.read();
+        done = readerDone;
+        if (value) {
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n\n');
+          buffer = lines.pop() || "";
+          
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              const dataStr = line.slice(6);
+              try {
+                const data = JSON.parse(dataStr);
+                if (data.type === 'citations') {
+                  setCurrentCitations(data.data);
+                } else if (data.type === 'text') {
+                  setMessages(prev => prev.map(msg => 
+                    msg.id === assistantId ? { ...msg, content: msg.content + data.text } : msg
+                  ));
+                }
+              } catch (e) {
+                console.error("Failed to parse SSE JSON", e, dataStr);
+              }
+            }
+          }
         }
-      ]);
-    }, 1000);
+      }
+    } catch (error) {
+      console.error(error);
+      setMessages(prev => prev.map(msg => 
+        msg.id === assistantId ? { ...msg, content: msg.content || "Error connecting to CIVIL-LEX RAG service." } : msg
+      ));
+      setIsTyping(false);
+    }
   };
 
   const handlePromptClick = (prompt: string) => {
@@ -164,13 +212,22 @@ export default function ChatPage() {
           <h3 className="font-semibold text-sm text-foreground">Sources & Citations</h3>
         </div>
         <ScrollArea className="flex-1 p-4">
-          {messages.length > 1 ? (
+          {currentCitations.length > 0 ? (
             <div className="space-y-4">
-              <div className="p-3 bg-accent/30 rounded-xl border border-primary/10">
-                <h4 className="text-xs font-bold text-primary mb-1">Article 45, Family Code</h4>
-                <p className="text-xs text-muted-foreground">A marriage may be annulled for any of the following causes, existing at the time of the marriage: (1) That the party in whose behalf it is sought to have the marriage annulled was eighteen years of age or over but below twenty-one...</p>
-              </div>
+              {currentCitations.map((cit, idx) => (
+                <div key={idx} className="p-3 bg-accent/30 rounded-xl border border-primary/10">
+                  <h4 className="text-xs font-bold text-primary mb-1">
+                    {cit.parent_type === 'civil_code' ? 'Civil Code Article' : cit.parent_type.toUpperCase()} - {cit.parent_id}
+                  </h4>
+                  <p className="text-xs text-muted-foreground line-clamp-5">{cit.content}</p>
+                </div>
+              ))}
             </div>
+          ) : messages.length > 1 && !isTyping ? (
+             <div className="h-full flex flex-col items-center justify-center text-center text-muted-foreground space-y-2 mt-20">
+               <BookOpen className="w-8 h-8 opacity-20" />
+               <p className="text-sm">No specific citations were found for this query.</p>
+             </div>
           ) : (
             <div className="h-full flex flex-col items-center justify-center text-center text-muted-foreground space-y-2 mt-20">
               <BookOpen className="w-8 h-8 opacity-20" />

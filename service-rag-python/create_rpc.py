@@ -14,6 +14,8 @@ def create_hybrid_search_rpc():
     conn.autocommit = True
     
     sql = """
+    DROP FUNCTION IF EXISTS match_documents;
+    
     CREATE OR REPLACE FUNCTION match_documents(
       query_embedding vector(768),
       query_text text,
@@ -23,7 +25,7 @@ def create_hybrid_search_rpc():
       rrf_k int DEFAULT 50
     )
     RETURNS TABLE (
-      chunk_id uuid,
+      chunk_id text,
       parent_type text,
       parent_id text,
       content text,

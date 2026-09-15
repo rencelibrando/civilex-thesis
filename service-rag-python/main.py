@@ -254,8 +254,20 @@ CONTEXT:
         # 4. Stream response from LLM (LM Studio -> Gemini fallback)
         history_dicts = [{"role": msg.role, "content": msg.content} for msg in request.history]
         
+        import json
+        async def sse_generator():
+            # 1. Send the citations first
+            yield f"data: {json.dumps({'type': 'citations', 'data': results})}\n\n"
+            
+            # 2. Stream the AI text
+            async for chunk in generate_response_stream(system_prompt, request.query, history_dicts):
+                yield f"data: {json.dumps({'type': 'text', 'text': chunk})}\n\n"
+                
+            # 3. Signal completion
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+        
         return StreamingResponse(
-            generate_response_stream(system_prompt, request.query, history_dicts),
+            sse_generator(),
             media_type="text/event-stream"
         )
         

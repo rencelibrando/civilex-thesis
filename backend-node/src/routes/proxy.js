@@ -12,7 +12,7 @@ export const setupProxies = (app) => {
       target: ragServiceUrl,
       changeOrigin: true,
       pathRewrite: {
-        '^/api/chat': '/search',
+        '^/': '/search',
       },
       on: {
         proxyReq: (proxyReq, req, res) => {

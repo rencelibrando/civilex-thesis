@@ -1,16 +1,24 @@
 import os
 from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from pydantic import BaseModel
+from typing import List, Dict, Optional
 from services.document import extract_and_process_pdf
+from services.llm_client import generate_response_stream
+from sentence_transformers import SentenceTransformer
 
 # Load environment variables
 load_dotenv()
 
 app = FastAPI(title="CIVIL-LEX RAG Service API")
+
+# Initialize embedding model (global so it doesn't reload per request)
+print("Loading embedding model...")
+embedder = SentenceTransformer(os.getenv("EMBEDDING_MODEL_NAME", "sentence-transformers/stsb-xlm-r-multilingual"))
 
 # Setup CORS
 app.add_middleware(
@@ -194,6 +202,68 @@ class ExtractRequest(BaseModel):
 def extract_document(request: ExtractRequest, background_tasks: BackgroundTasks):
     background_tasks.add_task(extract_and_process_pdf, request.file_url, request.document_id)
     return {"status": "processing"}
+
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+
+class SearchRequest(BaseModel):
+    query: str
+    history: List[ChatMessage] = []
+
+import asyncio
+
+def embed_and_search(query: str):
+    conn = get_db_connection()
+    try:
+        # Embed the query (blocking)
+        q_emb = embedder.encode(query, normalize_embeddings=True).tolist()
+        
+        # Hybrid Search (blocking)
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT parent_type, parent_id, content, similarity
+                FROM match_documents(%s::vector, %s, 5, 1.0, 1.0, 50)
+            """, (q_emb, query))
+            return cur.fetchall()
+    finally:
+        conn.close()
+
+@app.post("/search")
+async def search_documents(request: SearchRequest):
+    """
+    RAG Search Endpoint using Hybrid Search (RRF) and streaming LLM response.
+    """
+    try:
+        # Run blocking operations in a thread pool
+        results = await asyncio.to_thread(embed_and_search, request.query)
+            
+        # Construct System Prompt with context
+        context_str = ""
+        for idx, row in enumerate(results, 1):
+            context_str += f"\n[{idx}] SOURCE: {row['parent_type'].upper()} (ID: {row['parent_id']})\n"
+            context_str += f"CONTENT: {row['content']}\n"
+            
+        system_prompt = f"""You are CIVIL-LEX, a highly knowledgeable Philippine Legal Assistant.
+Use the following retrieved context to answer the user's query. If you don't know the answer based on the context, say so. Do not invent legal facts.
+
+CONTEXT:
+{context_str}
+"""
+        
+        # 4. Stream response from LLM (LM Studio -> Gemini fallback)
+        history_dicts = [{"role": msg.role, "content": msg.content} for msg in request.history]
+        
+        return StreamingResponse(
+            generate_response_stream(system_prompt, request.query, history_dicts),
+            media_type="text/event-stream"
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in search endpoint: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn

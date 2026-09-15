@@ -56,6 +56,38 @@ sequenceDiagram
 
 ---
 
+## 2.1 Physical Network Deployment Topology
+
+Because the system relies on specialized hardware (a dedicated LLM laptop) and local hosting (an Ubuntu laptop for database and API logic), the architecture uses secure tunneling and SD-WAN networks to connect cloud and local services.
+
+### Components & Connectivity:
+1. **Frontend (Vercel)**: Hosted in the cloud. Needs a public internet URL to communicate with the backend.
+2. **Node.js Gateway & Python RAG (Ubuntu Laptop)**: Hosted locally on the same machine.
+   - **Vercel -> Node.js Connection**: Uses **Cloudflare Tunnels** (or Ngrok) to securely expose the local Node.js port (e.g., 3000) to the public internet (`https://api.yourdomain.com`). Vercel environment variables point to this tunnel URL.
+   - **Node.js -> Python RAG**: Communicates securely over internal `localhost:8000`.
+3. **LLM Inference (Remote Laptop)**: Hosted on a separate dedicated machine.
+   - **Python RAG -> LM Studio Connection**: Uses **ZeroTier** (SD-WAN). ZeroTier places both laptops on a secure, virtual private network. The Python service connects to LM Studio via the ZeroTier private IP (e.g., `10.x.x.x:1234`), keeping the LLM completely inaccessible to the public internet.
+
+```mermaid
+graph TD
+    User((User)) -->|Public Internet| Vercel[Vercel Frontend]
+    Vercel -->|Public Internet / HTTPS| Tunnel[Cloudflare Tunnel]
+    
+    subgraph Ubuntu Laptop
+        Tunnel --> Node[Node.js Gateway :3000]
+        Node -->|localhost| Python[Python RAG API :8000]
+        Python -->|localhost| Postgres[(Supabase / pgvector)]
+    end
+    
+    Python -->|ZeroTier Private Network| LLM Laptop
+    
+    subgraph LLM Laptop
+        LLM Laptop[LM Studio :1234] --> GPU[Local GPU Inference]
+    end
+```
+
+---
+
 ## 3. Database & Dataset Schema
 
 To support both the Hybrid RAG pipeline and the complex Next.js UI requirements (Table of Contents, Jurisprudence popups, Document uploads, and Chat History), the database uses a fully normalized relational schema.

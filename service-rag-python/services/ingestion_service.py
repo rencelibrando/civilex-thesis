@@ -436,15 +436,33 @@ class Verifier:
                     sample_query = "What are the requisites of marriage under Philippine Civil Code?"
                     q_emb = model.encode(sample_query, normalize_embeddings=True).tolist()
                     
+                    print(f"Query: '{sample_query}'")
+                    
+                    # Query for top 3 articles
                     cur.execute("""
                         SELECT chunk_id, parent_type, parent_id, left(content, 120), 1 - (embedding <=> %s::vector) AS similarity
                         FROM document_chunks
+                        WHERE parent_type = 'article'
                         ORDER BY embedding <=> %s::vector
                         LIMIT 3;
                     """, (q_emb, q_emb))
-                    results = cur.fetchall()
-                    print(f"Query: '{sample_query}'")
-                    print("Top 3 retrieved vector matches:")
-                    for idx, row in enumerate(results, 1):
+                    article_results = cur.fetchall()
+                    
+                    print("\nTop 3 retrieved ARTICLES matches:")
+                    for idx, row in enumerate(article_results, 1):
+                        print(f"  {idx}. [{row[1].upper()} {row[2]}] Similarity: {row[4]:.4f} | Content: {row[3]}...")
+                        
+                    # Query for top 3 cases
+                    cur.execute("""
+                        SELECT chunk_id, parent_type, parent_id, left(content, 120), 1 - (embedding <=> %s::vector) AS similarity
+                        FROM document_chunks
+                        WHERE parent_type = 'case'
+                        ORDER BY embedding <=> %s::vector
+                        LIMIT 3;
+                    """, (q_emb, q_emb))
+                    case_results = cur.fetchall()
+                    
+                    print("\nTop 3 retrieved JURISPRUDENCE CASES matches:")
+                    for idx, row in enumerate(case_results, 1):
                         print(f"  {idx}. [{row[1].upper()} {row[2]}] Similarity: {row[4]:.4f} | Content: {row[3]}...")
             print("\n✓ Verification Complete.")

@@ -11,11 +11,11 @@ CIVIL-LEX is a bilingual (English/Tagalog) legal hybrid Retrieval-Augmented Gene
 *   **Database:** Supabase (PostgreSQL 15+) via Local Docker.
     *   *Extensions:* `pgvector` (Vector similarity). *Note: Full-Text Search uses `tsvector` which is built natively into Postgres.*
 *   **RAG Microservice:** Python (FastAPI). Hosted locally on Ubuntu.
-    *   *Document Extraction:* `PyMuPDF` (for fast digital text) + `Tesseract OCR` (fallback for scanned images). *Note: PaddleOCR can be used, but Tesseract is much lighter for your Ryzen 5 hardware.*
+    *   *Document Extraction:* `PyMuPDF` (for fast digital text) + `Tesseract OCR` (fallback for scanned images). 
     *   *Embeddings:* XML-RoBERTa Multilingual v1.
     *   *Vector Search:* Hybrid Search (Postgres Full-Text Search `tsvector` + `pgvector` HNSW) fused via Reciprocal Rank Fusion (RRF).
 *   **LLM Inference (Primary):** Gemma 4 (E4B) hosted via LM Studio on a secondary laptop, exposed via Cloudflare Tunnel.
-*   **LLM Inference (Fallback):** Groq API or Gemini Flash API (Cloud-based, for presentation reliability).
+*   **LLM Inference (Fallback):** Gemini Flash API (Cloud-based, for presentation reliability).
 
 ---
 
@@ -36,7 +36,7 @@ sequenceDiagram
     DB-->>Client: Returns File URL
     Client->>Node: POST /api/documents {file_url}
     Node->>FastAPI: POST /extract {file_url} (Background Task)
-    FastAPI->>FastAPI: PyMuPDF / OCR Extraction
+    FastAPI->>FastAPI: PyMuPDF / teseract OCR Extraction
     FastAPI->>FastAPI: Chunk Document (Sliding Window)
     FastAPI->>FastAPI: Embed Chunks (XML-RoBERTa)
     FastAPI->>DB: Insert into document_chunks

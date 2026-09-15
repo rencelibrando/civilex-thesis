@@ -5,6 +5,7 @@ import { Send, Paperclip, ChevronRight, Scale, BookOpen } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { supabase } from "@/lib/supabase";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
@@ -38,9 +39,15 @@ export default function ChatPage() {
     setMessages(prev => [...prev, { id: assistantId, role: "assistant", content: "" }]);
 
     try {
-      const res = await fetch("/api/chat", {
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = session?.access_token || '';
+
+      const res = await fetch("http://localhost:4000/api/chat", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { 
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`
+        },
         body: JSON.stringify({ 
           query: userText, 
           history: currentHistory.slice(0, -1).map(m => ({ role: m.role, content: m.content })) 

@@ -76,7 +76,7 @@ async def generate_response_stream(system_prompt: str, user_query: str, history:
         }
     }
     
-    gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:streamGenerateContent?alt=sse&key={GEMINI_API_KEY}"
+    gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse&key={GEMINI_API_KEY}"
     
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:

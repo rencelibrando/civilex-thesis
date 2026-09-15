@@ -228,13 +228,33 @@ def embed_and_search(query: str):
         # Embed the query (blocking)
         q_emb = embedder.encode(query, normalize_embeddings=True).tolist()
         
-        # Hybrid Search (blocking)
+        # Two-query approach: separate article and case retrieval
+        # to guarantee article statutes always appear (despite 99:1 data imbalance)
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            # 1. Top article matches (Civil Code statutes)
             cur.execute("""
-                SELECT parent_type, parent_id, content, similarity
-                FROM match_documents(%s::vector, %s, 5, 1.0, 1.0, 50)
-            """, (q_emb, query))
-            return cur.fetchall()
+                SELECT parent_type, parent_id, content,
+                       1 - (embedding <=> %s::vector) AS similarity
+                FROM document_chunks
+                WHERE parent_type = 'article'
+                ORDER BY embedding <=> %s::vector
+                LIMIT 5;
+            """, (q_emb, q_emb))
+            articles = cur.fetchall()
+            
+            # 2. Top case matches (jurisprudence)
+            cur.execute("""
+                SELECT parent_type, parent_id, content,
+                       1 - (embedding <=> %s::vector) AS similarity
+                FROM document_chunks
+                WHERE parent_type = 'case'
+                ORDER BY embedding <=> %s::vector
+                LIMIT 5;
+            """, (q_emb, q_emb))
+            cases = cur.fetchall()
+            
+            # Merge: articles first so statutory provisions lead the context
+            return articles + cases
     finally:
         conn.close()
 
@@ -254,11 +274,19 @@ async def search_documents(request: SearchRequest):
         # Construct System Prompt with context
         context_str = ""
         for idx, row in enumerate(results, 1):
-            context_str += f"\n[{idx}] SOURCE: {row['parent_type'].upper()} (ID: {row['parent_id']})\n"
+            ptype = row['parent_type']
+            label = "CIVIL CODE ARTICLE" if ptype == "article" else "JURISPRUDENCE CASE"
+            context_str += f"\n[{idx}] SOURCE TYPE: {label} (ID: {row['parent_id']})\n"
             context_str += f"CONTENT: {row['content']}\n"
             
         system_prompt = f"""You are CIVIL-LEX, a highly knowledgeable Philippine Legal Assistant.
-Use the following retrieved context to answer the user's query. If you don't know the answer based on the context, say so. Do not invent legal facts.
+Use the following retrieved context to answer the user's query.
+
+IMPORTANT INSTRUCTIONS:
+- Always cite the specific Civil Code Article number when referencing statutory provisions.
+- When discussing jurisprudence, cite the case name and GR number.
+- Present the statutory basis FIRST, then support with relevant jurisprudence.
+- If you don't know the answer based on the context, say so. Do not invent legal facts.
 
 CONTEXT:
 {context_str}

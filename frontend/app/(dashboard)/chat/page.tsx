@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useRef } from "react";
-import { Send, Paperclip, ChevronRight, Scale, BookOpen, Square, Loader2 } from "lucide-react";
+import { useState, useRef, useEffect } from "react";
+import { Send, Paperclip, ChevronRight, Scale, BookOpen, Square, Loader2, PlusCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -23,6 +23,24 @@ export default function ChatPage() {
   const [isTyping, setIsTyping] = useState(false);
   const [currentCitations, setCurrentCitations] = useState<any[]>([]);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, isTyping]);
+
+  const handleNewChat = () => {
+    if (isTyping) handleStop();
+    setMessages([
+      {
+        id: 1,
+        role: "assistant",
+        content: "Hello. I am CIVIL-LEX, your AI Legal Assistant. How can I help you with Philippine Civil Law today?",
+      }
+    ]);
+    setCurrentCitations([]);
+    setInputValue("");
+  };
 
   const handleStop = () => {
     if (abortControllerRef.current) {
@@ -131,7 +149,22 @@ export default function ChatPage() {
   return (
     <div className="flex h-full gap-6 animate-fade-in">
       {/* Main Chat Area */}
-      <div className="flex-1 flex flex-col bg-card rounded-2xl border border-border shadow-sm overflow-hidden">
+      <div className="flex-1 flex flex-col bg-card rounded-2xl border border-border shadow-sm overflow-hidden relative">
+        
+        {/* Header with New Chat Button */}
+        {messages.length > 1 && (
+          <div className="absolute top-4 right-4 z-10 animate-fade-in">
+            <Button 
+              variant="outline" 
+              size="sm" 
+              onClick={handleNewChat}
+              className="bg-background/80 backdrop-blur-sm border-primary/20 hover:bg-accent hover:text-primary gap-2 text-xs h-8 rounded-full shadow-sm"
+            >
+              <PlusCircle className="w-3.5 h-3.5" />
+              New Chat
+            </Button>
+          </div>
+        )}
         {/* Chat Messages */}
         <ScrollArea className="flex-1 p-6">
           <div className="flex flex-col gap-6 max-w-3xl mx-auto">
@@ -192,6 +225,8 @@ export default function ChatPage() {
                 </div>
               </div>
             )}
+            
+            <div ref={messagesEndRef} className="h-4" />
           </div>
         </ScrollArea>
 

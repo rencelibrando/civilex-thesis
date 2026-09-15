@@ -54,7 +54,10 @@ export default function ChatPage() {
         })
       });
 
-      if (!res.ok) throw new Error("Failed to fetch");
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(`Failed to fetch: ${res.status} ${res.statusText} - ${errText}`);
+      }
       if (!res.body) throw new Error("No response body");
 
       setIsTyping(false);

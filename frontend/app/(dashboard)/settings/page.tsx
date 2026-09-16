@@ -176,8 +176,9 @@ export default function SettingsPage() {
   ] as const;
 
   return (
-    <div className="max-w-4xl mx-auto space-y-6 animate-fade-in">
-      <div>
+    <div className="h-full overflow-y-auto custom-scrollbar">
+      <div className="max-w-4xl mx-auto space-y-6 animate-fade-in pb-8">
+        <div>
         <h1 className="text-2xl font-bold text-foreground">Settings</h1>
         <p className="text-muted-foreground text-sm mt-1">Manage your account settings and application preferences.</p>
       </div>
@@ -380,6 +381,7 @@ export default function SettingsPage() {
           </Card>
         </TabsContent>
       </Tabs>
+    </div>
     </div>
   );
 }

@@ -1,9 +1,15 @@
 import os
+import io
 import fitz # PyMuPDF
 import pytesseract
 from PIL import Image
 import httpx
 import psycopg2
+
+try:
+    import docx
+except ImportError:
+    docx = None
 
 try:
     from sentence_transformers import SentenceTransformer
@@ -43,35 +49,63 @@ def update_status(document_id: str, status: str):
     except Exception as e:
         print(f"Failed to update status to {status} for {document_id}: {e}")
 
-def extract_and_process_pdf(file_url: str, document_id: str):
-    print(f"Starting extraction for document {document_id} from {file_url}")
+def extract_and_process_document(file_url: str, document_id: str, filename: str):
+    print(f"Starting extraction for document {document_id} ({filename}) from {file_url}")
     
     try:
         response = httpx.get(file_url)
         response.raise_for_status()
-        pdf_bytes = response.content
+        file_bytes = response.content
     except Exception as e:
         print(f"Failed to download {file_url}: {e}")
-        update_status(document_id, 'rejected_unrelated')
+        update_status(document_id, 'error')
         return
 
     text = ""
+    ext = filename.lower().split('.')[-1] if '.' in filename else ''
+    
     try:
-        with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
-            for page in doc:
-                text += page.get_text()
-            
-            # Fallback to Tesseract OCR if text is very short (image-based PDF)
-            if len(text.strip()) < 100:
-                print("Text too short, attempting OCR fallback...")
-                text = ""
+        if ext == 'pdf':
+            with fitz.open(stream=file_bytes, filetype="pdf") as doc:
                 for page in doc:
-                    pix = page.get_pixmap(dpi=150)
-                    img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-                    text += pytesseract.image_to_string(img)
+                    text += page.get_text()
+                
+                # Fallback to Tesseract OCR if text is very short (image-based PDF)
+                if len(text.strip()) < 100:
+                    print("Text too short, attempting OCR fallback...")
+                    text = ""
+                    for page in doc:
+                        pix = page.get_pixmap(dpi=150)
+                        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                        text += pytesseract.image_to_string(img)
+        elif ext in ['png', 'jpg', 'jpeg']:
+            print("Extracting text from image using OCR...")
+            img = Image.open(io.BytesIO(file_bytes))
+            if img.mode == 'RGBA':
+                # Convert transparent background to white
+                background = Image.new("RGB", img.size, (255, 255, 255))
+                background.paste(img, mask=img.split()[3])
+                img = background
+            else:
+                img = img.convert('RGB')
+            text = pytesseract.image_to_string(img)
+        elif ext in ['doc', 'docx']:
+            print("Extracting text from word document...")
+            if docx:
+                doc = docx.Document(io.BytesIO(file_bytes))
+                for para in doc.paragraphs:
+                    text += para.text + "\n"
+            else:
+                print("python-docx not installed, cannot extract docx")
+        elif ext == 'txt':
+            print("Extracting text from plain text file...")
+            text = file_bytes.decode('utf-8', errors='ignore')
+        else:
+            print(f"Unsupported file extension: {ext}")
+            
     except Exception as e:
         print(f"Failed to extract text: {e}")
-        update_status(document_id, 'rejected_unrelated')
+        update_status(document_id, 'error')
         return
 
     if len(text.strip()) == 0:
@@ -83,8 +117,8 @@ def extract_and_process_pdf(file_url: str, document_id: str):
     model = get_model()
     
     if not model:
-        print("SentenceTransformer model not available. Marking rejected.")
-        update_status(document_id, 'rejected_unrelated')
+        print("SentenceTransformer model not available. Marking as error.")
+        update_status(document_id, 'error')
         return
 
     try:
@@ -111,7 +145,7 @@ def extract_and_process_pdf(file_url: str, document_id: str):
             print(f"Successfully processed and embedded {total_chunks} chunks for {document_id}")
     except Exception as e:
         print(f"Database error during extraction: {e}")
-        update_status(document_id, 'rejected_unrelated')
+        update_status(document_id, 'error')
     finally:
         if 'conn' in locals() and conn:
             conn.close()

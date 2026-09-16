@@ -24,7 +24,9 @@ const ALLOWED_MIME_TYPES = [
   'application/pdf',
   'application/msword',
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  'text/plain'
+  'text/plain',
+  'image/png',
+  'image/jpeg'
 ];
 
 const storage = multer.memoryStorage();
@@ -116,7 +118,7 @@ router.post('/upload', requireAuth, upload.single('file'), async (req, res) => {
     globalFetch('http://localhost:8000/extract', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ file_url: fileUrl, document_id: docId })
+      body: JSON.stringify({ file_url: fileUrl, document_id: docId, filename: req.file.originalname })
     }).catch(err => console.error("Error pinging python service:", err));
 
     res.status(201).json({ id: docId, file_url: fileUrl, status: 'uploading' });
@@ -126,6 +128,58 @@ router.post('/upload', requireAuth, upload.single('file'), async (req, res) => {
     if (err.message && err.message.startsWith('Invalid file type')) {
       return res.status(400).json({ error: err.message });
     }
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Delete a document
+router.delete('/:id', requireAuth, async (req, res) => {
+  try {
+    const docId = req.params.id;
+    const userId = req.user?.id;
+
+    if (!userId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    // Get the document to find the filename/storage path
+    const { data: doc, error: fetchError } = await req.supabase
+      .from('user_documents')
+      .select('*')
+      .eq('id', docId)
+      .eq('user_id', userId)
+      .single();
+
+    if (fetchError || !doc) {
+      return res.status(404).json({ error: "Document not found or unauthorized" });
+    }
+
+    // Extract file extension and storage path
+    const ext = path.extname(doc.filename);
+    const storagePath = `${userId}/${docId}${ext}`;
+
+    // Delete from Supabase Storage
+    const { error: storageError } = await supabaseStorage.storage
+      .from('documents')
+      .remove([storagePath]);
+
+    if (storageError) {
+      console.error("Storage delete error:", storageError);
+      // We continue to delete from DB even if storage fails just in case
+    }
+
+    // Delete from database
+    const { error: dbError } = await req.supabase
+      .from('user_documents')
+      .delete()
+      .eq('id', docId)
+      .eq('user_id', userId);
+
+    if (dbError) throw dbError;
+
+    res.status(200).json({ message: 'Document deleted successfully' });
+  } catch (err) {
+    console.error("Error deleting document:", err);
     res.status(500).json({ error: err.message });
   }
 });

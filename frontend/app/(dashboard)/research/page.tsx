@@ -1,14 +1,18 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { Send, Download, Maximize2, ShieldCheck, File, Upload, Loader2, FileText, CheckCircle2 } from "lucide-react";
+import { Send, Download, Maximize2, ShieldCheck, File, Upload, Loader2, FileText, CheckCircle2, Trash2, BookOpen } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
+import { Accordion, AccordionItem, AccordionTrigger, AccordionContent } from "@/components/ui/accordion";
 import { userProfile } from "@/lib/mock-data";
 import { supabase } from "@/lib/supabase";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import mammoth from "mammoth";
 
 type DocumentStatus = 'uploading' | 'extracting' | 'completed' | 'rejected_unrelated' | 'error';
 
@@ -20,6 +24,79 @@ interface UserDocument {
   progress?: number;
   created_at: string;
 }
+
+// ---------------------------------------------------------------------------
+// Markdown renderer for assistant messages
+// ---------------------------------------------------------------------------
+function AssistantMarkdown({ content }: { content: string }) {
+  return (
+    <div className="prose prose-sm dark:prose-invert max-w-none
+      prose-p:my-1.5 prose-p:leading-relaxed
+      prose-headings:text-foreground prose-headings:font-semibold
+      prose-h1:text-base prose-h2:text-sm prose-h3:text-sm
+      prose-strong:text-foreground prose-strong:font-semibold
+      prose-em:text-muted-foreground
+      prose-ul:my-1.5 prose-ul:pl-4 prose-li:my-0.5
+      prose-ol:my-1.5 prose-ol:pl-4
+      prose-blockquote:border-l-2 prose-blockquote:border-primary/50
+        prose-blockquote:pl-3 prose-blockquote:italic
+        prose-blockquote:text-muted-foreground prose-blockquote:my-2
+      prose-code:bg-accent/60 prose-code:px-1 prose-code:py-0.5
+        prose-code:rounded prose-code:text-xs prose-code:font-mono
+      prose-pre:bg-accent/60 prose-pre:rounded-lg prose-pre:text-xs
+      prose-hr:border-border prose-hr:my-2
+      text-foreground text-sm
+    ">
+      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+        {content}
+      </ReactMarkdown>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// DOCX Viewer Component
+// ---------------------------------------------------------------------------
+const DocxViewer = ({ fileUrl }: { fileUrl: string }) => {
+  const [html, setHtml] = useState<string>('');
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let isMounted = true;
+    const fetchAndRender = async () => {
+      try {
+        setLoading(true);
+        const response = await fetch(fileUrl);
+        const arrayBuffer = await response.arrayBuffer();
+        const result = await mammoth.convertToHtml({ arrayBuffer });
+        if (isMounted) setHtml(result.value);
+      } catch (err) {
+        console.error("Error rendering docx:", err);
+        if (isMounted) setHtml('<p class="text-red-500">Error rendering document preview.</p>');
+      } finally {
+        if (isMounted) setLoading(false);
+      }
+    };
+    if (fileUrl) fetchAndRender();
+    return () => { isMounted = false; };
+  }, [fileUrl]);
+
+  if (loading) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full w-full bg-card rounded-xl shadow-sm border border-border">
+        <Loader2 className="w-8 h-8 animate-spin text-primary" />
+        <p className="mt-4 text-sm text-muted-foreground">Rendering document preview...</p>
+      </div>
+    );
+  }
+
+  return (
+    <div 
+      className="w-full h-full bg-white text-black p-8 overflow-y-auto rounded-xl prose prose-sm max-w-none shadow-sm border border-border"
+      dangerouslySetInnerHTML={{ __html: html }}
+    />
+  );
+};
 
 const CircularProgress = ({ progress = 0 }: { progress?: number }) => {
   const radius = 6;
@@ -57,17 +134,101 @@ const CircularProgress = ({ progress = 0 }: { progress?: number }) => {
 
 export default function ResearchPage() {
   const [documents, setDocuments] = useState<UserDocument[]>([]);
-  const [activeDocument, setActiveDocument] = useState<UserDocument | null>(null);
+  const [activeDocument, setActiveDocument] = useState<any>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [isLoadingDocs, setIsLoadingDocs] = useState(true);
-  
-  const [messages, setMessages] = useState([
+
+  const [sessionIds, setSessionIds] = useState<Record<string, string>>({});
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [pendingDocId, setPendingDocId] = useState<string | null>(null);
+  const [chats, setChats] = useState<Record<string, { id: number, role: string, content: string, citations?: any[] }[]>>({});
+
+  // Load session from URL
+  useEffect(() => {
+    const loadSessionFromUrl = async () => {
+      if (typeof window === 'undefined') return;
+      const params = new URLSearchParams(window.location.search);
+      const sessionId = params.get('session');
+      if (!sessionId) return;
+      
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const token = session?.access_token || '';
+
+        const res = await fetch(`http://localhost:4000/api/sessions/${sessionId}`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (res.ok) {
+          const sessionData = await res.json();
+          if (sessionData.document_id) {
+            setActiveSessionId(sessionId);
+            setSessionIds(prev => ({ ...prev, [sessionData.document_id]: sessionId }));
+            setPendingDocId(sessionData.document_id);
+            
+            // fetch messages
+            const msgRes = await fetch(`http://localhost:4000/api/sessions/${sessionId}/messages`, {
+              headers: { 'Authorization': `Bearer ${token}` }
+            });
+            if (msgRes.ok) {
+              const messages = await msgRes.json();
+              if (messages.length > 0) {
+                 setChats(prev => ({ ...prev, [sessionData.document_id]: messages.map((m: any) => {
+                    let parsedCitations = [];
+                    try {
+                      if (m.citations) {
+                        parsedCitations = typeof m.citations === 'string' ? JSON.parse(m.citations) : m.citations;
+                      }
+                    } catch (e) {}
+                    return {
+                      id: m.id,
+                      role: m.role,
+                      content: m.content,
+                      citations: parsedCitations
+                    };
+                 })}));
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.error("Failed to load session:", err);
+      }
+    };
+    loadSessionFromUrl();
+  }, []);
+
+  useEffect(() => {
+    if (documents.length > 0 && pendingDocId) {
+      const doc = documents.find(d => d.id === pendingDocId);
+      if (doc) {
+        setActiveDocument(doc);
+        setPendingDocId(null);
+      }
+    }
+  }, [documents, pendingDocId]);
+
+  const defaultMessages: { id: number, role: string, content: string, citations?: any[] }[] = [
     {
       id: 1,
       role: "assistant",
       content: "Hello! I am your CIVIL-LEX AI assistant. You can upload legal documents for analysis or ask me questions about Philippine Civil Law.",
     }
-  ]);
+  ];
+
+
+  const messages = activeDocument && chats[activeDocument.id] 
+    ? chats[activeDocument.id] 
+    : defaultMessages;
+
+  const setMessages = (updater: any) => {
+    if (!activeDocument) return;
+    setChats(prev => {
+      const current = prev[activeDocument.id] || defaultMessages;
+      const next = typeof updater === 'function' ? updater(current) : updater;
+      return { ...prev, [activeDocument.id]: next };
+    });
+  };
+
   const [inputValue, setInputValue] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -112,20 +273,62 @@ export default function ResearchPage() {
     }
   };
 
+  const handleDeleteDocument = async (e: React.MouseEvent, docId: string) => {
+    e.stopPropagation();
+    if (!window.confirm("Are you sure you want to delete this document?")) return;
+    
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = session?.access_token || '';
+
+      const res = await fetch(`http://localhost:4000/api/documents/${docId}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+
+      if (res.ok) {
+        setDocuments(prev => prev.filter(d => d.id !== docId));
+        if (activeDocument?.id === docId) {
+          setActiveDocument(null);
+        }
+      } else {
+        console.error("Failed to delete document");
+        alert("Failed to delete document.");
+      }
+    } catch (err) {
+      console.error("Delete error:", err);
+      alert("Error deleting document.");
+    }
+  };
+
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
     // Client-side file type validation
-    const allowedTypes = ['application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'text/plain'];
+    const allowedTypes = [
+      'application/pdf', 
+      'application/msword', 
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 
+      'text/plain',
+      'image/png',
+      'image/jpeg',
+      'image/jpg'
+    ];
     if (!allowedTypes.includes(file.type)) {
-      alert('Invalid file type. Allowed: PDF, DOC, DOCX, TXT');
+      alert('Invalid file type. Allowed: PDF, DOC, DOCX, TXT, PNG, JPG');
       return;
     }
 
     setIsUploading(true);
     const formData = new FormData();
     formData.append("file", file);
+
+    const controller = new AbortController();
+    // 60 seconds timeout
+    const timeoutId = setTimeout(() => controller.abort(), 60000);
 
     try {
       const { data: { session } } = await supabase.auth.getSession();
@@ -137,16 +340,26 @@ export default function ResearchPage() {
           'Authorization': `Bearer ${token}`
         },
         body: formData,
+        signal: controller.signal
       });
+      
+      clearTimeout(timeoutId);
 
       if (res.ok) {
         await fetchDocuments();
       } else {
         const errData = await res.json().catch(() => ({}));
         console.error("Upload failed:", errData.error || res.statusText);
+        alert(`Upload failed: ${errData.error || res.statusText}`);
       }
-    } catch (err) {
-      console.error("Upload error:", err);
+    } catch (err: any) {
+      clearTimeout(timeoutId);
+      if (err.name === 'AbortError') {
+        alert("Upload timed out after 60 seconds. Please try again.");
+      } else {
+        console.error("Upload error:", err);
+        alert("Upload error. Please check your connection.");
+      }
     } finally {
       setIsUploading(false);
       if (fileInputRef.current) {
@@ -155,21 +368,114 @@ export default function ResearchPage() {
     }
   };
 
-  const handleSend = () => {
+  const handleSend = async () => {
     if (!inputValue.trim()) return;
-    setMessages((prev) => [...prev, { id: Date.now(), role: "user", content: inputValue }]);
+    const userText = inputValue;
     setInputValue("");
     
-    setTimeout(() => {
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: Date.now(),
-          role: "assistant",
-          content: "This is a placeholder AI response. The RAG query functionality will be implemented in the backend.",
+    const userMsg = { id: Date.now(), role: "user", content: userText };
+    setMessages((prev: any[]) => [...prev, userMsg]);
+    
+    const assistantId = Date.now() + 1;
+    setMessages((prev: any[]) => [
+      ...prev,
+      { id: assistantId, role: "assistant", content: "" }
+    ]);
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = session?.access_token || '';
+
+      let currentSessionId = activeSessionId;
+      if (!currentSessionId && activeDocument) {
+        const createRes = await fetch("http://localhost:4000/api/sessions", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${token}`
+          },
+          body: JSON.stringify({
+            title: `Analysis: ${activeDocument.filename}`,
+            session_type: 'document_analysis',
+            document_id: activeDocument.id
+          })
+        });
+        if (createRes.ok) {
+          const newSession = await createRes.json();
+          currentSessionId = newSession.id;
+          setActiveSessionId(currentSessionId);
+          setSessionIds(prev => ({ ...prev, [activeDocument.id]: currentSessionId as string }));
+          window.history.replaceState({}, '', `/research?session=${currentSessionId}`);
         }
-      ]);
-    }, 1000);
+      }
+
+      if (currentSessionId) {
+        fetch(`http://localhost:4000/api/sessions/${currentSessionId}/messages`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ role: "user", content: userText }),
+        }).catch((err) => console.error("Failed to save user message:", err));
+      }
+
+      const res = await fetch("http://localhost:4000/api/chat", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          query: userText,
+          session_id: currentSessionId || "doc-chat",
+          document_id: activeDocument?.id || undefined,
+          history: messages.map(m => ({ role: m.role, content: m.content })),
+        }),
+      });
+
+      if (!res.ok) throw new Error("Failed to fetch response");
+
+      const reader = res.body?.getReader();
+      if (!reader) return;
+      const decoder = new TextDecoder();
+      let done = false;
+      let buffer = "";
+
+      while (!done) {
+        const { value, done: readerDone } = await reader.read();
+        done = readerDone;
+        if (value) {
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n\n");
+          buffer = lines.pop() || "";
+
+          for (const line of lines) {
+            if (line.startsWith("data: ")) {
+              try {
+                const data = JSON.parse(line.slice(6));
+                if (data.type === "text") {
+                  setMessages((prev: any[]) => prev.map((m: any) => 
+                    m.id === assistantId ? { ...m, content: m.content + data.text } : m
+                  ));
+                } else if (data.type === "citations") {
+                  setMessages((prev: any[]) => prev.map((m: any) => 
+                    m.id === assistantId ? { ...m, citations: data.data } : m
+                  ));
+                }
+              } catch (e) {
+                console.error("Parse error", e);
+              }
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.error("Chat error:", err);
+      setMessages((prev: any[]) => prev.map((m: any) => 
+        m.id === assistantId ? { ...m, content: "Sorry, an error occurred while processing your request." } : m
+      ));
+    }
   };
 
   const getStatusBadge = (doc: UserDocument) => {
@@ -198,10 +504,10 @@ export default function ResearchPage() {
   };
 
   return (
-    <div className="flex h-[calc(100vh-6rem)] md:h-[calc(100vh-7rem)] gap-4 animate-fade-in bg-background/50">
+    <div className="flex h-full gap-4 animate-fade-in bg-background/50 min-h-0">
       
       {/* Left Pane - Document List */}
-      <div className="hidden md:flex flex-col w-72 bg-card/80 backdrop-blur-xl rounded-2xl border border-border shadow-sm overflow-hidden flex-shrink-0">
+      <div className="hidden md:flex flex-col w-72 bg-card/80 backdrop-blur-xl rounded-2xl border border-border shadow-sm overflow-hidden flex-shrink-0 min-h-0">
         <div className="p-4 border-b border-border bg-card/50">
           <h2 className="font-bold text-foreground flex items-center gap-2 mb-4">
             <FileText className="w-5 h-5 text-primary" />
@@ -220,7 +526,7 @@ export default function ResearchPage() {
             ref={fileInputRef} 
             onChange={handleFileUpload} 
             className="hidden" 
-            accept=".pdf,.doc,.docx,.txt"
+            accept=".pdf,.doc,.docx,.txt,.png,.jpg,.jpeg"
           />
         </div>
         
@@ -239,7 +545,13 @@ export default function ResearchPage() {
               {documents.map(doc => (
                 <div 
                   key={doc.id}
-                  onClick={() => setActiveDocument(doc)}
+                  onClick={() => {
+                  setActiveDocument(doc);
+                  setActiveSessionId(sessionIds[doc.id] || null);
+                  if (typeof window !== 'undefined') {
+                    window.history.replaceState({}, '', '/research');
+                  }
+                }}
                   className={`p-3 rounded-xl cursor-pointer transition-all border ${
                     activeDocument?.id === doc.id 
                       ? 'bg-primary/10 border-primary/20 shadow-sm' 
@@ -247,9 +559,16 @@ export default function ResearchPage() {
                   }`}
                 >
                   <div className="flex items-start justify-between gap-2 mb-1">
-                    <p className={`text-sm font-medium line-clamp-1 ${activeDocument?.id === doc.id ? 'text-primary' : 'text-foreground'}`}>
+                    <p className={`text-sm font-medium line-clamp-1 pr-2 ${activeDocument?.id === doc.id ? 'text-primary' : 'text-foreground'}`}>
                       {doc.filename}
                     </p>
+                    <button
+                      onClick={(e) => handleDeleteDocument(e, doc.id)}
+                      className="text-red-400/70 hover:text-red-400 p-1.5 rounded-md hover:bg-red-400/10 transition-colors flex-shrink-0"
+                      title="Delete document"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
                   </div>
                   <div className="flex items-center justify-between mt-2">
                     {getStatusBadge(doc)}
@@ -265,7 +584,7 @@ export default function ResearchPage() {
       </div>
 
       {/* Center Pane - Document Viewer */}
-      <div className="flex-1 flex flex-col bg-card rounded-2xl border border-border shadow-sm overflow-hidden relative">
+      <div className="flex-1 flex flex-col bg-card rounded-2xl border border-border shadow-sm overflow-hidden relative min-h-0">
         {activeDocument ? (
           <>
             {/* Toolbar */}
@@ -286,14 +605,25 @@ export default function ResearchPage() {
               </div>
             </div>
             
-            {/* Document Content */}
-            <div className="flex-1 bg-muted/30 p-4 relative overflow-hidden">
+             <div className="flex-1 bg-muted/30 p-4 relative overflow-hidden">
                {activeDocument.file_url ? (
-                 <iframe 
-                   src={activeDocument.file_url} 
-                   className="w-full h-full rounded-xl bg-card shadow-sm border border-border"
-                   title={activeDocument.filename}
-                 />
+                 activeDocument.filename.match(/\.(jpeg|jpg|png)$/i) ? (
+                   <div className="w-full h-full flex items-center justify-center bg-card shadow-sm border border-border rounded-xl overflow-hidden p-4">
+                     <img 
+                       src={activeDocument.file_url} 
+                       alt={activeDocument.filename} 
+                       className="max-w-full max-h-full object-contain"
+                     />
+                   </div>
+                 ) : activeDocument.filename.match(/\.(doc|docx)$/i) ? (
+                   <DocxViewer fileUrl={activeDocument.file_url} />
+                 ) : (
+                   <iframe 
+                     src={activeDocument.file_url} 
+                     className="w-full h-full rounded-xl bg-card shadow-sm border border-border"
+                     title={activeDocument.filename}
+                   />
+                 )
                ) : (
                  <div className="flex flex-col items-center justify-center h-full text-muted-foreground">
                    <FileText className="w-12 h-12 mb-4 opacity-20" />
@@ -316,7 +646,7 @@ export default function ResearchPage() {
       </div>
 
       {/* Right Pane - AI Assistant */}
-      <div className="hidden lg:flex flex-col w-[380px] bg-card/80 backdrop-blur-xl rounded-2xl border border-border shadow-sm overflow-hidden flex-shrink-0">
+      <div className="hidden lg:flex flex-col w-[380px] bg-card/80 backdrop-blur-xl rounded-2xl border border-border shadow-sm overflow-hidden flex-shrink-0 min-h-0">
         <div className="p-4 border-b border-border bg-card/50 flex items-center justify-between">
           <h2 className="font-bold text-foreground flex items-center gap-2">
             <ShieldCheck className="w-5 h-5 text-primary" />
@@ -324,7 +654,7 @@ export default function ResearchPage() {
           </h2>
         </div>
         
-        <ScrollArea className="flex-1 p-4">
+        <div className="flex-1 overflow-y-auto p-4 custom-scrollbar min-h-0">
           <div className="flex flex-col gap-4">
             {messages.map((msg) => (
               <div key={msg.id} className={`flex gap-3 ${msg.role === 'user' ? 'flex-row-reverse' : ''}`}>
@@ -338,17 +668,55 @@ export default function ResearchPage() {
                   )}
                 </Avatar>
                 
-                <div className={`px-3.5 py-2.5 text-sm rounded-2xl max-w-[85%] shadow-sm ${
-                  msg.role === 'user' 
-                    ? 'bg-primary text-primary-foreground rounded-tr-sm' 
-                    : 'bg-card border border-border text-foreground rounded-tl-sm'
-                }`}>
-                  {msg.content}
+                <div className={`flex flex-col min-w-0 max-w-[85%] ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
+                  <div className={`px-3.5 py-2.5 text-sm rounded-2xl w-full shadow-sm ${
+                    msg.role === 'user' 
+                      ? 'bg-primary text-primary-foreground rounded-tr-sm' 
+                      : 'bg-card border border-border text-foreground rounded-tl-sm'
+                  }`}>
+                    {msg.role === 'assistant' ? (
+                      msg.content ? (
+                        <AssistantMarkdown content={msg.content} />
+                      ) : null
+                    ) : (
+                      msg.content
+                    )}
+                  </div>
+                  {msg.role === 'assistant' && msg.citations && msg.citations.length > 0 && (
+                    <div className="mt-2 w-full">
+                      <Accordion className="w-full">
+                        <AccordionItem value="citations" className="border-none">
+                          <AccordionTrigger className="py-2 text-xs text-primary hover:no-underline hover:opacity-80 rounded-md focus-visible:ring-2 focus-visible:ring-primary focus-visible:outline-none flex items-center justify-start gap-2 bg-accent/20 px-3 border border-border">
+                            <BookOpen className="w-3 h-3" />
+                            View Sources ({msg.citations.length})
+                          </AccordionTrigger>
+                          <AccordionContent className="text-xs text-muted-foreground bg-accent/10 p-3 rounded-b-lg border border-t-0 border-border flex flex-col gap-3 max-h-60 overflow-y-auto custom-scrollbar">
+                            {msg.citations.map((cit: any, idx: number) => (
+                              <div key={idx} className="flex flex-col gap-1 p-2 bg-card rounded border border-border/50">
+                                <span className="font-semibold text-primary">
+                                  {cit.parent_type === "civil_code" ? "Civil Code Article" : cit.parent_type?.toUpperCase?.() ?? "SOURCE"} — {cit.parent_id}
+                                </span>
+                                {cit.metadata?.title && (
+                                  <span className="font-medium text-foreground">{cit.metadata.title}</span>
+                                )}
+                                <span className="text-muted-foreground line-clamp-2">{cit.content}</span>
+                                {cit.metadata?.source_url && (
+                                  <a href={cit.metadata.source_url} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline mt-1">
+                                    View full document
+                                  </a>
+                                )}
+                              </div>
+                            ))}
+                          </AccordionContent>
+                        </AccordionItem>
+                      </Accordion>
+                    </div>
+                  )}
                 </div>
               </div>
             ))}
           </div>
-        </ScrollArea>
+        </div>
 
         {/* Action Chips */}
         {messages.length === 1 && activeDocument && (

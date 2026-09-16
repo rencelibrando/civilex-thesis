@@ -36,8 +36,9 @@ export default function DashboardPage() {
   }, []);
 
   return (
-    <div className="max-w-5xl mx-auto space-y-8 animate-fade-in-up">
-      {/* Welcome Header */}
+    <div className="h-full overflow-y-auto custom-scrollbar">
+      <div className="max-w-5xl mx-auto space-y-8 animate-fade-in-up pb-8">
+        {/* Welcome Header */}
       <div className="flex flex-col gap-2">
         <h1 className="text-3xl font-bold text-foreground">Welcome back, {userName || "User"}</h1>
         <p className="text-muted-foreground">What legal intelligence do you need today?</p>
@@ -128,6 +129,7 @@ export default function DashboardPage() {
           ))}
         </div>
       </div>
+    </div>
     </div>
   );
 }

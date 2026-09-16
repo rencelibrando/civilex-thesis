@@ -18,6 +18,9 @@ import {
   CheckCircle2,
   ChevronDown,
   Layers,
+  ExternalLink,
+  Copy,
+  Check,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { supabase } from "@/lib/supabase";
@@ -26,7 +29,7 @@ import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { useChat, RagStatus } from "@/context/chat-context";
+import { useChat, RagStatus, getCitationKey } from "@/context/chat-context";
 
 // ---------------------------------------------------------------------------
 // Markdown renderer for assistant messages
@@ -218,6 +221,10 @@ export default function ChatPage() {
     isTyping,
     ragStatus,
     currentCitations,
+    retainedCitations,
+    setRetainedCitations,
+    activeCitationFilter,
+    setActiveCitationFilter,
     selectedCitation,
     setSelectedCitation,
     sessionId,
@@ -231,6 +238,14 @@ export default function ChatPage() {
   } = useChat();
 
   const [isAutoScrollEnabled, setIsAutoScrollEnabled] = useState(true);
+  const [copiedCitation, setCopiedCitation] = useState(false);
+
+  const handleCopyCitation = useCallback((text: string) => {
+    if (!navigator?.clipboard) return;
+    navigator.clipboard.writeText(text);
+    setCopiedCitation(true);
+    setTimeout(() => setCopiedCitation(false), 2000);
+  }, []);
 
   // Refs for scroll
   const chatScrollRef = useRef<HTMLDivElement>(null);
@@ -275,11 +290,34 @@ export default function ChatPage() {
             const rawMessages = await res.json();
             if (Array.isArray(rawMessages) && rawMessages.length > 0) {
               setSessionId(sessionParam);
-              const formattedMessages = rawMessages.map((m: any, idx: number) => ({
-                id: m.id ? Number(m.id) || idx + 2 : idx + 2,
-                role: m.role as "user" | "assistant",
-                content: m.content,
-              }));
+              const allCits: any[] = [];
+              const seen = new Set<string>();
+
+              const formattedMessages = rawMessages.map((m: any, idx: number) => {
+                let parsedCits = [];
+                if (m.citations) {
+                  try {
+                    parsedCits = typeof m.citations === "string" ? JSON.parse(m.citations) : m.citations;
+                  } catch (e) {}
+                }
+                if (Array.isArray(parsedCits)) {
+                  for (const c of parsedCits) {
+                    const key = getCitationKey(c);
+                    if (key && !seen.has(key)) {
+                      seen.add(key);
+                      allCits.push(c);
+                    }
+                  }
+                }
+                return {
+                  id: m.id ? Number(m.id) || idx + 2 : idx + 2,
+                  role: m.role as "user" | "assistant",
+                  content: m.content,
+                  citations: parsedCits,
+                };
+              });
+
+              setRetainedCitations(allCits);
               setMessages([
                 {
                   id: 1,
@@ -515,77 +553,206 @@ export default function ChatPage() {
       {/* ------------------------------------------------------------------ */}
       {/* Citations Side Panel                                                 */}
       {/* ------------------------------------------------------------------ */}
-      <div className="hidden lg:flex flex-col w-80 bg-card rounded-2xl border border-border shadow-sm overflow-hidden min-h-0">
-        {/* Panel header */}
-        <div className="p-4 border-b border-border bg-card flex items-center gap-2 shrink-0">
-          <BookOpen className="w-4 h-4 text-primary" />
-          <h3 className="font-semibold text-sm text-foreground">Sources &amp; Citations</h3>
+      <div className="hidden lg:flex flex-col w-84 bg-card rounded-2xl border border-border shadow-sm overflow-hidden min-h-0">
+        {/* Panel header with Filter Tabs */}
+        <div className="p-3.5 border-b border-border bg-card flex flex-col gap-2.5 shrink-0">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <BookOpen className="w-4 h-4 text-primary" />
+              <h3 className="font-semibold text-sm text-foreground">Retained Citations</h3>
+            </div>
+            <span className="text-[10px] font-mono font-medium px-2 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20">
+              {retainedCitations.length} Total
+            </span>
+          </div>
+
+          {/* Segmented Filter Pills */}
+          <div className="grid grid-cols-2 p-0.5 bg-accent/40 dark:bg-accent/20 rounded-xl border border-border/60 text-xs">
+            <button
+              type="button"
+              onClick={() => setActiveCitationFilter("all")}
+              className={`py-1.5 px-2 rounded-lg font-medium transition-all text-center cursor-pointer ${
+                activeCitationFilter === "all"
+                  ? "bg-background text-foreground shadow-2xs font-semibold"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              All Sources ({retainedCitations.length})
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveCitationFilter("latest")}
+              className={`py-1.5 px-2 rounded-lg font-medium transition-all text-center cursor-pointer ${
+                activeCitationFilter === "latest"
+                  ? "bg-background text-foreground shadow-2xs font-semibold"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              Latest ({currentCitations.length})
+            </button>
+          </div>
         </div>
 
         {/* Scrollable citations list */}
         <div ref={citationScrollRef} className="flex-1 overflow-y-auto p-4 custom-scrollbar min-h-0">
-          {currentCitations.length > 0 ? (
-            <div className="space-y-3">
-              {currentCitations.map((cit, idx) => (
-                <div
-                  key={idx}
-                  className="p-3 bg-accent/30 dark:bg-accent/15 rounded-xl border border-primary/10 cursor-pointer hover:bg-accent/50 dark:hover:bg-accent/30 hover:border-primary/30 transition-all shadow-2xs"
-                  onClick={() => setSelectedCitation(cit)}
-                >
-                  <h4 className="text-xs font-bold text-primary mb-1.5 uppercase tracking-wide">
-                    {cit.parent_type === "civil_code"
-                      ? "Civil Code Article"
-                      : cit.parent_type?.toUpperCase?.() ?? "SOURCE"}{" "}
-                    <span className="text-primary/70">— {cit.parent_id}</span>
-                  </h4>
-                  <p className="text-xs text-muted-foreground leading-relaxed line-clamp-3">
-                    {cit.content}
-                  </p>
+          {(() => {
+            const displayCitations =
+              activeCitationFilter === "latest"
+                ? currentCitations
+                : retainedCitations.length > 0
+                ? retainedCitations
+                : currentCitations;
+
+            if (displayCitations.length > 0) {
+              return (
+                <div className="space-y-3">
+                  {displayCitations.map((cit, idx) => (
+                    <div
+                      key={idx}
+                      className="p-3 bg-accent/30 dark:bg-accent/15 rounded-xl border border-primary/10 cursor-pointer hover:bg-accent/50 dark:hover:bg-accent/30 hover:border-primary/30 transition-all shadow-2xs"
+                      onClick={() => setSelectedCitation(cit)}
+                    >
+                      <div className="flex items-center justify-between mb-1 gap-1">
+                        <h4 className="text-xs font-bold text-primary uppercase tracking-wide truncate">
+                          {cit.parent_type === "civil_code" || cit.parent_type === "article"
+                            ? "Civil Code Article"
+                            : cit.parent_type === "case"
+                            ? "Supreme Court Jurisprudence"
+                            : cit.parent_type?.toUpperCase?.() ?? "LEGAL SOURCE"}
+                        </h4>
+                        <span className="text-[10px] font-mono text-muted-foreground shrink-0">
+                          {cit.parent_id}
+                        </span>
+                      </div>
+                      {cit.metadata?.title && (
+                        <p className="text-xs font-semibold text-foreground line-clamp-1 mb-1">
+                          {cit.metadata.title} {cit.metadata.gr_number ? `(GR ${cit.metadata.gr_number})` : ""}
+                        </p>
+                      )}
+                      <p className="text-xs text-muted-foreground leading-relaxed line-clamp-3">
+                        {cit.content}
+                      </p>
+                    </div>
+                  ))}
+                  <div className="h-2" />
                 </div>
-              ))}
-              <div className="h-2" />
-            </div>
-          ) : messages.length > 1 && !isTyping ? (
-            <div className="h-full flex flex-col items-center justify-center text-center text-muted-foreground space-y-2 pt-16">
-              <BookOpen className="w-8 h-8 opacity-20" />
-              <p className="text-sm">No specific citations were found for this query.</p>
-            </div>
-          ) : (
-            <div className="h-full flex flex-col items-center justify-center text-center text-muted-foreground space-y-2 pt-16">
-              <BookOpen className="w-8 h-8 opacity-20" />
-              <p className="text-sm">
-                Statutory sources and jurisprudence will appear here as you chat.
-              </p>
-            </div>
-          )}
+              );
+            }
+
+            if (messages.length > 1 && !isTyping) {
+              return (
+                <div className="h-full flex flex-col items-center justify-center text-center text-muted-foreground space-y-2 pt-16">
+                  <BookOpen className="w-8 h-8 opacity-20" />
+                  <p className="text-sm">No specific citations found in this view.</p>
+                </div>
+              );
+            }
+
+            return (
+              <div className="h-full flex flex-col items-center justify-center text-center text-muted-foreground space-y-2 pt-16">
+                <BookOpen className="w-8 h-8 opacity-20" />
+                <p className="text-sm">
+                  Retained statutory citations and doctrines will accumulate here across conversation turns.
+                </p>
+              </div>
+            );
+          })()}
         </div>
       </div>
 
-      {/* Citation Detail Modal */}
+      {/* Citation Detail Modal - Covers 70% of the screen */}
       <Dialog open={!!selectedCitation} onOpenChange={(open) => !open && setSelectedCitation(null)}>
-        <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto custom-scrollbar">
-          <DialogHeader>
-            <DialogTitle className="text-xl text-primary font-bold">
-              {selectedCitation?.parent_type === "civil_code"
-                ? "Civil Code Article"
-                : selectedCitation?.parent_type?.toUpperCase?.() ?? "SOURCE"}{" "}
-              — {selectedCitation?.parent_id}
-            </DialogTitle>
+        <DialogContent className="w-[92vw] sm:w-[70vw] sm:max-w-[70vw] max-w-[70vw] max-h-[88vh] overflow-y-auto custom-scrollbar p-6 sm:p-8 rounded-2xl">
+          <DialogHeader className="space-y-3 pb-4 border-b border-border/70">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <span className="inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider px-2.5 py-1 rounded-full bg-primary/10 text-primary border border-primary/20">
+                  <Scale className="w-3.5 h-3.5" />
+                  {selectedCitation?.parent_type === "civil_code" || selectedCitation?.parent_type === "article"
+                    ? "Philippine Civil Code Provision"
+                    : selectedCitation?.parent_type === "case"
+                    ? "Supreme Court Jurisprudence"
+                    : (selectedCitation?.parent_type?.toUpperCase?.() ?? "LEGAL AUTHORITY")}
+                </span>
+                {selectedCitation?.parent_id && (
+                  <span className="text-xs font-mono font-medium text-muted-foreground bg-accent/40 dark:bg-accent/20 px-2 py-0.5 rounded-md border border-border/50">
+                    {selectedCitation.parent_id}
+                  </span>
+                )}
+              </div>
+
+              <div className="flex items-center gap-2">
+                {selectedCitation?.content && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleCopyCitation(selectedCitation.content)}
+                    className="h-8 text-xs gap-1.5 rounded-lg border-border hover:bg-accent cursor-pointer"
+                  >
+                    {copiedCitation ? (
+                      <>
+                        <Check className="w-3.5 h-3.5 text-emerald-500" />
+                        <span className="text-emerald-600 dark:text-emerald-400 font-medium">Copied</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="w-3.5 h-3.5 text-muted-foreground" />
+                        <span>Copy Citation</span>
+                      </>
+                    )}
+                  </Button>
+                )}
+
+                {selectedCitation?.metadata?.source_url && (
+                  <a
+                    href={selectedCitation.metadata.source_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center justify-center h-8 px-3 text-xs gap-1.5 rounded-lg border border-primary/30 text-primary hover:bg-primary/10 transition-colors font-medium cursor-pointer"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" />
+                    <span>Official Record</span>
+                  </a>
+                )}
+              </div>
+            </div>
+
+            <div>
+              <DialogTitle className="text-xl sm:text-2xl font-bold text-foreground tracking-tight">
+                {selectedCitation?.metadata?.title || (
+                  selectedCitation?.parent_type === "civil_code" || selectedCitation?.parent_type === "article"
+                    ? `Civil Code of the Philippines — ${selectedCitation?.parent_id}`
+                    : `${selectedCitation?.parent_type?.toUpperCase?.() ?? "SOURCE"} — ${selectedCitation?.parent_id}`
+                )}
+              </DialogTitle>
+              {selectedCitation?.metadata?.gr_number && (
+                <p className="text-xs text-muted-foreground font-mono mt-1">
+                  Docket: {selectedCitation.metadata.gr_number}
+                  {selectedCitation.metadata.decision_date ? ` • Promulgated: ${selectedCitation.metadata.decision_date}` : ""}
+                </p>
+              )}
+            </div>
+          </DialogHeader>
+
+          <div className="mt-4 space-y-4">
+            <div className="p-5 sm:p-6 bg-accent/20 dark:bg-accent/10 rounded-xl border border-border/70 text-foreground font-serif leading-relaxed text-sm sm:text-base whitespace-pre-wrap tracking-wide selection:bg-primary/20">
+              {selectedCitation?.content}
+            </div>
+
             {selectedCitation?.metadata?.source_url && (
-              <DialogDescription>
+              <div className="flex items-center justify-between text-xs text-muted-foreground pt-2 border-t border-border/40">
+                <span>Verified Philippine Legal Source Grounding</span>
                 <a
                   href={selectedCitation.metadata.source_url}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="text-primary hover:underline font-semibold"
+                  className="text-primary hover:underline inline-flex items-center gap-1 font-medium"
                 >
-                  View Source Document
+                  View full source documentation <ExternalLink className="w-3 h-3" />
                 </a>
-              </DialogDescription>
+              </div>
             )}
-          </DialogHeader>
-          <div className="mt-4 text-sm text-foreground whitespace-pre-wrap leading-relaxed font-serif tracking-wide border-t border-border pt-4">
-            {selectedCitation?.content}
           </div>
         </DialogContent>
       </Dialog>

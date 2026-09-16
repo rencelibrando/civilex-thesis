@@ -9,6 +9,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Accordion, AccordionItem, AccordionTrigger, AccordionContent } from "@/components/ui/accordion";
 import { supabase } from "@/lib/supabase";
+import { useDocChat } from "@/context/doc-chat-context";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import mammoth from "mammoth";
@@ -181,15 +182,31 @@ const CircularProgress = ({ progress = 0 }: { progress?: number }) => {
 };
 
 export default function ResearchPage() {
+  const {
+    getDocChat,
+    setDocInputValue,
+    ensureDocSession,
+    handleSendDocMessage,
+    handleStopDocMessage,
+    loadDocSession,
+  } = useDocChat();
+
   const [documents, setDocuments] = useState<UserDocument[]>([]);
   const [activeDocument, setActiveDocument] = useState<any>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [isLoadingDocs, setIsLoadingDocs] = useState(true);
-
-  const [sessionIds, setSessionIds] = useState<Record<string, string>>({});
-  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [pendingDocId, setPendingDocId] = useState<string | null>(null);
-  const [chats, setChats] = useState<Record<string, { id: number, role: string, content: string, citations?: any[] }[]>>({});
+
+  const activeDocId = activeDocument?.id || "general";
+  const currentChat = getDocChat(activeDocId);
+  const messages = currentChat.messages;
+  const inputValue = currentChat.inputValue;
+  const isTyping = currentChat.isTyping;
+  const ragStatus = currentChat.ragStatus;
+  const retainedCitations = currentChat.retainedCitations;
+
+  const [docStarters, setDocStarters] = useState<DocPromptStarter[]>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Load session from URL
   useEffect(() => {
@@ -209,33 +226,8 @@ export default function ResearchPage() {
         if (res.ok) {
           const sessionData = await res.json();
           if (sessionData.document_id) {
-            setActiveSessionId(sessionId);
-            setSessionIds(prev => ({ ...prev, [sessionData.document_id]: sessionId }));
             setPendingDocId(sessionData.document_id);
-            
-            // fetch messages
-            const msgRes = await fetch(`http://localhost:4000/api/sessions/${sessionId}/messages`, {
-              headers: { 'Authorization': `Bearer ${token}` }
-            });
-            if (msgRes.ok) {
-              const messages = await msgRes.json();
-              if (messages.length > 0) {
-                 setChats(prev => ({ ...prev, [sessionData.document_id]: messages.map((m: any) => {
-                    let parsedCitations = [];
-                    try {
-                      if (m.citations) {
-                        parsedCitations = typeof m.citations === 'string' ? JSON.parse(m.citations) : m.citations;
-                      }
-                    } catch (e) {}
-                    return {
-                      id: m.id,
-                      role: m.role,
-                      content: m.content,
-                      citations: parsedCitations
-                    };
-                 })}));
-              }
-            }
+            await loadDocSession(sessionData.document_id, sessionId);
           }
         }
       } catch (err) {
@@ -243,46 +235,23 @@ export default function ResearchPage() {
       }
     };
     loadSessionFromUrl();
-  }, []);
+  }, [loadDocSession]);
 
   useEffect(() => {
-    if (documents.length > 0 && pendingDocId) {
-      const doc = documents.find(d => d.id === pendingDocId);
-      if (doc) {
-        setActiveDocument(doc);
-        setPendingDocId(null);
+    if (documents.length > 0) {
+      if (pendingDocId) {
+        const doc = documents.find(d => d.id === pendingDocId);
+        if (doc) {
+          setActiveDocument(doc);
+          setPendingDocId(null);
+        }
+      } else if (!activeDocument) {
+        // Automatically select first document and initialize session
+        setActiveDocument(documents[0]);
+        ensureDocSession(documents[0].id, documents[0].filename);
       }
     }
-  }, [documents, pendingDocId]);
-
-  const defaultMessages: { id: number, role: string, content: string, citations?: any[] }[] = [
-    {
-      id: 1,
-      role: "assistant",
-      content: "Hello! I am your CIVIL-LEX AI assistant. You can upload legal documents for analysis or ask me questions about Philippine Civil Law.",
-    }
-  ];
-
-
-  const messages = activeDocument && chats[activeDocument.id] 
-    ? chats[activeDocument.id] 
-    : defaultMessages;
-
-  const setMessages = (updater: any) => {
-    if (!activeDocument) return;
-    setChats(prev => {
-      const current = prev[activeDocument.id] || defaultMessages;
-      const next = typeof updater === 'function' ? updater(current) : updater;
-      return { ...prev, [activeDocument.id]: next };
-    });
-  };
-
-  const [inputValue, setInputValue] = useState("");
-  const [isTyping, setIsTyping] = useState(false);
-  const [ragStatus, setRagStatus] = useState<any>(null);
-  const [docStarters, setDocStarters] = useState<DocPromptStarter[]>([]);
-  const abortControllerRef = useRef<AbortController | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  }, [documents, pendingDocId, activeDocument, ensureDocSession]);
 
   const refreshDocStarters = useCallback(() => {
     const pool = [...DOC_STARTER_PROMPTS];
@@ -298,12 +267,8 @@ export default function ResearchPage() {
   }, [activeDocument?.id, refreshDocStarters]);
 
   const handleStop = () => {
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-      abortControllerRef.current = null;
-    }
-    setIsTyping(false);
-    setRagStatus(null);
+    if (!activeDocument) return;
+    handleStopDocMessage(activeDocument.id);
   };
 
   // Fetch documents on load
@@ -442,136 +407,9 @@ export default function ResearchPage() {
     }
   };
 
-  const handleSend = async (overrideText?: string) => {
-    const userText = (overrideText ?? inputValue).trim();
-    if (!userText || isTyping) return;
-    setInputValue("");
-    setIsTyping(true);
-    setRagStatus({ stage: 'embedding', message: 'Analyzing legal document context...' });
-    
-    const userMsg = { id: Date.now(), role: "user", content: userText };
-    setMessages((prev: any[]) => [...prev, userMsg]);
-    
-    const assistantId = Date.now() + 1;
-    setMessages((prev: any[]) => [
-      ...prev,
-      { id: assistantId, role: "assistant", content: "", ragStatus: { stage: 'embedding', message: 'Analyzing document...' } }
-    ]);
-
-    try {
-      const controller = new AbortController();
-      abortControllerRef.current = controller;
-
-      const { data: { session } } = await supabase.auth.getSession();
-      const token = session?.access_token || '';
-
-      let currentSessionId = activeSessionId;
-      if (!currentSessionId && activeDocument) {
-        const createRes = await fetch("http://localhost:4000/api/sessions", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${token}`
-          },
-          body: JSON.stringify({
-            title: `Analysis: ${activeDocument.filename}`,
-            session_type: 'document_analysis',
-            document_id: activeDocument.id
-          })
-        });
-        if (createRes.ok) {
-          const newSession = await createRes.json();
-          currentSessionId = newSession.id;
-          setActiveSessionId(currentSessionId);
-          setSessionIds(prev => ({ ...prev, [activeDocument.id]: currentSessionId as string }));
-          window.history.replaceState({}, '', `/research?session=${currentSessionId}`);
-        }
-      }
-
-      if (currentSessionId) {
-        fetch(`http://localhost:4000/api/sessions/${currentSessionId}/messages`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify({ role: "user", content: userText }),
-        }).catch((err) => console.error("Failed to save user message:", err));
-      }
-
-      const res = await fetch("http://localhost:4000/api/chat", {
-        method: "POST",
-        signal: controller.signal,
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          query: userText,
-          session_id: currentSessionId || "doc-chat",
-          document_id: activeDocument?.id || undefined,
-          history: messages.map(m => ({ role: m.role, content: m.content })),
-        }),
-      });
-
-      if (!res.ok) throw new Error("Failed to fetch response");
-
-      const reader = res.body?.getReader();
-      if (!reader) return;
-      const decoder = new TextDecoder();
-      let done = false;
-      let buffer = "";
-
-      while (!done) {
-        const { value, done: readerDone } = await reader.read();
-        done = readerDone;
-        if (value) {
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split("\n\n");
-          buffer = lines.pop() || "";
-
-          for (const line of lines) {
-            if (line.startsWith("data: ")) {
-              try {
-                const data = JSON.parse(line.slice(6));
-                if (data.type === "status") {
-                  setRagStatus(data);
-                  setMessages((prev: any[]) => prev.map((m: any) => 
-                    m.id === assistantId ? { ...m, ragStatus: data } : m
-                  ));
-                } else if (data.type === "text") {
-                  setMessages((prev: any[]) => prev.map((m: any) => 
-                    m.id === assistantId ? { ...m, content: m.content + data.text } : m
-                  ));
-                } else if (data.type === "citations") {
-                  setMessages((prev: any[]) => prev.map((m: any) => 
-                    m.id === assistantId ? { ...m, citations: data.data } : m
-                  ));
-                } else if (data.type === "done") {
-                  setRagStatus({ stage: 'completed', message: 'Analysis complete' });
-                }
-              } catch (e) {
-                console.error("Parse error", e);
-              }
-            }
-          }
-        }
-      }
-    } catch (err: any) {
-      if (err.name === 'AbortError') {
-        setMessages((prev: any[]) => prev.map((m: any) => 
-          m.id === assistantId ? { ...m, content: m.content || "Analysis stopped." } : m
-        ));
-      } else {
-        console.error("Chat error:", err);
-        setMessages((prev: any[]) => prev.map((m: any) => 
-          m.id === assistantId ? { ...m, content: "Sorry, an error occurred while processing your request." } : m
-        ));
-      }
-    } finally {
-      setIsTyping(false);
-      abortControllerRef.current = null;
-    }
+  const handleSend = (overrideText?: string) => {
+    if (!activeDocument) return;
+    handleSendDocMessage(activeDocument.id, activeDocument.filename, overrideText);
   };
 
   const getStatusBadge = (doc: UserDocument) => {
@@ -641,13 +479,13 @@ export default function ResearchPage() {
               {documents.map(doc => (
                 <div 
                   key={doc.id}
-                  onClick={() => {
-                  setActiveDocument(doc);
-                  setActiveSessionId(sessionIds[doc.id] || null);
-                  if (typeof window !== 'undefined') {
-                    window.history.replaceState({}, '', '/research');
-                  }
-                }}
+                  onClick={async () => {
+                    setActiveDocument(doc);
+                    if (typeof window !== 'undefined') {
+                      window.history.replaceState({}, '', '/research');
+                    }
+                    await ensureDocSession(doc.id, doc.filename);
+                  }}
                   className={`p-3 rounded-xl cursor-pointer transition-all border ${
                     activeDocument?.id === doc.id 
                       ? 'bg-primary/10 border-primary/20 shadow-sm' 
@@ -748,10 +586,57 @@ export default function ResearchPage() {
             <ShieldCheck className="w-5 h-5 text-primary" />
             AI Assistant
           </h2>
+          {retainedCitations.length > 0 && (
+            <span className="text-[10px] font-mono font-medium px-2 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20">
+              {retainedCitations.length} Citations
+            </span>
+          )}
         </div>
         
         <div className="flex-1 overflow-y-auto p-4 custom-scrollbar min-h-0">
           <div className="flex flex-col gap-4">
+            {/* Retained Citations Section for Active Document Chat */}
+            {retainedCitations.length > 0 && (
+              <div className="mb-1">
+                <Accordion className="w-full">
+                  <AccordionItem value="all-retained-citations" className="border border-primary/20 rounded-xl bg-accent/20">
+                    <AccordionTrigger className="py-2 px-3 text-xs text-primary font-semibold hover:no-underline">
+                      <div className="flex items-center gap-2">
+                        <BookOpen className="w-3.5 h-3.5" />
+                        <span>Retained Sources ({retainedCitations.length})</span>
+                      </div>
+                    </AccordionTrigger>
+                    <AccordionContent className="px-3 pb-3 text-xs flex flex-col gap-2 max-h-56 overflow-y-auto custom-scrollbar">
+                      {retainedCitations.map((cit: any, idx: number) => (
+                        <div key={idx} className="p-2.5 rounded-lg bg-card border border-border/60 shadow-2xs">
+                          <div className="flex items-center justify-between mb-1">
+                            <span className="font-bold text-primary text-[11px] uppercase truncate">
+                              {cit.parent_type === "civil_code" || cit.parent_type === "article"
+                                ? `Civil Code Article — ${cit.parent_id}`
+                                : cit.parent_type === "case"
+                                ? `Supreme Court Jurisprudence — ${cit.parent_id}`
+                                : `Document Excerpt ${cit.chunk_id ? `(#${parseInt(cit.chunk_id.split('_c').pop() || '0', 10) + 1})` : ''}`}
+                            </span>
+                          </div>
+                          {cit.metadata?.title && (
+                            <p className="font-semibold text-foreground text-xs mb-0.5">
+                              {cit.metadata.title} {cit.metadata.gr_number ? `(GR ${cit.metadata.gr_number})` : ""}
+                            </p>
+                          )}
+                          <p className="text-muted-foreground text-xs line-clamp-2">{cit.content}</p>
+                          {cit.metadata?.source_url && (
+                            <a href={cit.metadata.source_url} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline text-[11px] mt-1 inline-block">
+                              View full document
+                            </a>
+                          )}
+                        </div>
+                      ))}
+                    </AccordionContent>
+                  </AccordionItem>
+                </Accordion>
+              </div>
+            )}
+
             {messages.map((msg) => (
               <div key={msg.id} className={`flex gap-3 ${msg.role === 'user' ? 'flex-row-reverse' : ''}`}>
                 <Avatar className="w-6 h-6 mt-1 flex-shrink-0 shadow-sm">
@@ -853,7 +738,7 @@ export default function ResearchPage() {
             <input
               type="text"
               value={inputValue}
-              onChange={(e) => setInputValue(e.target.value)}
+              onChange={(e) => setDocInputValue(activeDocId, e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && handleSend()}
               placeholder={activeDocument ? `Ask about ${activeDocument.filename}...` : "Ask a general question..."}
               className="flex-1 bg-transparent dark:bg-transparent border-none shadow-none outline-none focus:outline-none focus:ring-0 text-foreground placeholder:text-muted-foreground px-4 h-11 text-sm"

@@ -89,26 +89,24 @@ export default function DashboardPage() {
         </div>
 
         {/* Quick Search */}
-        <Card className="border border-border/60 shadow-sm overflow-hidden bg-card rounded-2xl">
-          <CardContent className="p-1">
-            <form onSubmit={handleSearchSubmit} className="relative flex items-center w-full">
-              <Search className="absolute left-4 w-5 h-5 text-muted-foreground" />
-              <Input
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Ask a legal question, explore Civil Code articles, or find jurisprudence..."
-                className="pl-12 py-6 text-base sm:text-lg border-none shadow-none focus-visible:ring-0 focus-visible:outline-none bg-transparent"
-              />
-              <Button
-                type="submit"
-                className="mr-2 bg-primary hover:bg-primary/90 text-primary-foreground rounded-xl px-6 h-10 shrink-0"
-              >
-                Search
-              </Button>
-            </form>
-          </CardContent>
-        </Card>
+        <div className="relative flex items-center w-full rounded-2xl border border-border/60 bg-card shadow-sm hover:border-border/80 focus-within:border-primary/50 focus-within:ring-2 focus-within:ring-primary/20 transition-all overflow-hidden p-1.5">
+          <form onSubmit={handleSearchSubmit} className="relative flex items-center w-full">
+            <Search className="absolute left-4 w-5 h-5 text-muted-foreground pointer-events-none" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Ask a legal question, explore Civil Code articles, or find jurisprudence..."
+              className="w-full bg-transparent pl-12 pr-4 py-3.5 text-base sm:text-lg border-0 outline-none text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-0"
+            />
+            <Button
+              type="submit"
+              className="bg-primary hover:bg-primary/90 text-primary-foreground rounded-xl px-6 h-11 shrink-0 font-medium shadow-xs transition-all cursor-pointer"
+            >
+              Search
+            </Button>
+          </form>
+        </div>
 
         {/* Action Cards */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">

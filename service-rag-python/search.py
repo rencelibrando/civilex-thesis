@@ -29,7 +29,7 @@ def print_results(title, results):
         print("  No results found.")
         return
     for idx, row in enumerate(results, 1):
-        chunk_id = row[0]
+        _chunk_id = row[0]
         parent_type = row[1]
         parent_id = row[2]
         content_preview = row[3]

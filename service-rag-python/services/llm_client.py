@@ -11,9 +11,17 @@ async def generate_response_stream(system_prompt: str, user_query: str, history:
     if history is None:
         history = []
 
+    # Sanitize and window history: keep up to last 12 messages with non-empty content
+    clean_history = []
+    for msg in history:
+        content = msg.get("content", "").strip() if isinstance(msg, dict) else ""
+        if content:
+            clean_history.append({"role": msg.get("role", "user"), "content": content})
+    clean_history = clean_history[-12:]
+
     # Prepare messages for OpenAI compatible endpoint (LM Studio)
     messages = [{"role": "system", "content": system_prompt}]
-    for msg in history:
+    for msg in clean_history:
         messages.append({"role": msg["role"], "content": msg["content"]})
     messages.append({"role": "user", "content": user_query})
 
@@ -53,13 +61,27 @@ async def generate_response_stream(system_prompt: str, user_query: str, history:
         yield ">  **Service Configuration Notice**\n>\n> The local legal model is currently unreachable and no fallback credentials are configured. Please check your system settings or contact the administrator."
         return
 
-    # Convert messages to Gemini format
+    # Convert messages to Gemini format with strict user-first and role-alternation guarantees
     gemini_contents = []
-    for msg in history:
-        role = "user" if msg["role"] == "user" else "model"
-        gemini_contents.append({"role": role, "parts": [{"text": msg["content"]}]})
     
-    gemini_contents.append({"role": "user", "parts": [{"text": user_query}]})
+    # Strip any leading assistant/model messages that are greetings before any user prompt
+    hist_to_process = clean_history
+    while hist_to_process and hist_to_process[0]["role"] in ("assistant", "model"):
+        hist_to_process = hist_to_process[1:]
+
+    for msg in hist_to_process:
+        role = "user" if msg["role"] == "user" else "model"
+        if gemini_contents and gemini_contents[-1]["role"] == role:
+            # Coalesce consecutive messages with same role
+            gemini_contents[-1]["parts"][0]["text"] += f"\n\n{msg['content']}"
+        else:
+            gemini_contents.append({"role": role, "parts": [{"text": msg["content"]}]})
+
+    # Append current user inquiry
+    if gemini_contents and gemini_contents[-1]["role"] == "user":
+        gemini_contents[-1]["parts"][0]["text"] += f"\n\n{user_query}"
+    else:
+        gemini_contents.append({"role": "user", "parts": [{"text": user_query}]})
 
     gemini_payload = {
         "system_instruction": {

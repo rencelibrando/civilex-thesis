@@ -2,7 +2,7 @@ import os
 import json
 import time
 import psycopg2
-from psycopg2.extras import execute_values, Json
+from psycopg2.extras import execute_values
 from typing import List, Dict, Any, Optional
 from tqdm import tqdm
 

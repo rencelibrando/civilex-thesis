@@ -171,7 +171,7 @@ router.get('/article/:id', async (req, res) => {
       const caseUids = relationRows.map(r => r.case_uid);
       const { data: casesRows, error: casesError } = await supabase
         .from('jurisprudence_cases')
-        .select('case_uid, title, gr_number, decision_date, content_summary, source_url')
+        .select('case_uid, title, gr_number, decision_date, content_summary, source_url, full_text')
         .in('case_uid', caseUids);
         
       if (casesError) throw casesError;
@@ -183,6 +183,25 @@ router.get('/article/:id', async (req, res) => {
     res.json(article);
   } catch (err) {
     console.error("Error fetching article:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/case/:uid', async (req, res) => {
+  const caseUid = req.params.uid;
+  try {
+    const { data: caseRows, error: caseError } = await supabase
+      .from('jurisprudence_cases')
+      .select('case_uid, title, gr_number, decision_date, source_url, content_summary, full_text')
+      .eq('case_uid', caseUid);
+
+    if (caseError) throw caseError;
+    if (!caseRows || caseRows.length === 0) {
+      return res.status(404).json({ error: "Jurisprudence case not found" });
+    }
+    res.json(caseRows[0]);
+  } catch (err) {
+    console.error("Error fetching jurisprudence case:", err);
     res.status(500).json({ error: err.message });
   }
 });

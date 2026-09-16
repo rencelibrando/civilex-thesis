@@ -1,6 +1,7 @@
 import { Header } from "@/components/layout/header";
 import { Sidebar } from "@/components/layout/sidebar";
 import { ChatProvider } from "@/context/chat-context";
+import { DocChatProvider } from "@/context/doc-chat-context";
 
 export default function DashboardLayout({
   children,
@@ -9,15 +10,17 @@ export default function DashboardLayout({
 }) {
   return (
     <ChatProvider>
-      <div className="flex flex-col h-full overflow-hidden bg-background">
-        <Header />
-        <div className="flex flex-1 overflow-hidden">
-          <Sidebar />
-          <main className="flex-1 overflow-hidden p-4 md:p-6 flex flex-col">
-            {children}
-          </main>
+      <DocChatProvider>
+        <div className="flex flex-col h-full overflow-hidden bg-background">
+          <Header />
+          <div className="flex flex-1 overflow-hidden">
+            <Sidebar />
+            <main className="flex-1 overflow-hidden p-4 md:p-6 flex flex-col">
+              {children}
+            </main>
+          </div>
         </div>
-      </div>
+      </DocChatProvider>
     </ChatProvider>
   );
 }

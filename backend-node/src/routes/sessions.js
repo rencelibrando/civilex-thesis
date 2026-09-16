@@ -11,11 +11,19 @@ const router = express.Router();
 router.get('/', requireAuth, async (req, res) => {
   try {
     const userId = req.user.id;
-    const { data, error } = await req.supabase
+    let query = req.supabase
       .from('chat_sessions')
       .select('*')
-      .eq('user_id', userId)
-      .order('created_at', { ascending: false });
+      .eq('user_id', userId);
+
+    if (req.query.document_id) {
+      query = query.eq('document_id', req.query.document_id);
+    }
+    if (req.query.session_type) {
+      query = query.eq('session_type', req.query.session_type);
+    }
+
+    const { data, error } = await query.order('created_at', { ascending: false });
 
     if (error) throw error;
     res.json(data);

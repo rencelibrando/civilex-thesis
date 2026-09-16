@@ -301,6 +301,10 @@ interface ChatContextType {
   isTyping: boolean;
   ragStatus: RagStatus | null;
   currentCitations: any[];
+  retainedCitations: any[];
+  setRetainedCitations: React.Dispatch<React.SetStateAction<any[]>>;
+  activeCitationFilter: 'all' | 'latest';
+  setActiveCitationFilter: (f: 'all' | 'latest') => void;
   selectedCitation: any | null;
   setSelectedCitation: (cit: any | null) => void;
   sessionId: string | null;
@@ -311,6 +315,34 @@ interface ChatContextType {
   handleSend: (overrideText?: string) => Promise<void>;
   handleStop: () => void;
   handleNewChat: () => void;
+}
+
+export function getCitationKey(item: any): string {
+  if (!item) return "";
+  if (item.chunk_id) return String(item.chunk_id);
+  if (item.parent_type === "user_document") {
+    const snip = (item.content || "").slice(0, 40).trim();
+    return `doc_${item.parent_id || item.id || ""}_${snip}`;
+  }
+  return String(item.parent_id || item.id || JSON.stringify(item));
+}
+
+export function mergeCitations(existing: any[], incoming: any[]): any[] {
+  const map = new Map<string, any>();
+  for (const item of incoming || []) {
+    const key = getCitationKey(item);
+    if (key) map.set(key, item);
+  }
+  for (const item of existing || []) {
+    const key = getCitationKey(item);
+    if (key && !map.has(key)) map.set(key, item);
+  }
+  const merged = Array.from(map.values());
+  return merged.sort((a, b) => {
+    const priority = (type?: string) =>
+      type === "article" || type === "civil_code" ? 1 : type === "user_document" ? 2 : 3;
+    return priority(a.parent_type) - priority(b.parent_type);
+  });
 }
 
 const DEFAULT_MESSAGES: Message[] = [
@@ -330,6 +362,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const [isTyping, setIsTyping] = useState(false);
   const [ragStatus, setRagStatus] = useState<RagStatus | null>(null);
   const [currentCitations, setCurrentCitations] = useState<any[]>([]);
+  const [retainedCitations, setRetainedCitations] = useState<any[]>([]);
+  const [activeCitationFilter, setActiveCitationFilter] = useState<'all' | 'latest'>('all');
   const [selectedCitation, setSelectedCitation] = useState<any | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [followUpPrompts, setFollowUpPrompts] = useState<string[]>([]);
@@ -474,6 +508,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     setRagStatus(null);
     setMessages(DEFAULT_MESSAGES);
     setCurrentCitations([]);
+    setRetainedCitations([]);
+    setActiveCitationFilter('all');
     setSelectedCitation(null);
     setInputValue("");
     setSessionId(null);
@@ -576,6 +612,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           history: currentHistory
             .slice(0, -1)
             .map((m) => ({ role: m.role, content: m.content })),
+          prior_citations: retainedCitations,
         }),
       });
 
@@ -620,11 +657,19 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                 } else if (data.type === "citations") {
                   receivedCitations = data.data || [];
                   setCurrentCitations(receivedCitations);
+                  setRetainedCitations((prev) => mergeCitations(prev, receivedCitations));
                   setMessages((prev) =>
                     prev.map((msg) =>
                       msg.id === assistantId ? { ...msg, citations: receivedCitations } : msg
                     )
                   );
+                } else if (data.type === "accumulated_citations") {
+                  const accumulated = (data.data || []).sort((a: any, b: any) => {
+                    const priority = (type?: string) =>
+                      type === "article" || type === "civil_code" ? 1 : type === "user_document" ? 2 : 3;
+                    return priority(a.parent_type) - priority(b.parent_type);
+                  });
+                  setRetainedCitations(accumulated);
                 } else if (data.type === "text") {
                   fullResponseAccumulator += data.text;
                   enqueueText(data.text);
@@ -712,6 +757,10 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         isTyping,
         ragStatus,
         currentCitations,
+        retainedCitations,
+        setRetainedCitations,
+        activeCitationFilter,
+        setActiveCitationFilter,
         selectedCitation,
         setSelectedCitation,
         sessionId,

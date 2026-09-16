@@ -42,8 +42,17 @@ const sidebarNavItems = [
   },
 ];
 
+import { useChat } from "@/context/chat-context";
+
 export function SidebarNav({ className }: { className?: string }) {
   const pathname = usePathname();
+  let isTyping = false;
+  try {
+    const chat = useChat();
+    isTyping = chat.isTyping;
+  } catch {
+    // If used outside ChatProvider (e.g. mobile sheet before provider), gracefully fallback
+  }
 
   return (
     <div className={cn("flex flex-col h-full", className)}>
@@ -55,6 +64,7 @@ export function SidebarNav({ className }: { className?: string }) {
           {sidebarNavItems.map((item) => {
             const isActive =
               pathname === item.href || pathname.startsWith(item.href + "/");
+            const isChatRunning = item.href === "/chat" && isTyping;
 
             return (
               <Link
@@ -73,8 +83,17 @@ export function SidebarNav({ className }: { className?: string }) {
                     isActive ? "text-primary" : "text-muted-foreground group-hover:text-foreground"
                   )}
                 />
-                <span>{item.title}</span>
-                {isActive && (
+                <span className="flex-1">{item.title}</span>
+                {isChatRunning && (
+                  <span className="flex items-center gap-1 text-[10px] font-medium text-primary bg-primary/10 px-2 py-0.5 rounded-full border border-primary/20">
+                    <span className="relative flex h-1.5 w-1.5">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-primary opacity-75"></span>
+                      <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-primary"></span>
+                    </span>
+                    Active
+                  </span>
+                )}
+                {isActive && !isChatRunning && (
                   <div className="ml-auto w-1 h-5 bg-primary rounded-full" />
                 )}
               </Link>

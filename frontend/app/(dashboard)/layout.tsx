@@ -1,5 +1,6 @@
 import { Header } from "@/components/layout/header";
 import { Sidebar } from "@/components/layout/sidebar";
+import { ChatProvider } from "@/context/chat-context";
 
 export default function DashboardLayout({
   children,
@@ -7,14 +8,16 @@ export default function DashboardLayout({
   children: React.ReactNode;
 }) {
   return (
-    <div className="flex flex-col h-full overflow-hidden bg-background">
-      <Header />
-      <div className="flex flex-1 overflow-hidden">
-        <Sidebar />
-        <main className="flex-1 overflow-hidden p-4 md:p-6 flex flex-col">
-          {children}
-        </main>
+    <ChatProvider>
+      <div className="flex flex-col h-full overflow-hidden bg-background">
+        <Header />
+        <div className="flex flex-1 overflow-hidden">
+          <Sidebar />
+          <main className="flex-1 overflow-hidden p-4 md:p-6 flex flex-col">
+            {children}
+          </main>
+        </div>
       </div>
-    </div>
+    </ChatProvider>
   );
 }

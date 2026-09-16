@@ -278,14 +278,15 @@ class SearchRequest(BaseModel):
     session_id: Optional[str] = None
     history: List[ChatMessage] = []
     document_id: Optional[str] = None
+def compute_embedding(query: str) -> list:
+    """Computes the normalized query embedding vector."""
+    return embedder.encode(query, normalize_embeddings=True).tolist()
 
 
-def embed_and_search(query: str, document_id: Optional[str] = None):
+def search_with_embedding(q_emb: list, query: str, document_id: Optional[str] = None):
+    """Executes hybrid RRF search, exact match, and graph-augmented jurisprudence retrieval."""
     conn = get_db_connection()
     try:
-        # Embed the query (blocking)
-        q_emb = embedder.encode(query, normalize_embeddings=True).tolist()
-        
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             # Helper function to perform Hybrid Search using RRF
             def hybrid_search(parent_type, limit=5, parent_id=None):
@@ -307,8 +308,8 @@ def embed_and_search(query: str, document_id: Optional[str] = None):
                 cur.execute(f"""
                     WITH vector_search AS (
                         SELECT chunk_id, parent_type, parent_id, content,
-                               1 - (embedding <=> %s::vector) AS similarity,
-                               ROW_NUMBER() OVER (ORDER BY embedding <=> %s::vector) AS rrf_vector_rank
+                                1 - (embedding <=> %s::vector) AS similarity,
+                                ROW_NUMBER() OVER (ORDER BY embedding <=> %s::vector) AS rrf_vector_rank
                         FROM document_chunks
                         WHERE {where_clause_v}
                         ORDER BY embedding <=> %s::vector
@@ -316,8 +317,8 @@ def embed_and_search(query: str, document_id: Optional[str] = None):
                     ),
                     text_search AS (
                         SELECT chunk_id, parent_type, parent_id, content,
-                               ts_rank_cd(fts, websearch_to_tsquery('simple', %s)) AS similarity,
-                               ROW_NUMBER() OVER (ORDER BY ts_rank_cd(fts, websearch_to_tsquery('simple', %s)) DESC) AS rrf_text_rank
+                                ts_rank_cd(fts, websearch_to_tsquery('simple', %s)) AS similarity,
+                                ROW_NUMBER() OVER (ORDER BY ts_rank_cd(fts, websearch_to_tsquery('simple', %s)) DESC) AS rrf_text_rank
                         FROM document_chunks
                         WHERE {where_clause_t}
                         ORDER BY rrf_text_rank
@@ -417,34 +418,60 @@ def embed_and_search(query: str, document_id: Optional[str] = None):
     finally:
         conn.close()
 
+
+def embed_and_search(query: str, document_id: Optional[str] = None):
+    """Convenience wrapper for synchronous embedding and search."""
+    q_emb = compute_embedding(query)
+    return search_with_embedding(q_emb, query, document_id)
+
+
 @app.post("/search")
 async def search_documents(request: SearchRequest):
     """
-    RAG Search Endpoint using Hybrid Search (RRF) and streaming LLM response.
+    RAG Search Endpoint with granular stage progression streamed via SSE:
+    1. Embedding prompt
+    2. Retrieving relevant documents & statutory articles
+    3. Synthesizing context and passing prompt to model
+    4. Model thinking & reasoning
+    5. Streaming character response
     """
     try:
         import logging
         logging.info(f"Received search request: {request.query}")
-        
-        # Run blocking operations in a thread pool
-        results = await asyncio.to_thread(embed_and_search, request.query, request.document_id)
-        logging.info(f"Found {len(results)} relevant citations for the query.")
-            
-        # Construct System Prompt with context
-        context_str = ""
-        for idx, row in enumerate(results, 1):
-            ptype = row['parent_type']
-            label = "CIVIL CODE ARTICLE" if ptype == "article" else "JURISPRUDENCE CASE"
-            context_str += f"\n[{idx}] SOURCE TYPE: {label} (ID: {row['parent_id']})\n"
-            if row.get('metadata'):
-                meta = row['metadata']
-                if meta.get('title') and meta.get('gr_number'):
-                    context_str += f"TITLE: {meta['title']} (GR No. {meta['gr_number']})\n"
-                if meta.get('source_url'):
-                    context_str += f"LINK: {meta['source_url']}\n"
-            context_str += f"CONTENT: {row['content']}\n"
-            
-        system_prompt = f"""You are CIVIL-LEX, a strict and specialized Philippine Legal Assistant. Your PRIMARY AND EXCLUSIVE MISSION is to analyze and answer queries strictly related to the Philippine Civil Code and Philippine civil jurisprudence.
+
+        async def sse_generator():
+            try:
+                logging.info("Starting SSE stream with granular RAG stages...")
+
+                # Stage 1: Embedding the prompt
+                yield f"data: {dumps({'type': 'status', 'stage': 'embedding', 'message': 'Generating vector embedding for query...'})}\n\n"
+                q_emb = await asyncio.to_thread(compute_embedding, request.query)
+
+                # Stage 2: Getting the relevant document
+                yield f"data: {dumps({'type': 'status', 'stage': 'retrieving', 'message': 'Searching Philippine Civil Code articles & jurisprudence...'})}\n\n"
+                results = await asyncio.to_thread(search_with_embedding, q_emb, request.query, request.document_id)
+                logging.info(f"Found {len(results)} relevant citations for the query.")
+
+                # Send citations and retrieval completion status
+                yield f"data: {dumps({'type': 'citations', 'data': results})}\n\n"
+                yield f"data: {dumps({'type': 'status', 'stage': 'retrieving_done', 'message': f'Retrieved {len(results)} relevant legal provisions & doctrines', 'count': len(results)})}\n\n"
+
+                # Stage 3: Passing final prompt & context to model
+                yield f"data: {dumps({'type': 'status', 'stage': 'prompting', 'message': 'Synthesizing statutory context & preparing model prompt...'})}\n\n"
+                context_str = ""
+                for idx, row in enumerate(results, 1):
+                    ptype = row['parent_type']
+                    label = "CIVIL CODE ARTICLE" if ptype == "article" else "JURISPRUDENCE CASE"
+                    context_str += f"\n[{idx}] SOURCE TYPE: {label} (ID: {row['parent_id']})\n"
+                    if row.get('metadata'):
+                        meta = row['metadata']
+                        if meta.get('title') and meta.get('gr_number'):
+                            context_str += f"TITLE: {meta['title']} (GR No. {meta['gr_number']})\n"
+                        if meta.get('source_url'):
+                            context_str += f"LINK: {meta['source_url']}\n"
+                    context_str += f"CONTENT: {row['content']}\n"
+
+                system_prompt = f"""You are CIVIL-LEX, a strict and specialized Philippine Legal Assistant. Your PRIMARY AND EXCLUSIVE MISSION is to analyze and answer queries strictly related to the Philippine Civil Code and Philippine civil jurisprudence.
 
 CRITICAL INSTRUCTIONS - YOU MUST FOLLOW THESE STRICTLY:
 1. REFUSAL RULE FOR QUERIES: If the user's query is NOT related to the Philippine Civil Code, civil law, or Philippine civil jurisprudence, YOU MUST REFUSE TO ANSWER. Note that the Civil Code broadly covers Persons, Property, Succession, and Obligations & Contracts. Therefore, queries about ANY agreements, real estate, inheritance, or personal civil relations inherently involve Civil Law. Do NOT provide general legal advice, and do NOT answer queries about purely criminal, tax, or corporate law. If unrelated, reply ONLY with: "I am programmed only to assist with matters related to the Philippine Civil Code. I cannot answer queries outside this scope."
@@ -456,48 +483,52 @@ CRITICAL INSTRUCTIONS - YOU MUST FOLLOW THESE STRICTLY:
 CONTEXT:
 {context_str}
 """
-        
-        # 4. Stream response from LLM (LM Studio -> Gemini fallback)
-        history_dicts = [{"role": msg.role, "content": msg.content} for msg in request.history]
-        
-        async def sse_generator():
-            logging.info("Starting SSE stream...")
-            # 1. Send the citations first
-            yield f"data: {dumps({'type': 'citations', 'data': results})}\n\n"
-            
-            # 2. Stream the AI text
-            full_text = ""
-            async for chunk in generate_response_stream(system_prompt, request.query, history_dicts):
-                full_text += chunk
-                yield f"data: {dumps({'type': 'text', 'text': chunk})}\n\n"
-                
-            # 3. Signal completion
-            logging.info("Finished streaming response.")
-            yield f"data: {dumps({'type': 'done'})}\n\n"
 
-            # 4. Save to DB if session_id is provided
-            if request.session_id:
-                try:
-                    conn = get_db_connection()
-                    with conn.cursor() as cur:
-                        # Convert citations to JSON string
-                        citations_json = dumps(results)
-                        cur.execute("""
-                            INSERT INTO chat_messages (session_id, role, content, citations)
-                            VALUES (%s, 'assistant', %s, %s)
-                        """, (request.session_id, full_text, citations_json))
-                        conn.commit()
-                except Exception as db_err:
-                    logging.error(f"Failed to save message to DB: {db_err}")
-                finally:
-                    if 'conn' in locals():
-                        conn.close()
-        
+                # Stage 4: Thinking / Reasoning
+                yield f"data: {dumps({'type': 'status', 'stage': 'thinking', 'message': 'Analyzing statutory provisions and formulating legal reasoning...'})}\n\n"
+
+                # Stage 5: Character stream from LLM
+                history_dicts = [{"role": msg.role, "content": msg.content} for msg in request.history]
+                full_text = ""
+                is_first_chunk = True
+
+                async for chunk in generate_response_stream(system_prompt, request.query, history_dicts):
+                    if is_first_chunk:
+                        is_first_chunk = False
+                        yield f"data: {dumps({'type': 'status', 'stage': 'streaming', 'message': 'Streaming legal analysis...'})}\n\n"
+                    full_text += chunk
+                    yield f"data: {dumps({'type': 'text', 'text': chunk})}\n\n"
+
+                # Signal completion
+                logging.info("Finished streaming response.")
+                yield f"data: {dumps({'type': 'done'})}\n\n"
+
+                # Save to DB if session_id is provided
+                if request.session_id:
+                    try:
+                        conn = get_db_connection()
+                        with conn.cursor() as cur:
+                            citations_json = dumps(results)
+                            cur.execute("""
+                                INSERT INTO chat_messages (session_id, role, content, citations)
+                                VALUES (%s, 'assistant', %s, %s)
+                            """, (request.session_id, full_text, citations_json))
+                            conn.commit()
+                    except Exception as db_err:
+                        logging.error(f"Failed to save message to DB: {db_err}")
+                    finally:
+                        if 'conn' in locals():
+                            conn.close()
+
+            except Exception as stream_err:
+                logging.error(f"Error in SSE stream generation: {stream_err}")
+                yield f"data: {dumps({'type': 'error', 'message': str(stream_err)})}\n\n"
+
         return StreamingResponse(
             sse_generator(),
             media_type="text/event-stream"
         )
-        
+
     except HTTPException:
         raise
     except Exception as e:

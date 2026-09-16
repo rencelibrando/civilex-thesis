@@ -1,14 +1,13 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
-import { Send, Download, Maximize2, ShieldCheck, File, Upload, Loader2, FileText, CheckCircle2, Trash2, BookOpen } from "lucide-react";
+import { useState, useEffect, useRef, useCallback } from "react";
+import { Send, Download, Maximize2, ShieldCheck, File, Upload, Loader2, FileText, CheckCircle2, Trash2, BookOpen, User, Sparkles, RefreshCw, ChevronRight, Square, Brain } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Accordion, AccordionItem, AccordionTrigger, AccordionContent } from "@/components/ui/accordion";
-import { userProfile } from "@/lib/mock-data";
 import { supabase } from "@/lib/supabase";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -24,6 +23,55 @@ interface UserDocument {
   progress?: number;
   created_at: string;
 }
+
+interface DocPromptStarter {
+  id: string;
+  label: string;
+  prompt: string;
+}
+
+const DOC_STARTER_PROMPTS: DocPromptStarter[] = [
+  {
+    id: "d1",
+    label: "Summary",
+    prompt: "Summarize the key provisions, purpose, and binding terms of this document.",
+  },
+  {
+    id: "d2",
+    label: "Legal Risks",
+    prompt: "Identify critical legal risks, liabilities, and potential dispute points in this document.",
+  },
+  {
+    id: "d3",
+    label: "Civil Code",
+    prompt: "Check this document for compliance with mandatory Philippine Civil Code provisions.",
+  },
+  {
+    id: "d4",
+    label: "Obligations",
+    prompt: "Extract and enumerate all affirmative and negative obligations of each party.",
+  },
+  {
+    id: "d5",
+    label: "Termination",
+    prompt: "Analyze the default, termination, breach remedies, and liquidated damages clauses.",
+  },
+  {
+    id: "d6",
+    label: "Void Clauses",
+    prompt: "Flag any clauses that could be deemed void, unconscionable, or contrary to public policy.",
+  },
+  {
+    id: "d7",
+    label: "Citations",
+    prompt: "Cite relevant Civil Code articles and Supreme Court jurisprudence governing this document.",
+  },
+  {
+    id: "d8",
+    label: "Dispute Terms",
+    prompt: "Review the governing law, dispute resolution, arbitration, and venue stipulations.",
+  },
+];
 
 // ---------------------------------------------------------------------------
 // Markdown renderer for assistant messages
@@ -230,7 +278,33 @@ export default function ResearchPage() {
   };
 
   const [inputValue, setInputValue] = useState("");
+  const [isTyping, setIsTyping] = useState(false);
+  const [ragStatus, setRagStatus] = useState<any>(null);
+  const [docStarters, setDocStarters] = useState<DocPromptStarter[]>([]);
+  const abortControllerRef = useRef<AbortController | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const refreshDocStarters = useCallback(() => {
+    const pool = [...DOC_STARTER_PROMPTS];
+    for (let i = pool.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [pool[i], pool[j]] = [pool[j], pool[i]];
+    }
+    setDocStarters(pool.slice(0, 2));
+  }, []);
+
+  useEffect(() => {
+    refreshDocStarters();
+  }, [activeDocument?.id, refreshDocStarters]);
+
+  const handleStop = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    setIsTyping(false);
+    setRagStatus(null);
+  };
 
   // Fetch documents on load
   useEffect(() => {
@@ -368,10 +442,12 @@ export default function ResearchPage() {
     }
   };
 
-  const handleSend = async () => {
-    if (!inputValue.trim()) return;
-    const userText = inputValue;
+  const handleSend = async (overrideText?: string) => {
+    const userText = (overrideText ?? inputValue).trim();
+    if (!userText || isTyping) return;
     setInputValue("");
+    setIsTyping(true);
+    setRagStatus({ stage: 'embedding', message: 'Analyzing legal document context...' });
     
     const userMsg = { id: Date.now(), role: "user", content: userText };
     setMessages((prev: any[]) => [...prev, userMsg]);
@@ -379,10 +455,13 @@ export default function ResearchPage() {
     const assistantId = Date.now() + 1;
     setMessages((prev: any[]) => [
       ...prev,
-      { id: assistantId, role: "assistant", content: "" }
+      { id: assistantId, role: "assistant", content: "", ragStatus: { stage: 'embedding', message: 'Analyzing document...' } }
     ]);
 
     try {
+      const controller = new AbortController();
+      abortControllerRef.current = controller;
+
       const { data: { session } } = await supabase.auth.getSession();
       const token = session?.access_token || '';
 
@@ -422,6 +501,7 @@ export default function ResearchPage() {
 
       const res = await fetch("http://localhost:4000/api/chat", {
         method: "POST",
+        signal: controller.signal,
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
@@ -454,7 +534,12 @@ export default function ResearchPage() {
             if (line.startsWith("data: ")) {
               try {
                 const data = JSON.parse(line.slice(6));
-                if (data.type === "text") {
+                if (data.type === "status") {
+                  setRagStatus(data);
+                  setMessages((prev: any[]) => prev.map((m: any) => 
+                    m.id === assistantId ? { ...m, ragStatus: data } : m
+                  ));
+                } else if (data.type === "text") {
                   setMessages((prev: any[]) => prev.map((m: any) => 
                     m.id === assistantId ? { ...m, content: m.content + data.text } : m
                   ));
@@ -462,6 +547,8 @@ export default function ResearchPage() {
                   setMessages((prev: any[]) => prev.map((m: any) => 
                     m.id === assistantId ? { ...m, citations: data.data } : m
                   ));
+                } else if (data.type === "done") {
+                  setRagStatus({ stage: 'completed', message: 'Analysis complete' });
                 }
               } catch (e) {
                 console.error("Parse error", e);
@@ -470,11 +557,20 @@ export default function ResearchPage() {
           }
         }
       }
-    } catch (err) {
-      console.error("Chat error:", err);
-      setMessages((prev: any[]) => prev.map((m: any) => 
-        m.id === assistantId ? { ...m, content: "Sorry, an error occurred while processing your request." } : m
-      ));
+    } catch (err: any) {
+      if (err.name === 'AbortError') {
+        setMessages((prev: any[]) => prev.map((m: any) => 
+          m.id === assistantId ? { ...m, content: m.content || "Analysis stopped." } : m
+        ));
+      } else {
+        console.error("Chat error:", err);
+        setMessages((prev: any[]) => prev.map((m: any) => 
+          m.id === assistantId ? { ...m, content: "Sorry, an error occurred while processing your request." } : m
+        ));
+      }
+    } finally {
+      setIsTyping(false);
+      abortControllerRef.current = null;
     }
   };
 
@@ -664,7 +760,9 @@ export default function ResearchPage() {
                       <ShieldCheck className="w-3 h-3 text-primary-foreground" />
                     </div>
                   ) : (
-                    <AvatarImage src={userProfile.avatar} />
+                    <AvatarFallback className="bg-muted flex items-center justify-center">
+                      <User className="w-3 h-3 text-muted-foreground" />
+                    </AvatarFallback>
                   )}
                 </Avatar>
                 
@@ -718,35 +816,67 @@ export default function ResearchPage() {
           </div>
         </div>
 
-        {/* Action Chips */}
-        {messages.length === 1 && activeDocument && (
-          <div className="px-4 pb-2 pt-2 bg-card/50 flex flex-wrap gap-2">
-             <button onClick={() => setInputValue("Summarize this document")} className="text-xs px-3 py-1.5 rounded-full bg-background text-muted-foreground hover:bg-accent hover:text-accent-foreground border border-border transition-colors">
-                Summarize this document
-              </button>
-              <button onClick={() => setInputValue("Identify key legal risks")} className="text-xs px-3 py-1.5 rounded-full bg-background text-muted-foreground hover:bg-accent hover:text-accent-foreground border border-border transition-colors">
-                Identify key legal risks
-              </button>
+        {/* Dynamic Document Analysis Prompt Suggestions (Horizontal, Non-Scrollable) */}
+        {messages.length === 1 && (
+          <div className="px-3 py-2 border-t border-border/40 bg-card/40 space-y-1.5 animate-fade-in">
+            <div className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
+              <Sparkles className="w-3 h-3 text-primary" />
+              <span>Suggested Document Inquiries:</span>
+            </div>
+
+            {/* Non-scrollable horizontal row: 2 items side-by-side filling panel width without scrolling */}
+            <div className="flex flex-row items-center gap-1.5 w-full">
+              {docStarters.slice(0, 2).map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => handleSend(item.prompt)}
+                  className="flex-1 min-w-0 group flex items-center justify-between gap-1.5 px-2.5 py-1.5 rounded-xl text-xs bg-accent/40 dark:bg-accent/20 hover:bg-primary hover:text-primary-foreground text-foreground border border-border/70 hover:border-primary/40 transition-all shadow-2xs hover:shadow-xs active:scale-98 cursor-pointer"
+                  title={item.prompt}
+                >
+                  <span className="font-semibold text-[10px] uppercase tracking-wider text-primary group-hover:text-primary-foreground/90 bg-primary/10 dark:bg-primary/20 group-hover:bg-white/20 px-1.5 py-0.5 rounded shrink-0">
+                    {item.label}
+                  </span>
+                  <span className="truncate text-xs text-left min-w-0 flex-1">
+                    {item.prompt}
+                  </span>
+                  <ChevronRight className="w-3 h-3 opacity-50 group-hover:opacity-100 group-hover:translate-x-0.5 transition-all shrink-0" />
+                </button>
+              ))}
+            </div>
           </div>
         )}
 
         {/* Input */}
         <div className="p-4 border-t border-border bg-card/50">
-          <div className="relative flex items-center bg-background border border-border rounded-xl overflow-hidden focus-within:ring-2 focus-within:ring-primary/20 focus-within:border-primary transition-all shadow-sm">
-            <Input
+          <div className="relative flex items-center bg-card dark:bg-[#121620] border border-border/80 dark:border-white/10 rounded-2xl overflow-hidden focus-within:ring-2 focus-within:ring-primary/20 focus-within:border-primary transition-all shadow-sm">
+            <input
+              type="text"
               value={inputValue}
               onChange={(e) => setInputValue(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && handleSend()}
               placeholder={activeDocument ? `Ask about ${activeDocument.filename}...` : "Ask a general question..."}
-              className="flex-1 border-none bg-transparent shadow-none focus-visible:ring-0 text-foreground px-4 h-11 text-sm"
+              className="flex-1 bg-transparent dark:bg-transparent border-none shadow-none outline-none focus:outline-none focus:ring-0 text-foreground placeholder:text-muted-foreground px-4 h-11 text-sm"
             />
-            <Button 
-              onClick={handleSend}
-              disabled={!inputValue.trim()}
-              className="mr-1.5 bg-primary hover:bg-primary/90 text-primary-foreground rounded-lg h-8 w-8 p-0 shrink-0 shadow-sm"
-            >
-              <Send className="w-3.5 h-3.5" />
-            </Button>
+            {isTyping ? (
+              <Button 
+                type="button"
+                onClick={handleStop}
+                className="mr-1.5 bg-destructive hover:bg-destructive/90 text-destructive-foreground rounded-xl h-8 w-8 p-0 shrink-0 shadow-sm"
+                title="Stop Analysis"
+              >
+                <Square className="w-3.5 h-3.5 fill-current" />
+              </Button>
+            ) : (
+              <Button 
+                type="button"
+                onClick={() => handleSend()}
+                disabled={!inputValue.trim()}
+                className="mr-1.5 bg-primary hover:bg-primary/90 text-primary-foreground rounded-xl h-8 w-8 p-0 shrink-0 shadow-sm disabled:opacity-40"
+              >
+                <Send className="w-3.5 h-3.5" />
+              </Button>
+            )}
           </div>
         </div>
       </div>

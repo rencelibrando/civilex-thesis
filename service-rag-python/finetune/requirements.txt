@@ -1,0 +1,20 @@
+# Fine-Tuning Environment (Unsloth + TRL) for Windows
+# ===================================================
+# 1. First, install PyTorch 2.5.1 with CUDA 12.1 (Must be done BEFORE running pip install -r):
+# pip install torch==2.5.1 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+
+# 2. Install the rest of the dependencies:
+unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git
+trl
+peft
+accelerate
+bitsandbytes
+transformers
+datasets
+pyyaml
+
+# ===================================================
+#  WINDOWS TROUBLESHOOTING NOTES:
+# - Do NOT install `xformers`. PyTorch 2.5.1 has native SDPA (Flash Attention) built-in. Compiling xformers on Windows is unnecessary and prone to failure.
+# - If your script crashes with `AttributeError: module 'torch' has no attribute 'int1'`, it means a package automatically pulled in `torchao` which breaks PyTorch 2.5. Fix it by running:
+#   pip uninstall -y torchao

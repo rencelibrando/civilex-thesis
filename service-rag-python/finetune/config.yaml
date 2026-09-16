@@ -1,0 +1,39 @@
+model:
+  name_or_path: "unsloth/gemma-2-2b-it-bnb-4bit" # Switched to 2B to fit inside 6GB VRAM
+  load_in_4bit: true
+
+lora:
+  r: 16
+  lora_alpha: 32
+  target_modules: 
+    - "q_proj"
+    - "k_proj"
+    - "v_proj"
+    - "o_proj"
+    - "gate_proj"
+    - "up_proj"
+    - "down_proj"
+  lora_dropout: 0 # Unsloth optimizes dropout = 0
+  bias: "none"
+
+training:
+  output_dir: "./output/gemma4-civil-code-qlora"
+  num_train_epochs: 3
+  per_device_train_batch_size: 1 # Reduced from 2 to fit in 6GB VRAM
+  gradient_accumulation_steps: 8 # Increased to maintain effective batch size of 8
+  learning_rate: 2.0e-5 # Lowered from 2e-4. Gemma-2 is very sensitive and will output word salad on high learning rates.
+  lr_scheduler_type: "cosine"
+  warmup_ratio: 0.1 # Increased slightly to prevent early loss spikes
+  max_seq_length: 1024 # Reduced from 2048 to save activation memory on 6GB GPU
+  packing: false
+  bf16: true
+  logging_steps: 10
+  save_strategy: "epoch"
+  eval_strategy: "epoch"
+  load_best_model_at_end: true
+  metric_for_best_model: "eval_loss"
+  seed: 3407
+
+dataset:
+  train_file: "train_clean.jsonl"
+  eval_file: "eval.jsonl"

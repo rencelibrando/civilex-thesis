@@ -46,3 +46,7 @@ __pycache__/
 # supabase
 supabase/
 
+# agent configuration
+.agents/
+
+

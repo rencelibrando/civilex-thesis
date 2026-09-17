@@ -685,16 +685,6 @@ export default function CivilCodePage() {
                   </p>
                 </div>
 
-                <div className="bg-gradient-to-br from-accent/50 to-accent/20 border border-primary/15 rounded-2xl p-7 shadow-sm">
-                  <h3 className="text-primary font-bold mb-4 flex items-center gap-2 text-lg">
-                    <BookOpen className="w-5 h-5" />
-                    CIVIL-LEX AI Explanation
-                  </h3>
-                  <p className="text-sm text-foreground leading-relaxed mb-4">
-                    AI generated explanation feature goes here. (Connect to your RAG explanation endpoint to dynamically generate plain English explanations).
-                  </p>
-                </div>
-
                 {articleData.related_cases && articleData.related_cases.length > 0 && (
                   <div>
                     <h3 className="text-xl font-bold text-foreground mb-5 flex items-center gap-2">

@@ -31,6 +31,12 @@ export interface RagStatus {
   count?: number;
 }
 
+export interface LegalAnalytics {
+  nli_score: number;
+  nli_status: "Grounded" | "Unverified";
+  top_article_score?: number;
+}
+
 export interface Message {
   id: number;
   role: "user" | "assistant";
@@ -38,6 +44,7 @@ export interface Message {
   reasoning?: string;
   citations?: any[];
   ragStatus?: RagStatus;
+  legalAnalytics?: LegalAnalytics | null;
 }
 
 export interface StarterPrompt {
@@ -244,7 +251,10 @@ export function generateFollowUpPrompts(lastAnswer: string, citations: any[] = [
   const textArticleMatches = Array.from(lastAnswer.matchAll(/(?:Article|Art\.)\s*(\d+)/gi));
   const citedArticles = citations
     .filter((c) => (c.parent_type === "article" || c.parent_type === "civil_code") && c.parent_id)
-    .map((c) => String(c.parent_id).replace(/\D/g, ""));
+    .map((c) => {
+      const match = String(c.parent_id).match(/ART[-_]?(\d+)/i);
+      return match ? match[1] : String(c.parent_id).replace(/\D/g, "");
+    });
 
   const detectedArticles = Array.from(
     new Set([...textArticleMatches.map((m) => m[1]), ...citedArticles])
@@ -307,6 +317,8 @@ interface ChatContextType {
   setActiveCitationFilter: (f: 'all' | 'latest') => void;
   selectedCitation: any | null;
   setSelectedCitation: (cit: any | null) => void;
+  legalAnalytics: LegalAnalytics | null;
+  setLegalAnalytics: (analytics: LegalAnalytics | null) => void;
   sessionId: string | null;
   setSessionId: (id: string | null) => void;
   followUpPrompts: string[];
@@ -341,7 +353,9 @@ export function mergeCitations(existing: any[], incoming: any[]): any[] {
   return merged.sort((a, b) => {
     const priority = (type?: string) =>
       type === "article" || type === "civil_code" ? 1 : type === "user_document" ? 2 : 3;
-    return priority(a.parent_type) - priority(b.parent_type);
+    const pDiff = priority(a.parent_type) - priority(b.parent_type);
+    if (pDiff !== 0) return pDiff;
+    return (b.suitability_percent || 0) - (a.suitability_percent || 0);
   });
 }
 
@@ -365,6 +379,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const [retainedCitations, setRetainedCitations] = useState<any[]>([]);
   const [activeCitationFilter, setActiveCitationFilter] = useState<'all' | 'latest'>('all');
   const [selectedCitation, setSelectedCitation] = useState<any | null>(null);
+  const [legalAnalytics, setLegalAnalytics] = useState<LegalAnalytics | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [followUpPrompts, setFollowUpPrompts] = useState<string[]>([]);
   const [starterPrompts, setStarterPrompts] = useState<StarterPrompt[]>([]);
@@ -511,6 +526,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     setRetainedCitations([]);
     setActiveCitationFilter('all');
     setSelectedCitation(null);
+    setLegalAnalytics(null);
     setInputValue("");
     setSessionId(null);
     setFollowUpPrompts([]);
@@ -533,6 +549,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     setInputValue("");
     setIsTyping(true);
     setCurrentCitations([]);
+    setLegalAnalytics(null);
     setFollowUpPrompts([]);
 
     // Initialize RAG status to embedding stage
@@ -663,6 +680,13 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                       msg.id === assistantId ? { ...msg, citations: receivedCitations } : msg
                     )
                   );
+                } else if (data.type === "legal_analytics") {
+                  setLegalAnalytics(data.data);
+                  setMessages((prev) =>
+                    prev.map((msg) =>
+                      msg.id === assistantId ? { ...msg, legalAnalytics: data.data } : msg
+                    )
+                  );
                 } else if (data.type === "accumulated_citations") {
                   const accumulated = (data.data || []).sort((a: any, b: any) => {
                     const priority = (type?: string) =>
@@ -733,11 +757,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           prev.map((msg) =>
             msg.id === assistantId
               ? {
-                  ...msg,
-                  content:
-                    msg.content ||
-                    "> ⚠️ **Connection Notice**\n>\n> Unable to connect to the CIVIL-LEX legal service. Please check your network connection and try again.",
-                }
+                ...msg,
+                content:
+                  msg.content ||
+                  "> ⚠️ **Connection Notice**\n>\n> Unable to connect to the CIVIL-LEX legal service. Please check your network connection and try again.",
+              }
               : msg
           )
         );
@@ -763,6 +787,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         setActiveCitationFilter,
         selectedCitation,
         setSelectedCitation,
+        legalAnalytics,
+        setLegalAnalytics,
         sessionId,
         setSessionId,
         followUpPrompts,

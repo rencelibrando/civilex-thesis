@@ -6,7 +6,7 @@ This document outlines the concrete technical implementation for **Phase 2 (Pyth
 
 The backend is split into two distinct local microservices:
 1. **Node.js API Gateway (Port 4000):** Acts as the public-facing gateway for the Next.js frontend. It is strictly responsible for routing, CORS, and authenticating users using Supabase JWTs.
-2. **Python FastAPI RAG Service (Port 8000):** Isolated service dedicated to heavy AI workloads: embedding queries, searching the vector database, executing OCR, and communicating with the LLM (LM Studio or Groq/Gemini fallback).
+2. **Python FastAPI RAG Service (Port 8000):** Isolated service dedicated to heavy AI workloads: embedding queries, searching the vector database, executing OCR, and communicating with the LLM (exclusively via LM Studio hosting Gemma 4 E4B).
 
 *Security Note: The Next.js frontend NEVER talks to the Python service directly. It only talks to the Node.js Gateway.*
 
@@ -49,7 +49,7 @@ For RAG chat and other proxied routes, `http-proxy-middleware` seamlessly forwar
 *   `sentence-transformers`: Local XML-RoBERTa embedding generation.
 *   `pymupdf` (fitz): Blazing fast digital PDF text extraction.
 *   `pytesseract`: OCR fallback for scanned images.
-*   `httpx`: Async HTTP client for communicating with LM Studio and Groq.
+*   `httpx`: Async HTTP client for communicating with LM Studio.
 *   `pydantic`: Data validation for incoming payloads.
 
 ### Folder Structure
@@ -61,7 +61,7 @@ service-rag-python/
 │   └── database.py        # Supabase client initialization
 ├── services/
 │   ├── embedding.py       # sentence-transformers logic
-│   ├── llm_client.py      # LLM logic (LM Studio -> Groq fallback)
+│   ├── llm_client.py      # LLM logic (LM Studio streaming for Gemma 4 E4B)
 │   └── document.py        # PyMuPDF/Tesseract extraction & Chunking
 └── requirements.txt
 ```
@@ -86,25 +86,25 @@ service-rag-python/
 
 ---
 
-## 4. LLM Fallback Mechanism (Reliability)
+## 4. LLM Service Architecture (Local LM Studio Inference)
 
-Because this is a thesis defense project running on a local Ryzen 5 laptop, the LM Studio connection (via Cloudflare tunnel) might experience high latency or timeouts. 
+The system relies on local/tunneled inference using LM Studio to host the fine-tuned **Gemma 4 (E4B)** model:
 
-The `services/llm_client.py` implements a robust fallback:
 ```python
-async def generate_response_stream(prompt):
-    try:
-        # ATTEMPT 1: Primary LM Studio (Local/Tunnel)
-        # Timeout set to 5 seconds for initial connection
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            response = await client.post(LM_STUDIO_URL, json=prompt)
-            async for chunk in response.aiter_lines():
-                yield chunk
-    except (httpx.TimeoutException, httpx.ConnectError):
-        # ATTEMPT 2: Fallback to Groq API (Cloud)
-        async with httpx.AsyncClient() as client:
-            response = await client.post(GROQ_API_URL, json=prompt, headers={"Authorization": f"Bearer {GROQ_API_KEY}"})
-            async for chunk in response.aiter_lines():
-                yield chunk
+async def generate_response_stream(system_prompt: str, user_query: str, history: list = None):
+    # Connects exclusively to LM Studio hosting Gemma 4 (E4B)
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        payload = {
+            "model": "local-model",
+            "messages": messages,
+            "temperature": 0.3,
+            "stream": True
+        }
+        url = f"{LM_STUDIO_URL.rstrip('/')}/chat/completions"
+        async with client.stream("POST", url, json=payload) as response:
+            response.raise_for_status()
+            async for line in response.aiter_lines():
+                # Stream Markdown tokens back to client
+                yield content
 ```
-This guarantees the presentation will never fail even if the local LLM hangs.
+This ensures complete data sovereignty and adheres strictly to the fine-tuned offline model architecture.

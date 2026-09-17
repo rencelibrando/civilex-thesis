@@ -14,8 +14,7 @@ CIVIL-LEX is a bilingual (English/Tagalog) legal hybrid Retrieval-Augmented Gene
     *   *Document Extraction:* `PyMuPDF` (for fast digital text) + `Tesseract OCR` (fallback for scanned images). 
     *   *Embeddings:* XML-RoBERTa Multilingual v1.
     *   *Vector Search:* Hybrid Search (Postgres Full-Text Search `tsvector` + `pgvector` HNSW) fused via Reciprocal Rank Fusion (RRF).
-*   **LLM Inference (Primary):** Gemma 4 (E4B) hosted via LM Studio on a secondary laptop, exposed via Cloudflare Tunnel.
-*   **LLM Inference (Fallback):** Gemini Flash API (Cloud-based, for presentation reliability).
+*   **LLM Inference:** Gemma 4 (E4B) hosted exclusively via LM Studio on a dedicated laptop, exposed via zerotier sd wan / local network. 
 
 ---
 
@@ -28,7 +27,7 @@ sequenceDiagram
     participant Node as Node.js Gateway (Ubuntu)
     participant DB as Postgres (pgvector)
     participant FastAPI as Python RAG Service
-    participant LLM as LM Studio / Fallback
+    participant LLM as LM Studio (Gemma 4 E4B)
 
     %% Document Upload Flow
     Note over Client, DB: Document Upload Pipeline

@@ -21,6 +21,9 @@ import {
   ExternalLink,
   Copy,
   Check,
+  ShieldCheck,
+  Info,
+  AlertCircle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { supabase } from "@/lib/supabase";
@@ -116,7 +119,7 @@ function RagPipelineStepper({ status, isLive }: { status: RagStatus | null; isLi
   // If live and still before text streaming: show active prominent stepper
   if (isLive && (currentStage === "embedding" || currentStage === "retrieving" || currentStage === "prompting" || currentStage === "thinking")) {
     return (
-      <div className="w-full max-w-md p-3.5 rounded-2xl bg-card dark:bg-[#141824] border border-primary/20 shadow-xs animate-fade-in space-y-2.5">
+      <div className="w-full max-w-md p-3.5 rounded-2xl bg-card border border-border/80 dark:border-white/10 shadow-xs animate-fade-in space-y-2.5">
         <div className="flex items-center justify-between text-xs font-semibold text-primary">
           <span className="flex items-center gap-1.5">
             <Sparkles className="w-3.5 h-3.5 animate-pulse text-primary" />
@@ -227,6 +230,7 @@ export default function ChatPage() {
     setActiveCitationFilter,
     selectedCitation,
     setSelectedCitation,
+    legalAnalytics,
     sessionId,
     setSessionId,
     followUpPrompts,
@@ -239,6 +243,7 @@ export default function ChatPage() {
 
   const [isAutoScrollEnabled, setIsAutoScrollEnabled] = useState(true);
   const [copiedCitation, setCopiedCitation] = useState(false);
+  const [isNliModalOpen, setIsNliModalOpen] = useState(false);
 
   const handleCopyCitation = useCallback((text: string) => {
     if (!navigator?.clipboard) return;
@@ -405,8 +410,8 @@ export default function ChatPage() {
                       <div
                         className={`px-4 py-3 rounded-2xl w-full ${
                           msg.role === "user"
-                            ? "bg-primary text-primary-foreground rounded-tr-sm text-sm shadow-xs"
-                            : "bg-accent/40 dark:bg-[#141824] border border-primary/10 text-foreground rounded-tl-sm shadow-xs"
+                            ? "bg-primary text-primary-foreground dark:bg-zinc-800 dark:text-zinc-100 rounded-tr-sm text-sm shadow-xs"
+                            : "bg-accent/40 dark:bg-card border border-border/80 dark:border-white/10 text-foreground rounded-tl-sm shadow-xs"
                         }`}
                       >
                         {isAssistant ? (
@@ -507,7 +512,7 @@ export default function ChatPage() {
             {/* ------------------------------------------------------------- */}
             {/* 3. Unified Chat Input Box (100% Even Color Across Container)  */}
             {/* ------------------------------------------------------------- */}
-            <div className="relative flex items-center bg-card dark:bg-[#121620] border border-border/80 dark:border-white/10 rounded-2xl overflow-hidden focus-within:ring-2 focus-within:ring-primary focus-within:border-primary transition-all shadow-sm">
+            <div className="relative flex items-center bg-card border border-border/80 dark:border-white/10 rounded-2xl overflow-hidden focus-within:ring-2 focus-within:ring-primary focus-within:border-primary transition-all shadow-sm">
               <Button
                 type="button"
                 variant="ghost"
@@ -606,24 +611,133 @@ export default function ChatPage() {
             if (displayCitations.length > 0) {
               return (
                 <div className="space-y-3">
+                  {/* NLI Statutory Grounding Reliability Header */}
+                  {legalAnalytics && (
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setIsNliModalOpen(true)}
+                      onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && setIsNliModalOpen(true)}
+                      className="p-3 mb-3 rounded-xl bg-card border border-border hover:border-primary/40 hover:bg-muted/40 transition-all duration-200 shadow-xs cursor-pointer group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                      title="Click to view full Natural Language Inference (NLI) statutory grounding audit"
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 border transition-transform group-hover:scale-105 ${
+                            legalAnalytics.nli_score >= 85
+                              ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-600 dark:text-emerald-400"
+                              : legalAnalytics.nli_score >= 70
+                              ? "bg-blue-500/10 border-blue-500/20 text-blue-600 dark:text-blue-400"
+                              : "bg-amber-500/10 border-amber-500/20 text-amber-600 dark:text-amber-400"
+                          }`}>
+                            <ShieldCheck className="w-4 h-4" />
+                          </div>
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-xs font-semibold text-foreground group-hover:text-primary transition-colors">
+                                NLI Grounding
+                              </span>
+                              <span className="text-[10px] font-mono font-medium px-1.5 py-0.2 rounded bg-muted text-muted-foreground border border-border/70">
+                                RA 386
+                              </span>
+                            </div>
+                            <p className="text-[11px] text-muted-foreground truncate">
+                              Statutory entailment reliability
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-1 shrink-0">
+                          <span
+                            className={`text-xs font-bold px-2 py-0.5 rounded-md border tabular-nums ${
+                              legalAnalytics.nli_score >= 85
+                                ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
+                                : legalAnalytics.nli_score >= 70
+                                ? "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60"
+                                : "text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/50 border-amber-200 dark:border-amber-800/60"
+                            }`}
+                          >
+                            {legalAnalytics.nli_score}%
+                          </span>
+                          <Info className="w-3.5 h-3.5 text-muted-foreground/60 group-hover:text-primary transition-colors ml-0.5" />
+                        </div>
+                      </div>
+
+                      {/* Dynamic Visual Progress Meter */}
+                      <div className="w-full bg-muted/70 dark:bg-muted/40 rounded-full h-1.5 overflow-hidden mt-2.5">
+                        <div
+                          className={`h-full rounded-full transition-all duration-700 ease-out ${
+                            legalAnalytics.nli_score >= 85
+                              ? "bg-emerald-500"
+                              : legalAnalytics.nli_score >= 70
+                              ? "bg-blue-500"
+                              : "bg-amber-500"
+                          }`}
+                          style={{ width: `${Math.min(100, Math.max(0, legalAnalytics.nli_score))}%` }}
+                        />
+                      </div>
+
+                      {/* Verification Footer Label */}
+                      <div className="flex items-center justify-between mt-2 text-[10px]">
+                        <span className="flex items-center gap-1.5 text-muted-foreground">
+                          <span
+                            className={`w-1.5 h-1.5 rounded-full ${
+                              legalAnalytics.nli_score >= 85
+                                ? "bg-emerald-500 animate-pulse"
+                                : legalAnalytics.nli_score >= 70
+                                ? "bg-blue-500"
+                                : "bg-amber-500"
+                            }`}
+                          />
+                          {legalAnalytics.nli_score >= 85
+                            ? "Strict Statutory Entailment"
+                            : legalAnalytics.nli_score >= 70
+                            ? "Substantially Consistent"
+                            : "Generalized Principles"}
+                        </span>
+                        <span className="text-[10px] font-medium text-muted-foreground group-hover:text-primary transition-colors inline-flex items-center gap-0.5">
+                          Inspect audit <ChevronRight className="w-3 h-3 group-hover:translate-x-0.5 transition-transform" />
+                        </span>
+                      </div>
+                    </div>
+                  )}
+
                   {displayCitations.map((cit, idx) => (
                     <div
                       key={idx}
-                      className="p-3 bg-accent/30 dark:bg-accent/15 rounded-xl border border-primary/10 cursor-pointer hover:bg-accent/50 dark:hover:bg-accent/30 hover:border-primary/30 transition-all shadow-2xs"
+                      className="p-3 bg-card rounded-lg border border-border hover:bg-muted/40 cursor-pointer transition-colors shadow-xs group"
                       onClick={() => setSelectedCitation(cit)}
                     >
-                      <div className="flex items-center justify-between mb-1 gap-1">
-                        <h4 className="text-xs font-bold text-primary uppercase tracking-wide truncate">
-                          {cit.parent_type === "civil_code" || cit.parent_type === "article"
-                            ? "Civil Code Article"
-                            : cit.parent_type === "case"
-                            ? "Supreme Court Jurisprudence"
-                            : cit.parent_type?.toUpperCase?.() ?? "LEGAL SOURCE"}
-                        </h4>
-                        <span className="text-[10px] font-mono text-muted-foreground shrink-0">
-                          {cit.parent_id}
-                        </span>
+                      <div className="flex items-center justify-between mb-1.5 gap-2">
+                        <div className="min-w-0 flex items-center gap-1.5">
+                          <h4 className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider truncate">
+                            {cit.parent_type === "civil_code" || cit.parent_type === "article"
+                              ? "Civil Code"
+                              : cit.parent_type === "case"
+                              ? "Jurisprudence"
+                              : "Legal Authority"}
+                          </h4>
+                          <span className="text-[11px] font-mono font-medium text-foreground/80 px-1.5 py-0.5 rounded bg-muted border border-border/60 shrink-0">
+                            {cit.parent_id}
+                          </span>
+                        </div>
+
+                        {/* Suitability Match Percentage (Upper Right) - Color Coded (Green for Best Matches) */}
+                        {cit.suitability_percent !== undefined && (
+                          <span
+                            className={`text-xs font-semibold px-2 py-0.5 rounded-md border tabular-nums shrink-0 ${
+                              cit.suitability_percent >= 85
+                                ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
+                                : cit.suitability_percent >= 70
+                                ? "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60"
+                                : "text-muted-foreground bg-muted border-border"
+                            }`}
+                          >
+                            {cit.suitability_percent}%
+                          </span>
+                        )}
                       </div>
+
                       {cit.metadata?.title && (
                         <p className="text-xs font-semibold text-foreground line-clamp-1 mb-1">
                           {cit.metadata.title} {cit.metadata.gr_number ? `(GR ${cit.metadata.gr_number})` : ""}
@@ -678,6 +792,24 @@ export default function ChatPage() {
                   <span className="text-xs font-mono font-medium text-muted-foreground bg-accent/40 dark:bg-accent/20 px-2 py-0.5 rounded-md border border-border/50">
                     {selectedCitation.parent_id}
                   </span>
+                )}
+                {selectedCitation?.suitability_percent !== undefined && (
+                  <div className="inline-flex items-center gap-1.5 text-xs">
+                    <span className="text-[11px] text-muted-foreground font-medium">
+                      Suitability:
+                    </span>
+                    <span
+                      className={`text-xs font-semibold px-2 py-0.5 rounded-md border tabular-nums ${
+                        selectedCitation.suitability_percent >= 85
+                          ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
+                          : selectedCitation.suitability_percent >= 70
+                          ? "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60"
+                          : "text-muted-foreground bg-muted border-border"
+                      }`}
+                    >
+                      {selectedCitation.suitability_percent}%
+                    </span>
+                  </div>
                 )}
               </div>
 
@@ -754,6 +886,170 @@ export default function ChatPage() {
               </div>
             )}
           </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Natural Language Inference (NLI) Audit Modal */}
+      <Dialog open={isNliModalOpen} onOpenChange={setIsNliModalOpen}>
+        <DialogContent className="w-[92vw] sm:w-[580px] sm:max-w-[580px] max-h-[90vh] overflow-y-auto custom-scrollbar p-6 sm:p-7 rounded-2xl bg-card border border-border shadow-2xl">
+          <DialogHeader className="space-y-2 pb-4 border-b border-border/80">
+            <div className="flex items-center gap-2.5">
+              <div className="w-9 h-9 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center shrink-0">
+                <ShieldCheck className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
+              </div>
+              <div>
+                <DialogTitle className="text-base sm:text-lg font-bold text-foreground">
+                  Natural Language Inference (NLI) Audit
+                </DialogTitle>
+                <DialogDescription className="text-xs text-muted-foreground">
+                  Statutory Faithfulness & Hallucination Mitigation Verification
+                </DialogDescription>
+              </div>
+            </div>
+          </DialogHeader>
+
+          {legalAnalytics && (
+            <div className="space-y-5 pt-2">
+              {/* Score & Verdict Card */}
+              <div className="p-4 rounded-xl bg-accent/40 dark:bg-muted/30 border border-border/80 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
+                      Entailment Confidence
+                    </p>
+                    <div className="flex items-baseline gap-2 mt-0.5">
+                      <span className="text-3xl font-extrabold text-foreground tabular-nums">
+                        {legalAnalytics.nli_score}%
+                      </span>
+                      <span className={`text-xs font-semibold px-2 py-0.5 rounded-full border ${
+                        legalAnalytics.nli_score >= 85
+                          ? "text-emerald-700 dark:text-emerald-400 bg-emerald-500/10 border-emerald-500/25"
+                          : legalAnalytics.nli_score >= 70
+                          ? "text-blue-700 dark:text-blue-400 bg-blue-500/10 border-blue-500/25"
+                          : "text-amber-700 dark:text-amber-400 bg-amber-500/10 border-amber-500/25"
+                      }`}>
+                        {legalAnalytics.nli_score >= 85
+                          ? "Strictly Grounded (Verified)"
+                          : legalAnalytics.nli_score >= 70
+                          ? "Substantially Consistent"
+                          : "Preliminary Doctrine"}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <span className="text-[11px] font-mono font-semibold px-2 py-1 rounded bg-background border border-border text-foreground">
+                      RA 386 Civil Code
+                    </span>
+                  </div>
+                </div>
+
+                {/* Full Visual Progress Gauge */}
+                <div className="space-y-1">
+                  <div className="w-full bg-muted rounded-full h-2 overflow-hidden">
+                    <div
+                      className={`h-full rounded-full transition-all duration-700 ${
+                        legalAnalytics.nli_score >= 85
+                          ? "bg-emerald-500"
+                          : legalAnalytics.nli_score >= 70
+                          ? "bg-blue-500"
+                          : "bg-amber-500"
+                      }`}
+                      style={{ width: `${Math.min(100, Math.max(0, legalAnalytics.nli_score))}%` }}
+                    />
+                  </div>
+                  <div className="flex justify-between text-[10px] text-muted-foreground font-mono">
+                    <span>0% (Contradiction)</span>
+                    <span>70% (Consistent)</span>
+                    <span>85%+ (Strict Entailment)</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* How NLI Works in CIVIL-LEX */}
+              <div className="space-y-2.5">
+                <h4 className="text-xs font-semibold uppercase tracking-wider text-foreground flex items-center gap-1.5">
+                  <Brain className="w-3.5 h-3.5 text-primary" />
+                  How NLI Statutory Verification Works
+                </h4>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
+                  <div className="p-3 rounded-lg bg-card border border-border/70 space-y-1">
+                    <span className="text-[10px] font-bold text-primary uppercase font-mono">1. Premise</span>
+                    <p className="text-muted-foreground text-[11px] leading-relaxed">
+                      Codified statutory text extracted from Republic Act No. 386 provisions and relevant Supreme Court jurisprudence.
+                    </p>
+                  </div>
+                  <div className="p-3 rounded-lg bg-card border border-border/70 space-y-1">
+                    <span className="text-[10px] font-bold text-primary uppercase font-mono">2. Hypothesis</span>
+                    <p className="text-muted-foreground text-[11px] leading-relaxed">
+                      The synthesized legal advice, rules, and conclusions generated by the assistant for your specific query.
+                    </p>
+                  </div>
+                  <div className="p-3 rounded-lg bg-card border border-border/70 space-y-1">
+                    <span className="text-[10px] font-bold text-primary uppercase font-mono">3. Entailment Test</span>
+                    <p className="text-muted-foreground text-[11px] leading-relaxed">
+                      Cross-Encoder Natural Language Inference verifies the hypothesis is logically entailed by the premise without hallucination.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Entailment Classification Legend */}
+              <div className="space-y-2">
+                <h4 className="text-xs font-semibold uppercase tracking-wider text-foreground flex items-center gap-1.5">
+                  <Layers className="w-3.5 h-3.5 text-primary" />
+                  Entailment Classifications & Safeguards
+                </h4>
+                <div className="space-y-2 text-xs">
+                  <div className="p-2.5 rounded-lg border border-emerald-500/20 bg-emerald-500/5 flex items-start gap-2.5">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
+                    <div>
+                      <p className="font-semibold text-foreground text-xs">Entailment (Strict Grounding)</p>
+                      <p className="text-muted-foreground text-[11px] leading-relaxed">
+                        The generated answer strictly derives from positive statutory provisions. Citations accurately map to active codified articles.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="p-2.5 rounded-lg border border-blue-500/20 bg-blue-500/5 flex items-start gap-2.5">
+                    <Sparkles className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0 mt-0.5" />
+                    <div>
+                      <p className="font-semibold text-foreground text-xs">Neutral (Supplementary Synthesis)</p>
+                      <p className="text-muted-foreground text-[11px] leading-relaxed">
+                        Procedural instructions or explanatory context that is consistent with the law but not a verbatim statutory transcription.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="p-2.5 rounded-lg border border-rose-500/20 bg-rose-500/5 flex items-start gap-2.5">
+                    <AlertCircle className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" />
+                    <div>
+                      <p className="font-semibold text-foreground text-xs">Contradiction (Hallucination Defense)</p>
+                      <p className="text-muted-foreground text-[11px] leading-relaxed">
+                        Any conflicting legal advice or fabricated article numbers are detected and suppressed before delivery.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Software Quality Standard Note */}
+              <div className="p-3 rounded-lg bg-muted/40 border border-border text-[11px] text-muted-foreground flex items-center justify-between">
+                <span>Quality Standard: <strong>ISO/IEC 25010</strong> Functional Suitability & Faithfulness</span>
+                <span className="font-mono text-[10px]">CIVIL-LEX v1.0</span>
+              </div>
+
+              {/* Action Button */}
+              <div className="flex justify-end pt-2">
+                <Button
+                  type="button"
+                  onClick={() => setIsNliModalOpen(false)}
+                  className="bg-primary hover:bg-primary/90 text-primary-foreground rounded-xl px-5 h-9 text-xs font-medium cursor-pointer"
+                >
+                  Close Audit
+                </Button>
+              </div>
+            </div>
+          )}
         </DialogContent>
       </Dialog>
     </div>

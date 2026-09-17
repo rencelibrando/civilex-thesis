@@ -110,19 +110,19 @@ export default function DashboardPage() {
 
         {/* Action Cards */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          <Card className="bg-primary text-primary-foreground rounded-2xl border-none shadow-sm relative overflow-hidden group">
-            <div className="absolute -right-4 -top-4 w-24 h-24 bg-white/10 rounded-full blur-xl group-hover:bg-white/20 transition-all"></div>
+          <Card className="bg-primary text-primary-foreground dark:bg-card dark:border dark:border-border/80 dark:text-foreground rounded-2xl border-none shadow-sm relative overflow-hidden group">
+            <div className="absolute -right-4 -top-4 w-24 h-24 bg-white/10 dark:bg-white/5 rounded-full blur-xl group-hover:bg-white/20 transition-all"></div>
             <CardHeader className="pb-2 relative z-10">
-              <MessageSquare className="w-8 h-8 text-primary-foreground/80 mb-2" />
+              <MessageSquare className="w-8 h-8 text-primary-foreground/80 dark:text-foreground mb-2" />
               <CardTitle className="text-xl">Legal Chat</CardTitle>
             </CardHeader>
             <CardContent className="relative z-10">
-              <p className="text-primary-foreground/70 text-sm mb-4">
+              <p className="text-primary-foreground/70 dark:text-muted-foreground text-sm mb-4">
                 Consult CIVIL-LEX AI for statutory analysis, jurisprudence citations, and legal opinions.
               </p>
               <Link
                 href="/chat"
-                className="inline-flex items-center justify-center font-medium w-full bg-accent text-accent-foreground hover:bg-accent/90 focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-white/50 transition-all rounded-xl h-11 px-4"
+                className="inline-flex items-center justify-center font-medium w-full bg-accent text-accent-foreground dark:bg-primary dark:text-primary-foreground hover:bg-accent/90 dark:hover:bg-primary/90 focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-ring transition-all rounded-xl h-11 px-4 cursor-pointer"
               >
                 Start Chat <ArrowRight className="w-4 h-4 ml-2" />
               </Link>

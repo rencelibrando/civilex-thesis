@@ -10,6 +10,3 @@ POSTGRES_DB_URL = os.getenv(
 
 # LM Studio default URL (OpenAI Compatible)
 LM_STUDIO_URL = os.getenv("LM_STUDIO_URL", "http://127.0.0.1:1234/v1")
-
-# Gemini Fallback key
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")

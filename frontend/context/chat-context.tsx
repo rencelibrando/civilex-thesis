@@ -32,9 +32,13 @@ export interface RagStatus {
 }
 
 export interface LegalAnalytics {
-  nli_score: number;
-  nli_status: "Grounded" | "Unverified";
+  nli_score?: number | null;
+  nli_status: "Grounded" | "Unverified" | "Out of Domain";
   top_article_score?: number;
+  is_document_legal?: boolean | null;
+  is_out_of_domain?: boolean;
+  domain_category?: "civil" | "non_legal" | "other_legal" | "non_legal_document";
+  target_domain?: string | null;
 }
 
 export interface Message {
@@ -685,10 +689,21 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                     )
                   );
                 } else if (data.type === "legal_analytics") {
-                  setLegalAnalytics(data.data);
+                  const analytics = data.data as LegalAnalytics;
+                  setLegalAnalytics(analytics);
+                  if (analytics?.is_out_of_domain) {
+                    receivedCitations = [];
+                    setCurrentCitations([]);
+                  }
                   setMessages((prev) =>
                     prev.map((msg) =>
-                      msg.id === assistantId ? { ...msg, legalAnalytics: data.data } : msg
+                      msg.id === assistantId
+                        ? {
+                            ...msg,
+                            legalAnalytics: analytics,
+                            ...(analytics?.is_out_of_domain ? { citations: [] } : {}),
+                          }
+                        : msg
                     )
                   );
                 } else if (data.type === "accumulated_citations") {

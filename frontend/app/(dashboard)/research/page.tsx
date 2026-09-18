@@ -23,6 +23,7 @@ import {
   Layers,
   Scale,
   Info,
+  Compass,
   AlertCircle,
   PanelLeftClose,
   PanelLeftOpen,
@@ -639,18 +640,28 @@ export default function ResearchPage() {
   // Fetch documents on load
   useEffect(() => {
     fetchDocuments();
-    // Poll for status updates if any document is processing
+    // Poll for status updates if any document is processing or extracting
     const interval = setInterval(() => {
       setDocuments(prev => {
-        const needsPolling = prev.some(d => ['uploading', 'extracting'].includes(d.status));
+        const needsPolling = prev.some(d => d.status !== 'completed' && d.status !== 'error' && d.status !== 'rejected_unrelated');
         if (needsPolling) {
           fetchDocuments();
         }
         return prev;
       });
-    }, 5000);
+    }, 1500);
     return () => clearInterval(interval);
   }, []);
+
+  // Sync activeDocument with updated status in documents list
+  useEffect(() => {
+    if (activeDocument) {
+      const updated = documents.find(d => d.id === activeDocument.id);
+      if (updated && (updated.status !== activeDocument.status || updated.progress !== activeDocument.progress)) {
+        setActiveDocument(updated);
+      }
+    }
+  }, [documents, activeDocument]);
 
   const fetchDocuments = async () => {
     try {
@@ -782,9 +793,16 @@ export default function ResearchPage() {
     await handleFileProcess(file);
   };
 
+  const isDocProcessing = activeDocument
+    ? ['uploading', 'extracting', 'processing'].includes(activeDocument.status) || isUploading
+    : false;
+
   const handleSend = (overrideText?: string) => {
     if (!activeDocument) {
       fileInputRef.current?.click();
+      return;
+    }
+    if (isDocProcessing) {
       return;
     }
     setIsDocListCollapsed(true);
@@ -808,7 +826,15 @@ export default function ResearchPage() {
           </Badge>
         );
       case 'rejected_unrelated':
-        return <Badge variant="outline" className="bg-gold-soft text-gold border-gold/20 text-[10px]">Irrelevant</Badge>;
+        return (
+          <Badge
+            variant="outline"
+            className="bg-gold-soft text-gold border-gold/20 text-[10px]"
+            title="No readable text could be extracted from this document"
+          >
+            No Text Extracted
+          </Badge>
+        );
       case 'error':
         return <Badge variant="destructive" className="text-[10px]">Error</Badge>;
       default:
@@ -865,11 +891,10 @@ export default function ResearchPage() {
                     window.history.replaceState({}, '', '/research');
                   }
                 }}
-                className={`w-full gap-2 text-xs font-medium cursor-pointer transition-all ${
-                  !activeDocument
+                className={`w-full gap-2 text-xs font-medium cursor-pointer transition-all ${!activeDocument
                     ? 'bg-primary/15 text-primary border-primary/30 shadow-2xs font-semibold'
                     : 'border-border/80 text-muted-foreground hover:text-foreground hover:bg-accent'
-                }`}
+                  }`}
               >
                 <Plus className="w-3.5 h-3.5 text-primary" />
                 <span>+ New Blank Analysis</span>
@@ -1117,15 +1142,13 @@ export default function ResearchPage() {
                     if (file) await handleFileProcess(file);
                   }}
                   onClick={() => fileInputRef.current?.click()}
-                  className={`w-full p-8 md:p-10 rounded-2xl border-2 border-dashed transition-all duration-200 cursor-pointer flex flex-col items-center justify-center group ${
-                    isDraggingFile
+                  className={`w-full p-8 md:p-10 rounded-2xl border-2 border-dashed transition-all duration-200 cursor-pointer flex flex-col items-center justify-center group ${isDraggingFile
                       ? 'border-primary bg-primary/10 shadow-lg scale-[1.01]'
                       : 'border-border/80 hover:border-primary/50 bg-card/60 hover:bg-accent/40 shadow-xs'
-                  }`}
+                    }`}
                 >
-                  <div className={`w-16 h-16 rounded-2xl flex items-center justify-center mb-4 transition-transform group-hover:scale-110 duration-200 ${
-                    isDraggingFile ? 'bg-primary text-primary-foreground' : 'bg-primary/10 text-primary border border-primary/20'
-                  }`}>
+                  <div className={`w-16 h-16 rounded-2xl flex items-center justify-center mb-4 transition-transform group-hover:scale-110 duration-200 ${isDraggingFile ? 'bg-primary text-primary-foreground' : 'bg-primary/10 text-primary border border-primary/20'
+                    }`}>
                     {isUploading ? (
                       <Loader2 className="w-8 h-8 animate-spin text-primary" />
                     ) : (
@@ -1301,13 +1324,22 @@ export default function ResearchPage() {
           >
             <div className="flex items-start justify-between gap-2">
               <div className="flex items-center gap-2.5 min-w-0">
-                <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 border transition-transform group-hover:scale-105 ${legalAnalytics.nli_score >= 85
-                  ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-600 dark:text-emerald-400"
-                  : legalAnalytics.nli_score >= 70
-                    ? "bg-blue-500/10 border-blue-500/20 text-blue-600 dark:text-blue-400"
-                    : "bg-amber-500/10 border-amber-500/20 text-amber-600 dark:text-amber-400"
-                  }`}>
-                  <ShieldCheck className="w-4 h-4" />
+                <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 border transition-transform group-hover:scale-105 ${
+                  legalAnalytics.is_out_of_domain || legalAnalytics.nli_score == null
+                    ? "bg-muted/80 border-border text-muted-foreground"
+                    : legalAnalytics.is_document_legal === false || (legalAnalytics.nli_score !== null && legalAnalytics.nli_score < 40)
+                      ? "bg-rose-500/10 border-rose-500/20 text-rose-600 dark:text-rose-400"
+                      : legalAnalytics.nli_score >= 85
+                        ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-600 dark:text-emerald-400"
+                        : legalAnalytics.nli_score >= 70
+                          ? "bg-blue-500/10 border-blue-500/20 text-blue-600 dark:text-blue-400"
+                          : "bg-amber-500/10 border-amber-500/20 text-amber-600 dark:text-amber-400"
+                }`}>
+                  {legalAnalytics.is_out_of_domain || legalAnalytics.nli_score == null ? (
+                    <Compass className="w-4 h-4 text-muted-foreground" />
+                  ) : (
+                    <ShieldCheck className="w-4 h-4" />
+                  )}
                 </div>
                 <div className="min-w-0">
                   <div className="flex items-center gap-1.5">
@@ -1315,25 +1347,42 @@ export default function ResearchPage() {
                       NLI Grounding
                     </span>
                     <span className="text-[10px] font-mono font-medium px-1.5 py-0.2 rounded bg-muted text-muted-foreground border border-border/70">
-                      RA 386
+                      {legalAnalytics.is_out_of_domain || legalAnalytics.nli_score == null
+                        ? legalAnalytics.domain_category === "other_legal"
+                          ? "Jurisdiction Redirect"
+                          : "Scope Boundary"
+                        : "RA 386"}
                     </span>
                   </div>
                   <p className="text-[11px] text-muted-foreground truncate">
-                    Statutory entailment reliability
+                    {legalAnalytics.is_out_of_domain || legalAnalytics.nli_score == null
+                      ? legalAnalytics.domain_category === "other_legal"
+                        ? "Statutory jurisdiction redirection"
+                        : "Civil law scope boundary"
+                      : legalAnalytics.is_document_legal === false
+                        ? "Non-Statutory Academic / Technical"
+                        : "Statutory entailment reliability"}
                   </p>
                 </div>
               </div>
 
               <div className="flex items-center gap-1 shrink-0">
                 <span
-                  className={`text-xs font-bold px-2 py-0.5 rounded-md border tabular-nums ${legalAnalytics.nli_score >= 85
-                    ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
-                    : legalAnalytics.nli_score >= 70
-                      ? "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60"
-                      : "text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/50 border-amber-200 dark:border-amber-800/60"
-                    }`}
+                  className={`text-xs font-bold px-2 py-0.5 rounded-md border tabular-nums ${
+                    legalAnalytics.is_out_of_domain || legalAnalytics.nli_score == null
+                      ? "text-muted-foreground bg-muted/60 border-border"
+                      : legalAnalytics.is_document_legal === false || (legalAnalytics.nli_score !== null && legalAnalytics.nli_score < 40)
+                        ? "text-rose-700 dark:text-rose-400 bg-rose-50 dark:bg-rose-950/50 border-rose-200 dark:border-rose-800/60"
+                        : legalAnalytics.nli_score >= 85
+                          ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
+                          : legalAnalytics.nli_score >= 70
+                            ? "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60"
+                            : "text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/50 border-amber-200 dark:border-amber-800/60"
+                  }`}
                 >
-                  {legalAnalytics.nli_score}%
+                  {legalAnalytics.is_out_of_domain || legalAnalytics.is_document_legal === false || legalAnalytics.nli_score == null
+                    ? "N/A"
+                    : `${legalAnalytics.nli_score}%`}
                 </span>
                 <Info className="w-3.5 h-3.5 text-muted-foreground/60 group-hover:text-primary transition-colors ml-0.5" />
               </div>
@@ -1342,13 +1391,26 @@ export default function ResearchPage() {
             {/* Dynamic Visual Progress Meter */}
             <div className="w-full bg-muted/70 dark:bg-muted/40 rounded-full h-1.5 overflow-hidden mt-2.5">
               <div
-                className={`h-full rounded-full transition-all duration-700 ease-out ${legalAnalytics.nli_score >= 85
-                  ? "bg-emerald-500"
-                  : legalAnalytics.nli_score >= 70
-                    ? "bg-blue-500"
-                    : "bg-amber-500"
-                  }`}
-                style={{ width: `${Math.min(100, Math.max(0, legalAnalytics.nli_score))}%` }}
+                className={`h-full rounded-full transition-all duration-700 ease-out ${
+                  legalAnalytics.is_out_of_domain || legalAnalytics.nli_score == null
+                    ? "bg-muted-foreground/30"
+                    : legalAnalytics.is_document_legal === false || (legalAnalytics.nli_score !== null && legalAnalytics.nli_score < 40)
+                      ? "bg-rose-500"
+                      : legalAnalytics.nli_score >= 85
+                        ? "bg-emerald-500"
+                        : legalAnalytics.nli_score >= 70
+                          ? "bg-blue-500"
+                          : "bg-amber-500"
+                }`}
+                style={{
+                  width: `${
+                    legalAnalytics.is_out_of_domain || legalAnalytics.nli_score == null
+                      ? 0
+                      : legalAnalytics.is_document_legal === false
+                        ? 12
+                        : Math.min(100, Math.max(0, legalAnalytics.nli_score))
+                  }%`,
+                }}
               />
             </div>
 
@@ -1356,18 +1418,29 @@ export default function ResearchPage() {
             <div className="flex items-center justify-between mt-2 text-[10px]">
               <span className="flex items-center gap-1.5 text-muted-foreground">
                 <span
-                  className={`w-1.5 h-1.5 rounded-full ${legalAnalytics.nli_score >= 85
-                    ? "bg-emerald-500 animate-pulse"
-                    : legalAnalytics.nli_score >= 70
-                      ? "bg-blue-500"
-                      : "bg-amber-500"
-                    }`}
+                  className={`w-1.5 h-1.5 rounded-full ${
+                    legalAnalytics.is_out_of_domain || legalAnalytics.nli_score == null
+                      ? "bg-muted-foreground/50"
+                      : legalAnalytics.is_document_legal === false || (legalAnalytics.nli_score !== null && legalAnalytics.nli_score < 40)
+                        ? "bg-rose-500"
+                        : legalAnalytics.nli_score >= 85
+                          ? "bg-emerald-500 animate-pulse"
+                          : legalAnalytics.nli_score >= 70
+                            ? "bg-blue-500"
+                            : "bg-amber-500"
+                  }`}
                 />
-                {legalAnalytics.nli_score >= 85
-                  ? "Strict Statutory Entailment"
-                  : legalAnalytics.nli_score >= 70
-                    ? "Substantially Consistent"
-                    : "Generalized Principles"}
+                {legalAnalytics.is_out_of_domain || legalAnalytics.nli_score == null
+                  ? legalAnalytics.domain_category === "other_legal"
+                    ? `Redirected (${legalAnalytics.target_domain || "Non-Civil Statute"})`
+                    : "Domain Scope Refusal"
+                  : legalAnalytics.is_document_legal === false || (legalAnalytics.nli_score !== null && legalAnalytics.nli_score < 40)
+                    ? "No Statutory Entailment (Non-Legal Document)"
+                    : legalAnalytics.nli_score >= 85
+                      ? "Strict Statutory Entailment"
+                      : legalAnalytics.nli_score >= 70
+                        ? "Substantially Consistent"
+                        : "Generalized Principles"}
               </span>
               <span className="text-[10px] font-medium text-muted-foreground group-hover:text-primary transition-colors inline-flex items-center gap-0.5">
                 Inspect audit <ChevronRight className="w-3 h-3 group-hover:translate-x-0.5 transition-transform" />
@@ -1443,10 +1516,10 @@ export default function ResearchPage() {
                                     {cit.suitability_percent !== undefined && (
                                       <span
                                         className={`text-[11px] font-semibold px-1.5 py-0.5 rounded-md border tabular-nums shrink-0 ${cit.suitability_percent >= 85
-                                            ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
-                                            : cit.suitability_percent >= 70
-                                              ? "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60"
-                                              : "text-muted-foreground bg-muted border-border"
+                                          ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
+                                          : cit.suitability_percent >= 70
+                                            ? "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60"
+                                            : "text-muted-foreground bg-muted border-border"
                                           }`}
                                       >
                                         {cit.suitability_percent}%
@@ -1495,10 +1568,10 @@ export default function ResearchPage() {
                                 {cit.suitability_percent !== undefined && (
                                   <span
                                     className={`text-[11px] font-semibold px-1.5 py-0.5 rounded-md border tabular-nums shrink-0 ${cit.suitability_percent >= 85
-                                        ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
-                                        : cit.suitability_percent >= 70
-                                          ? "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60"
-                                          : "text-muted-foreground bg-muted border-border"
+                                      ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
+                                      : cit.suitability_percent >= 70
+                                        ? "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60"
+                                        : "text-muted-foreground bg-muted border-border"
                                       }`}
                                   >
                                     {cit.suitability_percent}%
@@ -1636,10 +1709,10 @@ export default function ResearchPage() {
                                             {cit.suitability_percent !== undefined && (
                                               <span
                                                 className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-md border tabular-nums shrink-0 ${cit.suitability_percent >= 85
-                                                    ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
-                                                    : cit.suitability_percent >= 70
-                                                      ? "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60"
-                                                      : "text-muted-foreground bg-muted border-border"
+                                                  ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
+                                                  : cit.suitability_percent >= 70
+                                                    ? "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60"
+                                                    : "text-muted-foreground bg-muted border-border"
                                                   }`}
                                               >
                                                 {cit.suitability_percent}%
@@ -1686,10 +1759,10 @@ export default function ResearchPage() {
                                         {cit.suitability_percent !== undefined && (
                                           <span
                                             className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-md border tabular-nums shrink-0 ${cit.suitability_percent >= 85
-                                                ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
-                                                : cit.suitability_percent >= 70
-                                                  ? "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60"
-                                                  : "text-muted-foreground bg-muted border-border"
+                                              ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
+                                              : cit.suitability_percent >= 70
+                                                ? "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60"
+                                                : "text-muted-foreground bg-muted border-border"
                                               }`}
                                           >
                                             {cit.suitability_percent}%
@@ -1734,8 +1807,9 @@ export default function ResearchPage() {
                 <button
                   key={item.id}
                   type="button"
+                  disabled={isDocProcessing}
                   onClick={() => handleSend(item.prompt)}
-                  className="flex-1 min-w-0 group flex items-center justify-between gap-1.5 px-2.5 py-1.5 rounded-xl text-xs bg-accent/40 dark:bg-accent/20 hover:bg-primary hover:text-primary-foreground text-foreground border border-border/70 hover:border-primary/40 transition-all shadow-2xs hover:shadow-xs active:scale-98 cursor-pointer"
+                  className="flex-1 min-w-0 group flex items-center justify-between gap-1.5 px-2.5 py-1.5 rounded-xl text-xs bg-accent/40 dark:bg-accent/20 hover:bg-primary hover:text-primary-foreground text-foreground border border-border/70 hover:border-primary/40 transition-all shadow-2xs hover:shadow-xs active:scale-98 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                   title={item.prompt}
                 >
                   <span className="font-semibold text-[10px] uppercase tracking-wider text-primary group-hover:text-primary-foreground/90 bg-primary/10 dark:bg-primary/20 group-hover:bg-white/20 px-1.5 py-0.5 rounded shrink-0">
@@ -1762,8 +1836,9 @@ export default function ResearchPage() {
                 <button
                   key={i}
                   type="button"
+                  disabled={isDocProcessing}
                   onClick={() => handleSend(prompt)}
-                  className="flex-1 min-w-0 group flex items-center justify-between gap-1.5 px-2.5 py-1.5 rounded-xl text-xs bg-accent/40 dark:bg-accent/20 hover:bg-primary hover:text-primary-foreground text-foreground border border-border/70 hover:border-primary/40 transition-all duration-200 shadow-2xs hover:shadow-xs active:scale-98 cursor-pointer"
+                  className="flex-1 min-w-0 group flex items-center justify-between gap-1.5 px-2.5 py-1.5 rounded-xl text-xs bg-accent/40 dark:bg-accent/20 hover:bg-primary hover:text-primary-foreground text-foreground border border-border/70 hover:border-primary/40 transition-all duration-200 shadow-2xs hover:shadow-xs active:scale-98 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                   title={prompt}
                 >
                   <span className="truncate text-xs text-left min-w-0 flex-1 group-hover:text-primary-foreground transition-colors font-medium">
@@ -1778,18 +1853,35 @@ export default function ResearchPage() {
 
         {/* Input */}
         <div className="p-4 border-t border-border bg-card/50 shrink-0">
-          <div className="relative flex items-center bg-card border border-border/80 dark:border-white/10 rounded-2xl overflow-hidden focus-within:ring-2 focus-within:ring-primary focus-within:border-primary transition-all shadow-sm">
+          {isDocProcessing && (
+            <div className="flex items-center gap-2 px-3.5 py-2 bg-primary/10 text-primary text-xs font-medium rounded-xl border border-primary/20 animate-pulse mb-2.5">
+              <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+              <span>
+                {activeDocument?.status === 'extracting'
+                  ? `Extracting & vectorizing document chunks (${activeDocument.progress || 0}%)... Chat will enable once complete.`
+                  : `Ingesting ${activeDocument?.filename || 'document'}... Chat will enable once complete.`}
+              </span>
+            </div>
+          )}
+          <div className={`relative flex items-center bg-card border border-border/80 dark:border-white/10 rounded-2xl overflow-hidden focus-within:ring-2 focus-within:ring-primary focus-within:border-primary transition-all shadow-sm ${isDocProcessing ? 'opacity-75 cursor-not-allowed bg-muted/40' : ''}`}>
             <input
               type="text"
+              disabled={isDocProcessing}
               value={inputValue}
               onChange={(e) => setDocInputValue(activeDocId, e.target.value)}
               onFocus={() => {
                 // Auto-collapse documents pane when user focuses on chat input to maximize preview & chat width
                 setIsDocListCollapsed(true);
               }}
-              onKeyDown={(e) => e.key === 'Enter' && handleSend()}
-              placeholder={activeDocument ? `Ask about ${activeDocument.filename}...` : "Ask a general question..."}
-              className="flex-1 bg-transparent dark:bg-transparent border-none shadow-none outline-none focus:outline-none focus:ring-0 text-foreground placeholder:text-muted-foreground px-4 h-11 text-sm"
+              onKeyDown={(e) => e.key === 'Enter' && !isDocProcessing && handleSend()}
+              placeholder={
+                isDocProcessing
+                  ? `Please wait while ${activeDocument?.filename || 'document'} is being processed...`
+                  : activeDocument
+                  ? `Ask about ${activeDocument.filename}...`
+                  : "Ask a general question..."
+              }
+              className="flex-1 bg-transparent dark:bg-transparent border-none shadow-none outline-none focus:outline-none focus:ring-0 text-foreground placeholder:text-muted-foreground px-4 h-11 text-sm disabled:cursor-not-allowed"
             />
             {isTyping ? (
               <Button
@@ -1804,10 +1896,10 @@ export default function ResearchPage() {
               <Button
                 type="button"
                 onClick={() => handleSend()}
-                disabled={!inputValue.trim()}
+                disabled={!inputValue.trim() || isDocProcessing}
                 className="mr-1.5 bg-primary hover:bg-primary/90 text-primary-foreground rounded-xl h-8 w-8 p-0 shrink-0 shadow-sm disabled:opacity-40"
               >
-                <Send className="w-3.5 h-3.5" />
+                {isDocProcessing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
               </Button>
             )}
           </div>
@@ -1841,57 +1933,97 @@ export default function ResearchPage() {
           {legalAnalytics && (
             <div className="space-y-5 pt-2">
               {/* Score & Verdict Card */}
-              <div className="p-4 rounded-xl bg-accent/40 dark:bg-muted/30 border border-border/80 space-y-3">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
-                      Entailment Confidence
-                    </p>
-                    <div className="flex items-baseline gap-2 mt-0.5">
-                      <span className="text-3xl font-extrabold text-foreground tabular-nums">
-                        {legalAnalytics.nli_score}%
-                      </span>
-                      <span className={`text-xs font-semibold px-2 py-0.5 rounded-full border ${legalAnalytics.nli_score >= 85
-                        ? "text-emerald-700 dark:text-emerald-400 bg-emerald-500/10 border-emerald-500/25"
-                        : legalAnalytics.nli_score >= 70
-                          ? "text-blue-700 dark:text-blue-400 bg-blue-500/10 border-blue-500/25"
-                          : "text-amber-700 dark:text-amber-400 bg-amber-500/10 border-amber-500/25"
-                        }`}>
-                        {legalAnalytics.nli_score >= 85
-                          ? "Strictly Grounded (Verified)"
-                          : legalAnalytics.nli_score >= 70
-                            ? "Substantially Consistent"
-                            : "Preliminary Doctrine"}
+              {legalAnalytics.is_out_of_domain || legalAnalytics.nli_score == null ? (
+                <div className="p-4 rounded-xl bg-accent/40 dark:bg-muted/30 border border-border/80 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
+                        Entailment Confidence
+                      </p>
+                      <div className="flex items-baseline gap-2 mt-0.5">
+                        <span className="text-3xl font-extrabold text-foreground tabular-nums">
+                          N/A
+                        </span>
+                        <span className="text-xs font-semibold px-2 py-0.5 rounded-full border text-muted-foreground bg-muted border-border">
+                          {legalAnalytics.domain_category === "other_legal"
+                            ? "Statutory Jurisdiction Redirection"
+                            : "Civil Scope Boundary Refusal"}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <span className="text-[11px] font-mono font-semibold px-2 py-1 rounded bg-background border border-border text-foreground">
+                        {legalAnalytics.domain_category === "other_legal"
+                          ? legalAnalytics.target_domain || "Non-Civil Law"
+                          : "Scope Boundary"}
                       </span>
                     </div>
                   </div>
-                  <div className="text-right">
-                    <span className="text-[11px] font-mono font-semibold px-2 py-1 rounded bg-background border border-border text-foreground">
-                      RA 386 Civil Code
-                    </span>
-                  </div>
-                </div>
 
-                {/* Full Visual Progress Gauge */}
-                <div className="space-y-1">
-                  <div className="w-full bg-muted rounded-full h-2 overflow-hidden">
-                    <div
-                      className={`h-full rounded-full transition-all duration-700 ${legalAnalytics.nli_score >= 85
-                        ? "bg-emerald-500"
-                        : legalAnalytics.nli_score >= 70
-                          ? "bg-blue-500"
-                          : "bg-amber-500"
-                        }`}
-                      style={{ width: `${Math.min(100, Math.max(0, legalAnalytics.nli_score))}%` }}
-                    />
-                  </div>
-                  <div className="flex justify-between text-[10px] text-muted-foreground font-mono">
-                    <span>0% (Contradiction)</span>
-                    <span>70% (Consistent)</span>
-                    <span>85%+ (Strict Entailment)</span>
+                  <div className="p-3 rounded-lg bg-background/80 border border-border text-xs space-y-1.5">
+                    <p className="font-semibold text-foreground flex items-center gap-1.5">
+                      <Info className="w-3.5 h-3.5 text-primary" />
+                      Why is the NLI score withheld?
+                    </p>
+                    <p className="text-muted-foreground text-[11px] leading-relaxed">
+                      Natural Language Inference computes logical entailment against Philippine Civil Code (RA 386) provisions.
+                      Because this prompt was classified as outside civil law jurisdiction, vector database retrieval was bypassed and NLI evaluation was intentionally withheld to prevent calculating misleading entailment percentages on domain refusal or redirection text.
+                    </p>
                   </div>
                 </div>
-              </div>
+              ) : (
+                <div className="p-4 rounded-xl bg-accent/40 dark:bg-muted/30 border border-border/80 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
+                        Entailment Confidence
+                      </p>
+                      <div className="flex items-baseline gap-2 mt-0.5">
+                        <span className="text-3xl font-extrabold text-foreground tabular-nums">
+                          {legalAnalytics.nli_score}%
+                        </span>
+                        <span className={`text-xs font-semibold px-2 py-0.5 rounded-full border ${legalAnalytics.nli_score >= 85
+                          ? "text-emerald-700 dark:text-emerald-400 bg-emerald-500/10 border-emerald-500/25"
+                          : legalAnalytics.nli_score >= 70
+                            ? "text-blue-700 dark:text-blue-400 bg-blue-500/10 border-blue-500/25"
+                            : "text-amber-700 dark:text-amber-400 bg-amber-500/10 border-amber-500/25"
+                          }`}>
+                          {legalAnalytics.nli_score >= 85
+                            ? "Strictly Grounded (Verified)"
+                            : legalAnalytics.nli_score >= 70
+                              ? "Substantially Consistent"
+                              : "Preliminary Doctrine"}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <span className="text-[11px] font-mono font-semibold px-2 py-1 rounded bg-background border border-border text-foreground">
+                        RA 386 Civil Code
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Full Visual Progress Gauge */}
+                  <div className="space-y-1">
+                    <div className="w-full bg-muted rounded-full h-2 overflow-hidden">
+                      <div
+                        className={`h-full rounded-full transition-all duration-700 ${legalAnalytics.nli_score >= 85
+                          ? "bg-emerald-500"
+                          : legalAnalytics.nli_score >= 70
+                            ? "bg-blue-500"
+                            : "bg-amber-500"
+                          }`}
+                        style={{ width: `${Math.min(100, Math.max(0, legalAnalytics.nli_score))}%` }}
+                      />
+                    </div>
+                    <div className="flex justify-between text-[10px] text-muted-foreground font-mono">
+                      <span>0% (Contradiction)</span>
+                      <span>70% (Consistent)</span>
+                      <span>85%+ (Strict Entailment)</span>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {/* How NLI Works in CIVIL-LEX */}
               <div className="space-y-2.5">

@@ -51,6 +51,7 @@ def update_status(document_id: str, status: str):
 
 def extract_and_process_document(file_url: str, document_id: str, filename: str):
     print(f"Starting extraction for document {document_id} ({filename}) from {file_url}")
+    update_status(document_id, 'extracting')
     
     try:
         response = httpx.get(file_url)

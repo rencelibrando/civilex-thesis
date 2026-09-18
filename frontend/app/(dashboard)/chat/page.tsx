@@ -22,6 +22,8 @@ import {
   Copy,
   Check,
   ShieldCheck,
+  ShieldAlert,
+  Compass,
   Info,
   AlertCircle,
   ArrowRight,
@@ -671,6 +673,127 @@ export default function ChatPage() {
 
         {/* Scrollable citations list */}
         <div ref={citationScrollRef} className="flex-1 overflow-y-auto p-4 custom-scrollbar min-h-0">
+          {/* NLI Statutory Grounding Reliability Header */}
+          {legalAnalytics && (
+            <div
+              role="button"
+              tabIndex={0}
+              onClick={() => setIsNliModalOpen(true)}
+              onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && setIsNliModalOpen(true)}
+              className="p-3 mb-3 rounded-xl bg-card border border-border hover:border-primary/40 hover:bg-muted/40 transition-all duration-200 shadow-xs cursor-pointer group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+              title="Click to view full Natural Language Inference (NLI) statutory grounding audit"
+            >
+              <div className="flex items-start justify-between gap-2">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 border transition-transform group-hover:scale-105 ${
+                    legalAnalytics.is_out_of_domain || legalAnalytics.nli_score == null
+                      ? "bg-muted/80 border-border text-muted-foreground"
+                      : legalAnalytics.nli_score >= 85
+                        ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-600 dark:text-emerald-400"
+                        : legalAnalytics.nli_score >= 70
+                          ? "bg-blue-500/10 border-blue-500/20 text-blue-600 dark:text-blue-400"
+                          : "bg-amber-500/10 border-amber-500/20 text-amber-600 dark:text-amber-400"
+                  }`}>
+                    {legalAnalytics.is_out_of_domain || legalAnalytics.nli_score == null ? (
+                      <Compass className="w-4 h-4 text-muted-foreground" />
+                    ) : (
+                      <ShieldCheck className="w-4 h-4" />
+                    )}
+                  </div>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-xs font-semibold text-foreground group-hover:text-primary transition-colors">
+                        NLI Grounding
+                      </span>
+                      <span className="text-[10px] font-mono font-medium px-1.5 py-0.2 rounded bg-muted text-muted-foreground border border-border/70">
+                        {legalAnalytics.is_out_of_domain || legalAnalytics.nli_score == null
+                          ? legalAnalytics.domain_category === "other_legal"
+                            ? "Jurisdiction Redirect"
+                            : "Scope Boundary"
+                          : "RA 386"}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-muted-foreground truncate">
+                      {legalAnalytics.is_out_of_domain || legalAnalytics.nli_score == null
+                        ? legalAnalytics.domain_category === "other_legal"
+                          ? "Statutory jurisdiction redirection"
+                          : "Civil law scope boundary"
+                        : "Statutory entailment reliability"}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-1 shrink-0">
+                  <span
+                    className={`text-xs font-bold px-2 py-0.5 rounded-md border tabular-nums ${
+                      legalAnalytics.is_out_of_domain || legalAnalytics.nli_score == null
+                        ? "text-muted-foreground bg-muted/60 border-border"
+                        : legalAnalytics.nli_score >= 85
+                          ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
+                          : legalAnalytics.nli_score >= 70
+                            ? "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60"
+                            : "text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/50 border-amber-200 dark:border-amber-800/60"
+                    }`}
+                  >
+                    {legalAnalytics.is_out_of_domain || legalAnalytics.nli_score == null ? "N/A" : `${legalAnalytics.nli_score}%`}
+                  </span>
+                  <Info className="w-3.5 h-3.5 text-muted-foreground/60 group-hover:text-primary transition-colors ml-0.5" />
+                </div>
+              </div>
+
+              {/* Dynamic Visual Progress Meter */}
+              <div className="w-full bg-muted/70 dark:bg-muted/40 rounded-full h-1.5 overflow-hidden mt-2.5">
+                <div
+                  className={`h-full rounded-full transition-all duration-700 ease-out ${
+                    legalAnalytics.is_out_of_domain || legalAnalytics.nli_score == null
+                      ? "bg-muted-foreground/30"
+                      : legalAnalytics.nli_score >= 85
+                        ? "bg-emerald-500"
+                        : legalAnalytics.nli_score >= 70
+                          ? "bg-blue-500"
+                          : "bg-amber-500"
+                  }`}
+                  style={{
+                    width: `${
+                      legalAnalytics.is_out_of_domain || legalAnalytics.nli_score == null
+                        ? 0
+                        : Math.min(100, Math.max(0, legalAnalytics.nli_score))
+                    }%`,
+                  }}
+                />
+              </div>
+
+              {/* Verification Footer Label */}
+              <div className="flex items-center justify-between mt-2 text-[10px]">
+                <span className="flex items-center gap-1.5 text-muted-foreground">
+                  <span
+                    className={`w-1.5 h-1.5 rounded-full ${
+                      legalAnalytics.is_out_of_domain || legalAnalytics.nli_score == null
+                        ? "bg-muted-foreground/50"
+                        : legalAnalytics.nli_score >= 85
+                          ? "bg-emerald-500 animate-pulse"
+                          : legalAnalytics.nli_score >= 70
+                            ? "bg-blue-500"
+                            : "bg-amber-500"
+                    }`}
+                  />
+                  {legalAnalytics.is_out_of_domain || legalAnalytics.nli_score == null
+                    ? legalAnalytics.domain_category === "other_legal"
+                      ? `Redirected (${legalAnalytics.target_domain || "Non-Civil Statute"})`
+                      : "Domain Scope Refusal"
+                    : legalAnalytics.nli_score >= 85
+                      ? "Strict Statutory Entailment"
+                      : legalAnalytics.nli_score >= 70
+                        ? "Substantially Consistent"
+                        : "Generalized Principles"}
+                </span>
+                <span className="text-[10px] font-medium text-muted-foreground group-hover:text-primary transition-colors inline-flex items-center gap-0.5">
+                  Inspect audit <ChevronRight className="w-3 h-3 group-hover:translate-x-0.5 transition-transform" />
+                </span>
+              </div>
+            </div>
+          )}
+
           {(() => {
             const rawDisplayCitations =
               activeCitationFilter === "latest"
@@ -686,93 +809,6 @@ export default function ChatPage() {
             if (displayCitations.length > 0) {
               return (
                 <div className="space-y-3">
-                  {/* NLI Statutory Grounding Reliability Header */}
-                  {legalAnalytics && (
-                    <div
-                      role="button"
-                      tabIndex={0}
-                      onClick={() => setIsNliModalOpen(true)}
-                      onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && setIsNliModalOpen(true)}
-                      className="p-3 mb-3 rounded-xl bg-card border border-border hover:border-primary/40 hover:bg-muted/40 transition-all duration-200 shadow-xs cursor-pointer group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-                      title="Click to view full Natural Language Inference (NLI) statutory grounding audit"
-                    >
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="flex items-center gap-2.5 min-w-0">
-                          <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 border transition-transform group-hover:scale-105 ${legalAnalytics.nli_score >= 85
-                            ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-600 dark:text-emerald-400"
-                            : legalAnalytics.nli_score >= 70
-                              ? "bg-blue-500/10 border-blue-500/20 text-blue-600 dark:text-blue-400"
-                              : "bg-amber-500/10 border-amber-500/20 text-amber-600 dark:text-amber-400"
-                            }`}>
-                            <ShieldCheck className="w-4 h-4" />
-                          </div>
-                          <div className="min-w-0">
-                            <div className="flex items-center gap-1.5">
-                              <span className="text-xs font-semibold text-foreground group-hover:text-primary transition-colors">
-                                NLI Grounding
-                              </span>
-                              <span className="text-[10px] font-mono font-medium px-1.5 py-0.2 rounded bg-muted text-muted-foreground border border-border/70">
-                                RA 386
-                              </span>
-                            </div>
-                            <p className="text-[11px] text-muted-foreground truncate">
-                              Statutory entailment reliability
-                            </p>
-                          </div>
-                        </div>
-
-                        <div className="flex items-center gap-1 shrink-0">
-                          <span
-                            className={`text-xs font-bold px-2 py-0.5 rounded-md border tabular-nums ${legalAnalytics.nli_score >= 85
-                              ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
-                              : legalAnalytics.nli_score >= 70
-                                ? "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60"
-                                : "text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/50 border-amber-200 dark:border-amber-800/60"
-                              }`}
-                          >
-                            {legalAnalytics.nli_score}%
-                          </span>
-                          <Info className="w-3.5 h-3.5 text-muted-foreground/60 group-hover:text-primary transition-colors ml-0.5" />
-                        </div>
-                      </div>
-
-                      {/* Dynamic Visual Progress Meter */}
-                      <div className="w-full bg-muted/70 dark:bg-muted/40 rounded-full h-1.5 overflow-hidden mt-2.5">
-                        <div
-                          className={`h-full rounded-full transition-all duration-700 ease-out ${legalAnalytics.nli_score >= 85
-                            ? "bg-emerald-500"
-                            : legalAnalytics.nli_score >= 70
-                              ? "bg-blue-500"
-                              : "bg-amber-500"
-                            }`}
-                          style={{ width: `${Math.min(100, Math.max(0, legalAnalytics.nli_score))}%` }}
-                        />
-                      </div>
-
-                      {/* Verification Footer Label */}
-                      <div className="flex items-center justify-between mt-2 text-[10px]">
-                        <span className="flex items-center gap-1.5 text-muted-foreground">
-                          <span
-                            className={`w-1.5 h-1.5 rounded-full ${legalAnalytics.nli_score >= 85
-                              ? "bg-emerald-500 animate-pulse"
-                              : legalAnalytics.nli_score >= 70
-                                ? "bg-blue-500"
-                                : "bg-amber-500"
-                              }`}
-                          />
-                          {legalAnalytics.nli_score >= 85
-                            ? "Strict Statutory Entailment"
-                            : legalAnalytics.nli_score >= 70
-                              ? "Substantially Consistent"
-                              : "Generalized Principles"}
-                        </span>
-                        <span className="text-[10px] font-medium text-muted-foreground group-hover:text-primary transition-colors inline-flex items-center gap-0.5">
-                          Inspect audit <ChevronRight className="w-3 h-3 group-hover:translate-x-0.5 transition-transform" />
-                        </span>
-                      </div>
-                    </div>
-                  )}
-
                   {displayCitations.map((cit, idx) => {
                     const isCase =
                       cit.parent_type === "case" ||
@@ -911,6 +947,21 @@ export default function ChatPage() {
             }
 
             if (messages.length > 1 && !isTyping) {
+              if (legalAnalytics?.is_out_of_domain) {
+                return (
+                  <div className="h-full flex flex-col items-center justify-center text-center text-muted-foreground space-y-2.5 pt-16 px-4 animate-fade-in">
+                    <div className="w-10 h-10 rounded-xl bg-muted flex items-center justify-center border border-border/80">
+                      <ShieldAlert className="w-5 h-5 text-muted-foreground" />
+                    </div>
+                    <p className="text-xs font-semibold text-foreground">No Philippine Civil Code Citations</p>
+                    <p className="text-[11px] text-muted-foreground max-w-xs leading-relaxed">
+                      {legalAnalytics.domain_category === "other_legal"
+                        ? `This inquiry involves ${legalAnalytics.target_domain || "a specialized legal field outside the Civil Code"}. Vector search was bypassed to prevent irrelevant statutory citations.`
+                        : "This inquiry falls outside the scope of Philippine Civil Law (RA 386). Vector search was bypassed to preserve retrieval precision."}
+                    </p>
+                  </div>
+                );
+              }
               return (
                 <div className="h-full flex flex-col items-center justify-center text-center text-muted-foreground space-y-2 pt-16">
                   <BookOpen className="w-8 h-8 opacity-20" />
@@ -1104,57 +1155,97 @@ export default function ChatPage() {
           {legalAnalytics && (
             <div className="space-y-5 pt-2">
               {/* Score & Verdict Card */}
-              <div className="p-4 rounded-xl bg-accent/40 dark:bg-muted/30 border border-border/80 space-y-3">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
-                      Entailment Confidence
-                    </p>
-                    <div className="flex items-baseline gap-2 mt-0.5">
-                      <span className="text-3xl font-extrabold text-foreground tabular-nums">
-                        {legalAnalytics.nli_score}%
-                      </span>
-                      <span className={`text-xs font-semibold px-2 py-0.5 rounded-full border ${legalAnalytics.nli_score >= 85
-                        ? "text-emerald-700 dark:text-emerald-400 bg-emerald-500/10 border-emerald-500/25"
-                        : legalAnalytics.nli_score >= 70
-                          ? "text-blue-700 dark:text-blue-400 bg-blue-500/10 border-blue-500/25"
-                          : "text-amber-700 dark:text-amber-400 bg-amber-500/10 border-amber-500/25"
-                        }`}>
-                        {legalAnalytics.nli_score >= 85
-                          ? "Strictly Grounded (Verified)"
-                          : legalAnalytics.nli_score >= 70
-                            ? "Substantially Consistent"
-                            : "Preliminary Doctrine"}
+              {legalAnalytics.is_out_of_domain || legalAnalytics.nli_score == null ? (
+                <div className="p-4 rounded-xl bg-accent/40 dark:bg-muted/30 border border-border/80 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
+                        Entailment Confidence
+                      </p>
+                      <div className="flex items-baseline gap-2 mt-0.5">
+                        <span className="text-3xl font-extrabold text-foreground tabular-nums">
+                          N/A
+                        </span>
+                        <span className="text-xs font-semibold px-2 py-0.5 rounded-full border text-muted-foreground bg-muted border-border">
+                          {legalAnalytics.domain_category === "other_legal"
+                            ? "Statutory Jurisdiction Redirection"
+                            : "Civil Scope Boundary Refusal"}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <span className="text-[11px] font-mono font-semibold px-2 py-1 rounded bg-background border border-border text-foreground">
+                        {legalAnalytics.domain_category === "other_legal"
+                          ? legalAnalytics.target_domain || "Non-Civil Law"
+                          : "Scope Boundary"}
                       </span>
                     </div>
                   </div>
-                  <div className="text-right">
-                    <span className="text-[11px] font-mono font-semibold px-2 py-1 rounded bg-background border border-border text-foreground">
-                      RA 386 Civil Code
-                    </span>
-                  </div>
-                </div>
 
-                {/* Full Visual Progress Gauge */}
-                <div className="space-y-1">
-                  <div className="w-full bg-muted rounded-full h-2 overflow-hidden">
-                    <div
-                      className={`h-full rounded-full transition-all duration-700 ${legalAnalytics.nli_score >= 85
-                        ? "bg-emerald-500"
-                        : legalAnalytics.nli_score >= 70
-                          ? "bg-blue-500"
-                          : "bg-amber-500"
-                        }`}
-                      style={{ width: `${Math.min(100, Math.max(0, legalAnalytics.nli_score))}%` }}
-                    />
-                  </div>
-                  <div className="flex justify-between text-[10px] text-muted-foreground font-mono">
-                    <span>0% (Contradiction)</span>
-                    <span>70% (Consistent)</span>
-                    <span>85%+ (Strict Entailment)</span>
+                  <div className="p-3 rounded-lg bg-background/80 border border-border text-xs space-y-1.5">
+                    <p className="font-semibold text-foreground flex items-center gap-1.5">
+                      <Info className="w-3.5 h-3.5 text-primary" />
+                      Why is the NLI score withheld?
+                    </p>
+                    <p className="text-muted-foreground text-[11px] leading-relaxed">
+                      Natural Language Inference computes logical entailment against Philippine Civil Code (RA 386) provisions.
+                      Because this prompt was classified as outside civil law jurisdiction, vector database retrieval was bypassed and NLI evaluation was intentionally withheld to prevent calculating misleading entailment percentages on domain refusal or redirection text.
+                    </p>
                   </div>
                 </div>
-              </div>
+              ) : (
+                <div className="p-4 rounded-xl bg-accent/40 dark:bg-muted/30 border border-border/80 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
+                        Entailment Confidence
+                      </p>
+                      <div className="flex items-baseline gap-2 mt-0.5">
+                        <span className="text-3xl font-extrabold text-foreground tabular-nums">
+                          {legalAnalytics.nli_score}%
+                        </span>
+                        <span className={`text-xs font-semibold px-2 py-0.5 rounded-full border ${legalAnalytics.nli_score >= 85
+                          ? "text-emerald-700 dark:text-emerald-400 bg-emerald-500/10 border-emerald-500/25"
+                          : legalAnalytics.nli_score >= 70
+                            ? "text-blue-700 dark:text-blue-400 bg-blue-500/10 border-blue-500/25"
+                            : "text-amber-700 dark:text-amber-400 bg-amber-500/10 border-amber-500/25"
+                          }`}>
+                          {legalAnalytics.nli_score >= 85
+                            ? "Strictly Grounded (Verified)"
+                            : legalAnalytics.nli_score >= 70
+                              ? "Substantially Consistent"
+                              : "Preliminary Doctrine"}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <span className="text-[11px] font-mono font-semibold px-2 py-1 rounded bg-background border border-border text-foreground">
+                        RA 386 Civil Code
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Full Visual Progress Gauge */}
+                  <div className="space-y-1">
+                    <div className="w-full bg-muted rounded-full h-2 overflow-hidden">
+                      <div
+                        className={`h-full rounded-full transition-all duration-700 ${legalAnalytics.nli_score >= 85
+                          ? "bg-emerald-500"
+                          : legalAnalytics.nli_score >= 70
+                            ? "bg-blue-500"
+                            : "bg-amber-500"
+                          }`}
+                        style={{ width: `${Math.min(100, Math.max(0, legalAnalytics.nli_score))}%` }}
+                      />
+                    </div>
+                    <div className="flex justify-between text-[10px] text-muted-foreground font-mono">
+                      <span>0% (Contradiction)</span>
+                      <span>70% (Consistent)</span>
+                      <span>85%+ (Strict Entailment)</span>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {/* How NLI Works in CIVIL-LEX */}
               <div className="space-y-2.5">

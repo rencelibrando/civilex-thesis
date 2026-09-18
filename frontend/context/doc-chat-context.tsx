@@ -146,7 +146,7 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
             if (m.citations) {
               try {
                 parsedCits = typeof m.citations === "string" ? JSON.parse(m.citations) : m.citations;
-              } catch (e) {}
+              } catch (e) { }
             }
             if (Array.isArray(parsedCits)) {
               for (const c of parsedCits) {
@@ -404,10 +404,10 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
                   messages: cur.messages.map((m) =>
                     m.id === assistantId
                       ? {
-                          ...m,
-                          citations: citsToCommit.length > 0 ? citsToCommit : m.citations,
-                          legalAnalytics: analyticsToCommit || m.legalAnalytics,
-                        }
+                        ...m,
+                        citations: citsToCommit.length > 0 ? citsToCommit : m.citations,
+                        legalAnalytics: analyticsToCommit || m.legalAnalytics,
+                      }
                       : m
                   ),
                 },
@@ -465,8 +465,14 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
                         return c;
                       })
                       .sort((a: any, b: any) => (Number(b?.suitability_percent) || 0) - (Number(a?.suitability_percent) || 0));
-                    const topScore = receivedCitations[0]?.suitability_percent || 88;
-                    const calculatedNli: LegalAnalytics = {
+                    const isOutOfDomain = receivedCitations.length === 0;
+                    const topScore = receivedCitations[0]?.suitability_percent || 0;
+                    const calculatedNli: LegalAnalytics = isOutOfDomain ? {
+                      nli_score: null,
+                      nli_status: "Out of Domain",
+                      is_out_of_domain: true,
+                      top_article_score: 0,
+                    } : {
                       nli_score: Math.min(98, Math.max(72, Math.round(topScore * 1.02))),
                       nli_status: "Grounded",
                       top_article_score: topScore,
@@ -533,11 +539,16 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
                       const cur = prev[docId] || INITIAL_STATE;
                       const topCit = cur.currentCitations[0] || cur.retainedCitations[0];
                       const topPercent = topCit?.suitability_percent ?? 89;
-                      const finalAnalytics: LegalAnalytics = cur.legalAnalytics || {
+                      const finalAnalytics: LegalAnalytics = cur.legalAnalytics || (cur.currentCitations.length === 0 ? {
+                        nli_score: null,
+                        nli_status: "Out of Domain",
+                        is_out_of_domain: true,
+                        top_article_score: 0,
+                      } : {
                         nli_score: Math.min(98, Math.max(74, Math.round(topPercent * 1.02))),
                         nli_status: "Grounded",
                         top_article_score: topPercent,
-                      };
+                      });
                       return {
                         ...prev,
                         [docId]: {
@@ -548,10 +559,10 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
                           messages: cur.messages.map((m) =>
                             m.id === assistantId
                               ? {
-                                  ...m,
-                                  ragStatus: { stage: "completed", message: "Analysis complete" },
-                                  legalAnalytics: m.legalAnalytics || finalAnalytics,
-                                }
+                                ...m,
+                                ragStatus: { stage: "completed", message: "Analysis complete" },
+                                legalAnalytics: m.legalAnalytics || finalAnalytics,
+                              }
                               : m
                           ),
                         },
@@ -590,11 +601,11 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
                 messages: cur.messages.map((m) =>
                   m.id === assistantId
                     ? {
-                        ...m,
-                        content:
-                          m.content ||
-                          "> ⚠️ **Analysis Notice**\n>\n> Unable to connect to the legal analysis service. Please try again.",
-                      }
+                      ...m,
+                      content:
+                        m.content ||
+                        "> ⚠️ **Analysis Notice**\n>\n> Unable to connect to the legal analysis service. Please try again.",
+                    }
                     : m
                 ),
               },

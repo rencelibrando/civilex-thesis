@@ -24,6 +24,12 @@ import {
   Scale,
   Info,
   AlertCircle,
+  PanelLeftClose,
+  PanelLeftOpen,
+  ArrowRight,
+  Plus,
+  UploadCloud,
+  FolderOpen,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -38,12 +44,18 @@ import {
   DialogTitle,
   DialogDescription,
 } from "@/components/ui/dialog";
+import { JurisprudenceModal, JurisprudenceCase } from "@/components/jurisprudence-modal";
 import { supabase } from "@/lib/supabase";
 import { useDocChat } from "@/context/doc-chat-context";
 import { RagStatus } from "@/context/chat-context";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import mammoth from "mammoth";
+
+function cleanCaseSummary(text?: string): string {
+  if (!text) return "No summary available for this case.";
+  return text.replace(/^\[(?:Supporting Case Doctrine|Jurisprudence Doctrine)[^\]]*\]\s*/i, "").trim();
+}
 
 type DocumentStatus = 'uploading' | 'extracting' | 'completed' | 'rejected_unrelated' | 'error';
 
@@ -135,6 +147,50 @@ function AssistantMarkdown({ content }: { content: string }) {
 }
 
 // ---------------------------------------------------------------------------
+// Typewriter effect for the starting welcome message
+// ---------------------------------------------------------------------------
+function StartingTypewriterMessage({ content }: { content: string }) {
+  const [displayedText, setDisplayedText] = useState("");
+  const [isDone, setIsDone] = useState(false);
+
+  useEffect(() => {
+    let index = 0;
+    setDisplayedText("");
+    setIsDone(false);
+
+    const interval = setInterval(() => {
+      index++;
+      if (index <= content.length) {
+        setDisplayedText(content.slice(0, index));
+      } else {
+        setIsDone(true);
+        clearInterval(interval);
+      }
+    }, 20);
+
+    return () => clearInterval(interval);
+  }, [content]);
+
+  return (
+    <div
+      onClick={() => {
+        if (!isDone) {
+          setDisplayedText(content);
+          setIsDone(true);
+        }
+      }}
+      className="prose prose-sm dark:prose-invert max-w-none text-foreground font-normal leading-relaxed select-text cursor-default"
+      title={!isDone ? "Click to show full message immediately" : undefined}
+    >
+      <span>{displayedText}</span>
+      {!isDone && (
+        <span className="inline-block w-1.5 h-4 ml-0.5 bg-primary animate-pulse align-middle rounded-xs" />
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // RAG Live Pipeline Stepper
 // ---------------------------------------------------------------------------
 function RagPipelineStepper({ status, isLive }: { status: RagStatus | null; isLive: boolean }) {
@@ -176,19 +232,33 @@ function RagPipelineStepper({ status, isLive }: { status: RagStatus | null; isLi
   const currentStage = status?.stage || "idle";
 
   const getStepState = (stepId: string) => {
-    const order = ["idle", "embedding", "retrieving", "retrieving_done", "prompting", "thinking", "streaming", "completed"];
-    const currentIndex = order.indexOf(currentStage === "retrieving_done" ? "retrieving" : currentStage);
-    const stepIndex = order.indexOf(stepId);
-
     if (currentStage === "completed") return "completed";
     if (currentStage === "error") return "error";
+
+    // When retrieval is finished, both Vectorize and Retrieve are completed
+    if (currentStage === "retrieving_done") {
+      if (stepId === "embedding" || stepId === "retrieving") return "completed";
+      return "pending";
+    }
+
+    const order = ["idle", "embedding", "retrieving", "prompting", "thinking", "streaming", "completed"];
+    const currentIndex = order.indexOf(currentStage);
+    const stepIndex = order.indexOf(stepId);
+
     if (currentIndex > stepIndex) return "completed";
     if (currentIndex === stepIndex) return "active";
     return "pending";
   };
 
   // If live and still before text streaming: show active prominent stepper
-  if (isLive && (currentStage === "embedding" || currentStage === "retrieving" || currentStage === "prompting" || currentStage === "thinking")) {
+  const isPreStreamingStage =
+    currentStage === "embedding" ||
+    currentStage === "retrieving" ||
+    currentStage === "retrieving_done" ||
+    currentStage === "prompting" ||
+    currentStage === "thinking";
+
+  if (isLive && isPreStreamingStage) {
     return (
       <div className="w-full max-w-md p-3.5 rounded-2xl bg-card border border-border/80 dark:border-white/10 shadow-xs animate-fade-in space-y-2.5 mb-2">
         <div className="flex items-center justify-between text-xs font-semibold text-primary">
@@ -197,7 +267,11 @@ function RagPipelineStepper({ status, isLive }: { status: RagStatus | null; isLi
             CIVIL-LEX Legal Processing
           </span>
           <span className="text-[10px] font-mono uppercase tracking-wider bg-primary/10 text-primary px-2 py-0.5 rounded-full border border-primary/20">
-            {currentStage}
+            {currentStage === "retrieving_done"
+              ? "retrieved"
+              : currentStage === "thinking"
+                ? "reasoning"
+                : currentStage}
           </span>
         </div>
 
@@ -208,22 +282,20 @@ function RagPipelineStepper({ status, isLive }: { status: RagStatus | null; isLi
             return (
               <div key={step.id} className="flex flex-col items-center gap-1">
                 <div
-                  className={`w-full h-1.5 rounded-full transition-all duration-300 ${
-                    state === "completed"
-                      ? "bg-green-500"
-                      : state === "active"
+                  className={`w-full h-1.5 rounded-full transition-all duration-300 ${state === "completed"
+                    ? "bg-green-500"
+                    : state === "active"
                       ? "bg-primary animate-pulse"
                       : "bg-muted dark:bg-muted/40"
-                  }`}
+                    }`}
                 />
                 <span
-                  className={`text-[9px] truncate max-w-full font-medium ${
-                    state === "active"
-                      ? "text-primary font-bold"
-                      : state === "completed"
+                  className={`text-[9px] truncate max-w-full font-medium ${state === "active"
+                    ? "text-primary font-bold"
+                    : state === "completed"
                       ? "text-foreground"
                       : "text-muted-foreground"
-                  }`}
+                    }`}
                 >
                   {step.name.split(". ")[1]}
                 </span>
@@ -317,7 +389,7 @@ const DocxViewer = ({ fileUrl }: { fileUrl: string }) => {
   }
 
   return (
-    <div 
+    <div
       className="w-full h-full bg-white text-black p-8 overflow-y-auto rounded-xl prose prose-sm max-w-none shadow-sm border border-border"
       dangerouslySetInnerHTML={{ __html: html }}
     />
@@ -373,6 +445,7 @@ export default function ResearchPage() {
   const [isUploading, setIsUploading] = useState(false);
   const [isLoadingDocs, setIsLoadingDocs] = useState(true);
   const [pendingDocId, setPendingDocId] = useState<string | null>(null);
+  const [isDraggingFile, setIsDraggingFile] = useState(false);
 
   const activeDocId = activeDocument?.id || "general";
   const currentChat = getDocChat(activeDocId);
@@ -382,17 +455,41 @@ export default function ResearchPage() {
   const ragStatus = currentChat.ragStatus;
   const retainedCitations = currentChat.retainedCitations;
   const legalAnalytics = currentChat.legalAnalytics;
+  const followUpPrompts = currentChat.followUpPrompts || [];
 
   // Dynamic panel resizing states
   const [docListWidth, setDocListWidth] = useState<number>(260);
   const [chatPanelWidth, setChatPanelWidth] = useState<number>(480);
+  const [isDocListCollapsed, setIsDocListCollapsed] = useState(false);
   const [isDraggingDocList, setIsDraggingDocList] = useState(false);
   const [isDraggingChat, setIsDraggingChat] = useState(false);
   const [isNliModalOpen, setIsNliModalOpen] = useState(false);
+  const [selectedCaseModal, setSelectedCaseModal] = useState<{
+    caseData: JurisprudenceCase;
+    suitabilityPercent?: number;
+  } | null>(null);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const isDraggingDocListRef = useRef(false);
   const isDraggingChatRef = useRef(false);
+  const hasAutoCollapsedRef = useRef(false);
+  const prevActiveDocIdRef = useRef<string | null>(null);
+
+  // Automatically collapse "My Documents" pane when document analysis chat is active
+  useEffect(() => {
+    if (activeDocument) {
+      if (prevActiveDocIdRef.current !== activeDocument.id) {
+        prevActiveDocIdRef.current = activeDocument.id;
+        hasAutoCollapsedRef.current = false;
+      }
+      if ((messages.length > 1 || isTyping) && !hasAutoCollapsedRef.current) {
+        hasAutoCollapsedRef.current = true;
+        setIsDocListCollapsed(true);
+      }
+    } else {
+      setIsDocListCollapsed(false);
+    }
+  }, [activeDocument, messages.length, isTyping]);
 
   // Initialize saved widths from localStorage
   useEffect(() => {
@@ -411,7 +508,7 @@ export default function ResearchPage() {
           setChatPanelWidth(val);
         }
       }
-    } catch (e) {}
+    } catch (e) { }
   }, []);
 
   // Global mousemove / mouseup handlers for smooth panel resizing
@@ -436,7 +533,7 @@ export default function ResearchPage() {
         setDocListWidth((curr) => {
           try {
             localStorage.setItem("civilex_doc_list_width", curr.toString());
-          } catch (e) {}
+          } catch (e) { }
           return curr;
         });
       }
@@ -446,7 +543,7 @@ export default function ResearchPage() {
         setChatPanelWidth((curr) => {
           try {
             localStorage.setItem("civilex_chat_panel_width", curr.toString());
-          } catch (e) {}
+          } catch (e) { }
           return curr;
         });
       }
@@ -488,7 +585,7 @@ export default function ResearchPage() {
       const params = new URLSearchParams(window.location.search);
       const sessionId = params.get('session');
       if (!sessionId) return;
-      
+
       try {
         const { data: { session } } = await supabase.auth.getSession();
         const token = session?.access_token || '';
@@ -511,20 +608,15 @@ export default function ResearchPage() {
   }, [loadDocSession]);
 
   useEffect(() => {
-    if (documents.length > 0) {
-      if (pendingDocId) {
-        const doc = documents.find(d => d.id === pendingDocId);
-        if (doc) {
-          setActiveDocument(doc);
-          setPendingDocId(null);
-        }
-      } else if (!activeDocument) {
-        // Automatically select first document and initialize session
-        setActiveDocument(documents[0]);
-        ensureDocSession(documents[0].id, documents[0].filename);
+    if (documents.length > 0 && pendingDocId) {
+      const doc = documents.find(d => d.id === pendingDocId);
+      if (doc) {
+        setActiveDocument(doc);
+        setPendingDocId(null);
+        ensureDocSession(doc.id, doc.filename);
       }
     }
-  }, [documents, pendingDocId, activeDocument, ensureDocSession]);
+  }, [documents, pendingDocId, ensureDocSession]);
 
   const refreshDocStarters = useCallback(() => {
     const pool = [...DOC_STARTER_PROMPTS];
@@ -588,7 +680,7 @@ export default function ResearchPage() {
   const handleDeleteDocument = async (e: React.MouseEvent, docId: string) => {
     e.stopPropagation();
     if (!window.confirm("Are you sure you want to delete this document?")) return;
-    
+
     try {
       const { data: { session } } = await supabase.auth.getSession();
       const token = session?.access_token || '';
@@ -615,21 +707,21 @@ export default function ResearchPage() {
     }
   };
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
+  const handleFileProcess = async (file: File) => {
     // Client-side file type validation
     const allowedTypes = [
-      'application/pdf', 
-      'application/msword', 
-      'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 
+      'application/pdf',
+      'application/msword',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
       'text/plain',
       'image/png',
       'image/jpeg',
       'image/jpg'
     ];
-    if (!allowedTypes.includes(file.type)) {
+    const allowedExts = ['.pdf', '.doc', '.docx', '.txt', '.png', '.jpg', '.jpeg'];
+    const hasValidExt = allowedExts.some(ext => file.name.toLowerCase().endsWith(ext));
+
+    if (!allowedTypes.includes(file.type) && !hasValidExt) {
       alert('Invalid file type. Allowed: PDF, DOC, DOCX, TXT, PNG, JPG');
       return;
     }
@@ -654,10 +746,14 @@ export default function ResearchPage() {
         body: formData,
         signal: controller.signal
       });
-      
+
       clearTimeout(timeoutId);
 
       if (res.ok) {
+        const uploadResult = await res.json().catch(() => null);
+        if (uploadResult?.id) {
+          setPendingDocId(uploadResult.id);
+        }
         await fetchDocuments();
       } else {
         const errData = await res.json().catch(() => ({}));
@@ -680,8 +776,18 @@ export default function ResearchPage() {
     }
   };
 
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    await handleFileProcess(file);
+  };
+
   const handleSend = (overrideText?: string) => {
-    if (!activeDocument) return;
+    if (!activeDocument) {
+      fileInputRef.current?.click();
+      return;
+    }
+    setIsDocListCollapsed(true);
     handleSendDocMessage(activeDocument.id, activeDocument.filename, overrideText);
   };
 
@@ -713,114 +819,148 @@ export default function ResearchPage() {
   return (
     <div
       ref={containerRef}
-      className={`flex h-full gap-0 animate-fade-in bg-background/50 min-h-0 relative select-auto ${
-        isDraggingDocList || isDraggingChat ? "select-none" : ""
-      }`}
+      className={`flex h-full gap-0 animate-fade-in bg-background/50 min-h-0 relative select-auto ${isDraggingDocList || isDraggingChat ? "select-none" : ""
+        }`}
     >
-      {/* Left Pane - Document List (Dynamically resizable, defaults to 260px) */}
+      {/* Left Pane - Document List (Dynamically resizable, defaults to 260px, smoothly collapsible) */}
       <div
-        style={{ width: `${docListWidth}px` }}
-        className="hidden md:flex flex-col bg-card/80 backdrop-blur-xl rounded-2xl border border-border shadow-sm overflow-hidden flex-shrink-0 min-h-0"
+        style={{ width: isDocListCollapsed ? 0 : `${docListWidth}px` }}
+        className={`hidden md:flex flex-col bg-card/80 backdrop-blur-xl rounded-2xl border border-border shadow-sm overflow-hidden flex-shrink-0 min-h-0 transition-[width,opacity,margin,border-color] duration-300 ease-in-out ${isDocListCollapsed ? "!w-0 !p-0 opacity-0 pointer-events-none -mr-1 border-transparent" : "opacity-100"
+          }`}
       >
-        <div className="p-4 border-b border-border bg-card/50 shrink-0">
-          <h2 className="font-bold text-foreground flex items-center gap-2 mb-4">
-            <FileText className="w-5 h-5 text-primary" />
-            My Documents
-          </h2>
-          <Button 
-            className="w-full bg-primary hover:bg-primary/90 gap-2 shadow-sm"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={isUploading}
-          >
-            {isUploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
-            {isUploading ? "Uploading..." : "Upload Document"}
-          </Button>
-          <input 
-            type="file" 
-            ref={fileInputRef} 
-            onChange={handleFileUpload} 
-            className="hidden" 
-            accept=".pdf,.doc,.docx,.txt,.png,.jpg,.jpeg"
-          />
-        </div>
-        
-        <ScrollArea className="flex-1 p-2 min-h-0">
-          {isLoadingDocs ? (
-            <div className="flex justify-center p-8">
-              <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+        <div style={{ width: `${docListWidth}px` }} className="flex flex-col h-full shrink-0">
+          <div className="p-4 border-b border-border bg-card/50 shrink-0">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="font-bold text-foreground flex items-center gap-2">
+                <FileText className="w-5 h-5 text-primary" />
+                My Documents
+              </h2>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                onClick={() => setIsDocListCollapsed(true)}
+                className="h-7 w-7 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent cursor-pointer"
+                title="Collapse Documents panel"
+              >
+                <PanelLeftClose className="w-4 h-4" />
+              </Button>
             </div>
-          ) : documents.length === 0 ? (
-             <div className="text-center p-6 text-muted-foreground text-sm flex flex-col items-center">
-               <File className="w-8 h-8 mb-2 opacity-20" />
-               <p>No documents uploaded yet.</p>
-             </div>
-          ) : (
-            <div className="flex flex-col gap-1 p-1">
-              {documents.map(doc => (
-                <div 
-                  key={doc.id}
-                  onClick={async () => {
-                    setActiveDocument(doc);
-                    if (typeof window !== 'undefined') {
-                      window.history.replaceState({}, '', '/research');
-                    }
-                    await ensureDocSession(doc.id, doc.filename);
-                  }}
-                  className={`p-3 rounded-xl cursor-pointer transition-all border ${
-                    activeDocument?.id === doc.id 
-                      ? 'bg-primary/10 border-primary/20 shadow-sm' 
+            <div className="flex flex-col gap-2">
+              <Button
+                className="w-full bg-primary hover:bg-primary/90 gap-2 shadow-sm cursor-pointer"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={isUploading}
+              >
+                {isUploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
+                {isUploading ? "Uploading..." : "Upload Document"}
+              </Button>
+              <Button
+                type="button"
+                variant={!activeDocument ? "secondary" : "outline"}
+                size="sm"
+                onClick={() => {
+                  setActiveDocument(null);
+                  if (typeof window !== 'undefined') {
+                    window.history.replaceState({}, '', '/research');
+                  }
+                }}
+                className={`w-full gap-2 text-xs font-medium cursor-pointer transition-all ${
+                  !activeDocument
+                    ? 'bg-primary/15 text-primary border-primary/30 shadow-2xs font-semibold'
+                    : 'border-border/80 text-muted-foreground hover:text-foreground hover:bg-accent'
+                }`}
+              >
+                <Plus className="w-3.5 h-3.5 text-primary" />
+                <span>+ New Blank Analysis</span>
+              </Button>
+            </div>
+            <input
+              type="file"
+              ref={fileInputRef}
+              onChange={handleFileUpload}
+              className="hidden"
+              accept=".pdf,.doc,.docx,.txt,.png,.jpg,.jpeg"
+            />
+          </div>
+
+          <ScrollArea className="flex-1 p-2 min-h-0">
+            {isLoadingDocs ? (
+              <div className="flex justify-center p-8">
+                <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+              </div>
+            ) : documents.length === 0 ? (
+              <div className="text-center p-6 text-muted-foreground text-sm flex flex-col items-center">
+                <File className="w-8 h-8 mb-2 opacity-20" />
+                <p>No documents uploaded yet.</p>
+              </div>
+            ) : (
+              <div className="flex flex-col gap-1 p-1">
+                {documents.map(doc => (
+                  <div
+                    key={doc.id}
+                    onClick={async () => {
+                      setActiveDocument(doc);
+                      if (typeof window !== 'undefined') {
+                        window.history.replaceState({}, '', '/research');
+                      }
+                      await ensureDocSession(doc.id, doc.filename);
+                    }}
+                    className={`p-3 rounded-xl cursor-pointer transition-all border ${activeDocument?.id === doc.id
+                      ? 'bg-primary/10 border-primary/20 shadow-sm'
                       : 'bg-transparent border-transparent hover:bg-accent'
-                  }`}
-                >
-                  <div className="flex items-start justify-between gap-2 mb-1">
-                    <p className={`text-sm font-medium line-clamp-1 pr-2 ${activeDocument?.id === doc.id ? 'text-primary' : 'text-foreground'}`}>
-                      {doc.filename}
-                    </p>
-                    <button
-                      onClick={(e) => handleDeleteDocument(e, doc.id)}
-                      className="text-red-400/70 hover:text-red-400 p-1.5 rounded-md hover:bg-red-400/10 transition-colors flex-shrink-0"
-                      title="Delete document"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
+                      }`}
+                  >
+                    <div className="flex items-start justify-between gap-2 mb-1">
+                      <p className={`text-sm font-medium line-clamp-1 pr-2 ${activeDocument?.id === doc.id ? 'text-primary' : 'text-foreground'}`}>
+                        {doc.filename}
+                      </p>
+                      <button
+                        onClick={(e) => handleDeleteDocument(e, doc.id)}
+                        className="text-red-400/70 hover:text-red-400 p-1.5 rounded-md hover:bg-red-400/10 transition-colors flex-shrink-0"
+                        title="Delete document"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                    <div className="flex items-center justify-between mt-2">
+                      {getStatusBadge(doc)}
+                      <span className="text-[10px] text-muted-foreground">
+                        {new Date(doc.created_at).toLocaleDateString()}
+                      </span>
+                    </div>
                   </div>
-                  <div className="flex items-center justify-between mt-2">
-                    {getStatusBadge(doc)}
-                    <span className="text-[10px] text-muted-foreground">
-                      {new Date(doc.created_at).toLocaleDateString()}
-                    </span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </ScrollArea>
+                ))}
+              </div>
+            )}
+          </ScrollArea>
+        </div>
       </div>
 
-      {/* Resize Handle 1: Between Left Pane and Center Pane */}
-      <div
-        onMouseDown={startDraggingDocList}
-        role="separator"
-        tabIndex={0}
-        title="Drag to resize My Documents panel (Double-click to reset)"
-        onDoubleClick={() => {
-          setDocListWidth(260);
-          try {
-            localStorage.setItem("civilex_doc_list_width", "260");
-          } catch (e) {}
-        }}
-        className={`hidden md:flex w-3.5 -mx-1.5 z-20 items-center justify-center cursor-col-resize group relative select-none touch-none shrink-0 ${
-          isDraggingDocList ? "opacity-100" : "opacity-40 hover:opacity-100"
-        } transition-opacity`}
-      >
+      {/* Resize Handle 1: Between Left Pane and Center Pane (hidden when collapsed) */}
+      {!isDocListCollapsed && (
         <div
-          className={`w-1 rounded-full transition-all duration-150 ${
-            isDraggingDocList
+          onMouseDown={startDraggingDocList}
+          role="separator"
+          tabIndex={0}
+          title="Drag to resize My Documents panel (Double-click to reset)"
+          onDoubleClick={() => {
+            setDocListWidth(260);
+            try {
+              localStorage.setItem("civilex_doc_list_width", "260");
+            } catch (e) { }
+          }}
+          className={`hidden md:flex w-3.5 -mx-1.5 z-20 items-center justify-center cursor-col-resize group relative select-none touch-none shrink-0 ${isDraggingDocList ? "opacity-100" : "opacity-40 hover:opacity-100"
+            } transition-opacity`}
+        >
+          <div
+            className={`w-1 rounded-full transition-all duration-150 ${isDraggingDocList
               ? "bg-primary w-1.5 h-16 shadow-sm"
               : "bg-border group-hover:bg-primary/70 h-10 group-hover:h-14"
-          }`}
-        />
-      </div>
+              }`}
+          />
+        </div>
+      )}
 
       {/* Center Pane - Document Viewer */}
       <div className="flex-1 flex flex-col bg-card rounded-2xl border border-border shadow-sm overflow-hidden relative min-h-0 mx-1.5">
@@ -828,13 +968,59 @@ export default function ResearchPage() {
           <>
             {/* Toolbar */}
             <div className="p-3 border-b border-border bg-muted/50 flex items-center justify-between shrink-0">
-              <div className="flex items-center gap-2">
-                <Badge variant="outline" className="bg-card text-xs border-border font-medium">
+              <div className="flex items-center gap-2 min-w-0">
+                {/* Toggle button to expand/collapse documents list */}
+                <Button
+                  type="button"
+                  variant={isDocListCollapsed ? "outline" : "ghost"}
+                  size="sm"
+                  onClick={() => setIsDocListCollapsed(!isDocListCollapsed)}
+                  className={`h-8 gap-1.5 px-2 text-xs font-medium cursor-pointer transition-all duration-200 shrink-0 ${isDocListCollapsed
+                    ? "bg-card hover:bg-accent text-foreground border-border/80 shadow-2xs"
+                    : "text-muted-foreground hover:text-foreground hover:bg-accent/60"
+                    }`}
+                  title={isDocListCollapsed ? "Expand Documents panel" : "Collapse Documents panel"}
+                >
+                  {isDocListCollapsed ? (
+                    <>
+                      <PanelLeftOpen className="w-3.5 h-3.5 text-primary shrink-0" />
+                      <span className="hidden sm:inline">Documents</span>
+                      <span className="text-[10px] font-mono px-1.5 py-0.2 rounded-full bg-primary/10 text-primary">
+                        {documents.length}
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <PanelLeftClose className="w-3.5 h-3.5 shrink-0" />
+                      <span className="hidden sm:inline text-muted-foreground">Hide Docs</span>
+                    </>
+                  )}
+                </Button>
+
+                <div className="h-4 w-[1px] bg-border/70 mx-0.5 hidden sm:block shrink-0" />
+
+                <Badge variant="outline" className="bg-card text-xs border-border font-medium truncate max-w-[200px] sm:max-w-[320px]">
                   {activeDocument.filename}
                 </Badge>
                 {getStatusBadge(activeDocument)}
               </div>
-              <div className="flex items-center gap-1">
+              <div className="flex items-center gap-1.5">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setActiveDocument(null);
+                    if (typeof window !== 'undefined') {
+                      window.history.replaceState({}, '', '/research');
+                    }
+                  }}
+                  className="h-8 gap-1.5 px-2.5 text-xs text-muted-foreground hover:text-foreground hover:bg-accent border-border cursor-pointer shadow-2xs"
+                  title="Return to blank analysis to upload a new document"
+                >
+                  <Plus className="w-3.5 h-3.5 text-primary" />
+                  <span className="hidden sm:inline">New Analysis</span>
+                </Button>
                 <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-foreground">
                   <Download className="w-4 h-4" />
                 </Button>
@@ -843,45 +1029,206 @@ export default function ResearchPage() {
                 </Button>
               </div>
             </div>
-            
-             <div className="flex-1 bg-muted/30 p-4 relative overflow-hidden">
-               {activeDocument.file_url ? (
-                 activeDocument.filename.match(/\.(jpeg|jpg|png)$/i) ? (
-                   <div className="w-full h-full flex items-center justify-center bg-card shadow-sm border border-border rounded-xl overflow-hidden p-4">
-                     <img 
-                       src={activeDocument.file_url} 
-                       alt={activeDocument.filename} 
-                       className="max-w-full max-h-full object-contain"
-                     />
-                   </div>
-                 ) : activeDocument.filename.match(/\.(doc|docx)$/i) ? (
-                   <DocxViewer fileUrl={activeDocument.file_url} />
-                 ) : (
-                   <iframe 
-                     src={activeDocument.file_url} 
-                     className={`w-full h-full rounded-xl bg-card shadow-sm border border-border ${
-                       isDraggingDocList || isDraggingChat ? "pointer-events-none" : ""
-                     }`}
-                     title={activeDocument.filename}
-                   />
-                 )
-               ) : (
-                 <div className="flex flex-col items-center justify-center h-full text-muted-foreground">
-                   <FileText className="w-12 h-12 mb-4 opacity-20" />
-                   <p>Preview not available</p>
-                 </div>
-               )}
+
+            <div className="flex-1 bg-muted/30 p-4 relative overflow-hidden">
+              {activeDocument.file_url ? (
+                activeDocument.filename.match(/\.(jpeg|jpg|png)$/i) ? (
+                  <div className="w-full h-full flex items-center justify-center bg-card shadow-sm border border-border rounded-xl overflow-hidden p-4">
+                    <img
+                      src={activeDocument.file_url}
+                      alt={activeDocument.filename}
+                      className="max-w-full max-h-full object-contain"
+                    />
+                  </div>
+                ) : activeDocument.filename.match(/\.(doc|docx)$/i) ? (
+                  <DocxViewer fileUrl={activeDocument.file_url} />
+                ) : (
+                  <iframe
+                    src={activeDocument.file_url}
+                    className={`w-full h-full rounded-xl bg-card shadow-sm border border-border ${isDraggingDocList || isDraggingChat ? "pointer-events-none" : ""
+                      }`}
+                    title={activeDocument.filename}
+                  />
+                )
+              ) : (
+                <div className="flex flex-col items-center justify-center h-full text-muted-foreground">
+                  <FileText className="w-12 h-12 mb-4 opacity-20" />
+                  <p>Preview not available</p>
+                </div>
+              )}
             </div>
           </>
         ) : (
-          <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground">
-            <div className="w-16 h-16 rounded-full bg-primary/5 flex items-center justify-center mb-4">
-              <FileText className="w-8 h-8 text-primary/40" />
+          <div className="flex-1 flex flex-col bg-card/40 overflow-hidden">
+            {/* Blank Analysis Toolbar */}
+            <div className="p-3 border-b border-border bg-muted/40 flex items-center justify-between shrink-0">
+              <div className="flex items-center gap-2 min-w-0">
+                {isDocListCollapsed && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setIsDocListCollapsed(false)}
+                    className="h-8 gap-1.5 px-2 text-xs font-medium cursor-pointer bg-card hover:bg-accent text-foreground border-border/80 shadow-2xs shrink-0"
+                    title="Expand Documents panel"
+                  >
+                    <PanelLeftOpen className="w-3.5 h-3.5 text-primary shrink-0" />
+                    <span className="hidden sm:inline">Documents</span>
+                    <span className="text-[10px] font-mono px-1.5 py-0.2 rounded-full bg-primary/10 text-primary">
+                      {documents.length}
+                    </span>
+                  </Button>
+                )}
+                <Badge variant="outline" className="bg-primary/10 text-primary text-xs border-primary/25 font-semibold">
+                  Blank Analysis Mode
+                </Badge>
+                <span className="text-xs text-muted-foreground hidden sm:inline">Ready for New Document Ingestion</span>
+              </div>
+              {documents.length > 0 && isDocListCollapsed && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setIsDocListCollapsed(false)}
+                  className="h-8 text-xs text-muted-foreground hover:text-foreground gap-1.5 cursor-pointer"
+                >
+                  <FolderOpen className="w-3.5 h-3.5" />
+                  <span>View Past Documents ({documents.length})</span>
+                </Button>
+              )}
             </div>
-            <h3 className="text-lg font-semibold text-foreground mb-2">Document Analysis</h3>
-            <p className="text-sm text-center max-w-sm">
-              Select a document from the left panel to preview it and ask questions using the AI assistant.
-            </p>
+
+            {/* Blank Analysis Workspace Body */}
+            <div className="flex-1 overflow-y-auto p-6 md:p-8 flex flex-col items-center justify-center min-h-0 custom-scrollbar">
+              <div className="max-w-xl w-full flex flex-col items-center text-center">
+                {/* Upload Dropzone */}
+                <div
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    setIsDraggingFile(true);
+                  }}
+                  onDragLeave={(e) => {
+                    e.preventDefault();
+                    setIsDraggingFile(false);
+                  }}
+                  onDrop={async (e) => {
+                    e.preventDefault();
+                    setIsDraggingFile(false);
+                    const file = e.dataTransfer.files?.[0];
+                    if (file) await handleFileProcess(file);
+                  }}
+                  onClick={() => fileInputRef.current?.click()}
+                  className={`w-full p-8 md:p-10 rounded-2xl border-2 border-dashed transition-all duration-200 cursor-pointer flex flex-col items-center justify-center group ${
+                    isDraggingFile
+                      ? 'border-primary bg-primary/10 shadow-lg scale-[1.01]'
+                      : 'border-border/80 hover:border-primary/50 bg-card/60 hover:bg-accent/40 shadow-xs'
+                  }`}
+                >
+                  <div className={`w-16 h-16 rounded-2xl flex items-center justify-center mb-4 transition-transform group-hover:scale-110 duration-200 ${
+                    isDraggingFile ? 'bg-primary text-primary-foreground' : 'bg-primary/10 text-primary border border-primary/20'
+                  }`}>
+                    {isUploading ? (
+                      <Loader2 className="w-8 h-8 animate-spin text-primary" />
+                    ) : (
+                      <UploadCloud className="w-8 h-8" />
+                    )}
+                  </div>
+
+                  <h3 className="text-base md:text-lg font-bold text-foreground mb-1">
+                    {isUploading ? "Uploading & Ingesting Legal Document..." : "Upload Legal Document for Analysis"}
+                  </h3>
+                  <p className="text-xs md:text-sm text-muted-foreground max-w-md mb-4 leading-relaxed">
+                    {isUploading
+                      ? "Extracting document structure, clauses, and preparing statutory audit pipeline..."
+                      : "Drag & drop your file here, or click to browse. Supports PDF, DOCX, TXT, and scanned image pleadings."}
+                  </p>
+
+                  <div className="flex flex-wrap items-center justify-center gap-1.5 mb-5">
+                    {['PDF', 'DOCX', 'TXT', 'PNG', 'JPG'].map((fmt) => (
+                      <span key={fmt} className="text-[11px] font-mono px-2 py-0.5 rounded-md bg-muted text-muted-foreground border border-border/60">
+                        .{fmt.toLowerCase()}
+                      </span>
+                    ))}
+                    <span className="text-[11px] text-muted-foreground ml-1">Up to 50MB</span>
+                  </div>
+
+                  <Button
+                    type="button"
+                    disabled={isUploading}
+                    className="bg-primary hover:bg-primary/90 text-primary-foreground gap-2 rounded-xl shadow-sm cursor-pointer"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      fileInputRef.current?.click();
+                    }}
+                  >
+                    {isUploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
+                    <span>{isUploading ? "Uploading..." : "Select File from Device"}</span>
+                  </Button>
+                </div>
+
+                {/* 3 Capabilities Highlights */}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 w-full mt-6 text-left">
+                  <div className="p-3.5 rounded-xl bg-card border border-border shadow-2xs flex flex-col gap-1.5">
+                    <div className="w-7 h-7 rounded-lg bg-accent flex items-center justify-center text-primary shrink-0">
+                      <Scale className="w-4 h-4" />
+                    </div>
+                    <p className="text-xs font-semibold text-foreground">Civil Code Audit</p>
+                    <p className="text-[11px] text-muted-foreground leading-relaxed">
+                      Statutory conformity check under R.A. 386 (Obligations, Contracts, & Property).
+                    </p>
+                  </div>
+
+                  <div className="p-3.5 rounded-xl bg-card border border-border shadow-2xs flex flex-col gap-1.5">
+                    <div className="w-7 h-7 rounded-lg bg-accent flex items-center justify-center text-primary shrink-0">
+                      <Layers className="w-4 h-4" />
+                    </div>
+                    <p className="text-xs font-semibold text-foreground">NLI Entailment</p>
+                    <p className="text-[11px] text-muted-foreground leading-relaxed">
+                      Measures statutory entailment reliability and flags void or unconscionable terms.
+                    </p>
+                  </div>
+
+                  <div className="p-3.5 rounded-xl bg-card border border-border shadow-2xs flex flex-col gap-1.5">
+                    <div className="w-7 h-7 rounded-lg bg-accent flex items-center justify-center text-primary shrink-0">
+                      <BookOpen className="w-4 h-4" />
+                    </div>
+                    <p className="text-xs font-semibold text-foreground">Case Law Citations</p>
+                    <p className="text-[11px] text-muted-foreground leading-relaxed">
+                      Automated grounding with binding Philippine Supreme Court jurisprudence.
+                    </p>
+                  </div>
+                </div>
+
+                {/* Past Documents Quick Pick (if any exist) */}
+                {documents.length > 0 && (
+                  <div className="w-full mt-6 pt-5 border-t border-border/80 flex flex-col items-center">
+                    <p className="text-xs text-muted-foreground mb-2.5 font-medium">
+                      Or continue previous analysis on:
+                    </p>
+                    <div className="flex flex-wrap items-center justify-center gap-2 max-w-lg">
+                      {documents.slice(0, 4).map((doc) => (
+                        <button
+                          key={doc.id}
+                          type="button"
+                          onClick={async () => {
+                            setActiveDocument(doc);
+                            if (typeof window !== 'undefined') {
+                              window.history.replaceState({}, '', '/research');
+                            }
+                            await ensureDocSession(doc.id, doc.filename);
+                          }}
+                          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-card hover:bg-accent border border-border text-xs text-foreground hover:text-primary transition-all cursor-pointer shadow-2xs group"
+                          title={`Open ${doc.filename}`}
+                        >
+                          <FileText className="w-3.5 h-3.5 text-muted-foreground group-hover:text-primary transition-colors shrink-0" />
+                          <span className="truncate max-w-[140px] font-medium">{doc.filename}</span>
+                          <ArrowRight className="w-3 h-3 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
         )}
       </div>
@@ -896,18 +1243,16 @@ export default function ResearchPage() {
           setChatPanelWidth(480);
           try {
             localStorage.setItem("civilex_chat_panel_width", "480");
-          } catch (e) {}
+          } catch (e) { }
         }}
-        className={`hidden lg:flex w-3.5 -mx-1.5 z-20 items-center justify-center cursor-col-resize group relative select-none touch-none shrink-0 ${
-          isDraggingChat ? "opacity-100" : "opacity-40 hover:opacity-100"
-        } transition-opacity`}
+        className={`hidden lg:flex w-3.5 -mx-1.5 z-20 items-center justify-center cursor-col-resize group relative select-none touch-none shrink-0 ${isDraggingChat ? "opacity-100" : "opacity-40 hover:opacity-100"
+          } transition-opacity`}
       >
         <div
-          className={`w-1 rounded-full transition-all duration-150 ${
-            isDraggingChat
-              ? "bg-primary w-1.5 h-16 shadow-sm"
-              : "bg-border group-hover:bg-primary/70 h-10 group-hover:h-14"
-          }`}
+          className={`w-1 rounded-full transition-all duration-150 ${isDraggingChat
+            ? "bg-primary w-1.5 h-16 shadow-sm"
+            : "bg-border group-hover:bg-primary/70 h-10 group-hover:h-14"
+            }`}
         />
       </div>
 
@@ -920,7 +1265,7 @@ export default function ResearchPage() {
         <div className="p-4 border-b border-border bg-card/50 flex items-center justify-between shrink-0">
           <div className="flex items-center gap-2">
             <ShieldCheck className="w-5 h-5 text-primary" />
-            <h2 className="font-bold text-foreground">AI Assistant</h2>
+            <h2 className="font-bold text-foreground">Civilex Assistant</h2>
           </div>
           <div className="flex items-center gap-2">
             {retainedCitations.length > 0 && (
@@ -934,7 +1279,7 @@ export default function ResearchPage() {
                 setChatPanelWidth(480);
                 try {
                   localStorage.setItem("civilex_chat_panel_width", "480");
-                } catch (e) {}
+                } catch (e) { }
               }}
               title="Reset chat panel width to 480px"
               className="text-[10px] font-mono text-muted-foreground hover:text-foreground px-1.5 py-0.5 rounded bg-muted/60 hover:bg-muted border border-border/50 cursor-pointer transition-colors"
@@ -956,13 +1301,12 @@ export default function ResearchPage() {
           >
             <div className="flex items-start justify-between gap-2">
               <div className="flex items-center gap-2.5 min-w-0">
-                <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 border transition-transform group-hover:scale-105 ${
-                  legalAnalytics.nli_score >= 85
-                    ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-600 dark:text-emerald-400"
-                    : legalAnalytics.nli_score >= 70
+                <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 border transition-transform group-hover:scale-105 ${legalAnalytics.nli_score >= 85
+                  ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-600 dark:text-emerald-400"
+                  : legalAnalytics.nli_score >= 70
                     ? "bg-blue-500/10 border-blue-500/20 text-blue-600 dark:text-blue-400"
                     : "bg-amber-500/10 border-amber-500/20 text-amber-600 dark:text-amber-400"
-                }`}>
+                  }`}>
                   <ShieldCheck className="w-4 h-4" />
                 </div>
                 <div className="min-w-0">
@@ -982,13 +1326,12 @@ export default function ResearchPage() {
 
               <div className="flex items-center gap-1 shrink-0">
                 <span
-                  className={`text-xs font-bold px-2 py-0.5 rounded-md border tabular-nums ${
-                    legalAnalytics.nli_score >= 85
-                      ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
-                      : legalAnalytics.nli_score >= 70
+                  className={`text-xs font-bold px-2 py-0.5 rounded-md border tabular-nums ${legalAnalytics.nli_score >= 85
+                    ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
+                    : legalAnalytics.nli_score >= 70
                       ? "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60"
                       : "text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/50 border-amber-200 dark:border-amber-800/60"
-                  }`}
+                    }`}
                 >
                   {legalAnalytics.nli_score}%
                 </span>
@@ -999,13 +1342,12 @@ export default function ResearchPage() {
             {/* Dynamic Visual Progress Meter */}
             <div className="w-full bg-muted/70 dark:bg-muted/40 rounded-full h-1.5 overflow-hidden mt-2.5">
               <div
-                className={`h-full rounded-full transition-all duration-700 ease-out ${
-                  legalAnalytics.nli_score >= 85
-                    ? "bg-emerald-500"
-                    : legalAnalytics.nli_score >= 70
+                className={`h-full rounded-full transition-all duration-700 ease-out ${legalAnalytics.nli_score >= 85
+                  ? "bg-emerald-500"
+                  : legalAnalytics.nli_score >= 70
                     ? "bg-blue-500"
                     : "bg-amber-500"
-                }`}
+                  }`}
                 style={{ width: `${Math.min(100, Math.max(0, legalAnalytics.nli_score))}%` }}
               />
             </div>
@@ -1014,19 +1356,18 @@ export default function ResearchPage() {
             <div className="flex items-center justify-between mt-2 text-[10px]">
               <span className="flex items-center gap-1.5 text-muted-foreground">
                 <span
-                  className={`w-1.5 h-1.5 rounded-full ${
-                    legalAnalytics.nli_score >= 85
-                      ? "bg-emerald-500 animate-pulse"
-                      : legalAnalytics.nli_score >= 70
+                  className={`w-1.5 h-1.5 rounded-full ${legalAnalytics.nli_score >= 85
+                    ? "bg-emerald-500 animate-pulse"
+                    : legalAnalytics.nli_score >= 70
                       ? "bg-blue-500"
                       : "bg-amber-500"
-                  }`}
+                    }`}
                 />
                 {legalAnalytics.nli_score >= 85
                   ? "Strict Statutory Entailment"
                   : legalAnalytics.nli_score >= 70
-                  ? "Substantially Consistent"
-                  : "Generalized Principles"}
+                    ? "Substantially Consistent"
+                    : "Generalized Principles"}
               </span>
               <span className="text-[10px] font-medium text-muted-foreground group-hover:text-primary transition-colors inline-flex items-center gap-0.5">
                 Inspect audit <ChevronRight className="w-3 h-3 group-hover:translate-x-0.5 transition-transform" />
@@ -1034,7 +1375,7 @@ export default function ResearchPage() {
             </div>
           </div>
         )}
-        
+
         <div className="flex-1 overflow-y-auto p-4 custom-scrollbar min-h-0">
           <div className="flex flex-col gap-4">
             {/* Retained Citations Section for Active Document Chat */}
@@ -1049,43 +1390,135 @@ export default function ResearchPage() {
                       </div>
                     </AccordionTrigger>
                     <AccordionContent className="px-3 pb-3 text-xs flex flex-col gap-2 max-h-56 overflow-y-auto custom-scrollbar">
-                      {retainedCitations.map((cit: any, idx: number) => (
-                        <div key={idx} className="p-2.5 rounded-lg bg-card border border-border/60 shadow-2xs">
-                          <div className="flex items-center justify-between mb-1.5 gap-2">
-                            <span className="font-bold text-primary text-[11px] uppercase truncate">
-                              {cit.parent_type === "civil_code" || cit.parent_type === "article"
-                                ? `Civil Code — ${cit.parent_id}`
-                                : cit.parent_type === "case"
-                                ? `Jurisprudence — ${cit.parent_id}`
-                                : `Document Excerpt ${cit.chunk_id ? `(#${parseInt(cit.chunk_id.split('_c').pop() || '0', 10) + 1})` : ''}`}
-                            </span>
-                            {cit.suitability_percent !== undefined && (
-                              <span
-                                className={`text-[11px] font-semibold px-1.5 py-0.5 rounded-md border tabular-nums shrink-0 ${
-                                  cit.suitability_percent >= 85
-                                    ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
-                                    : cit.suitability_percent >= 70
-                                    ? "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60"
-                                    : "text-muted-foreground bg-muted border-border"
-                                }`}
+                      {[...retainedCitations]
+                        .sort((a: any, b: any) => (Number(b?.suitability_percent) || 0) - (Number(a?.suitability_percent) || 0))
+                        .map((cit: any, idx: number) => {
+                          const isCase =
+                            cit.parent_type === "case" ||
+                            cit.parent_type === "jurisprudence" ||
+                            Boolean(cit.metadata?.gr_number) ||
+                            String(cit.parent_id || "").startsWith("GR_");
+
+                          if (isCase) {
+                            const year = cit.metadata?.decision_date ? cit.metadata.decision_date.split(" ").pop() : null;
+                            const title = cit.metadata?.title || cit.metadata?.gr_number || cit.parent_id;
+                            const gr = cit.metadata?.gr_number || (String(cit.parent_id || "").startsWith("GR_") ? cit.parent_id : null);
+                            const summary = cleanCaseSummary(cit.metadata?.content_summary || cit.content);
+
+                            const handleOpen = () => {
+                              setSelectedCaseModal({
+                                caseData: {
+                                  case_uid: cit.metadata?.case_uid || cit.parent_id,
+                                  title: cit.metadata?.title || cit.parent_id,
+                                  gr_number: cit.metadata?.gr_number || cit.parent_id,
+                                  decision_date: cit.metadata?.decision_date || "",
+                                  content_summary: cit.metadata?.content_summary || summary,
+                                  source_url: cit.metadata?.source_url || "",
+                                  full_text: cit.metadata?.full_text,
+                                },
+                                suitabilityPercent: cit.suitability_percent,
+                              });
+                            };
+
+                            return (
+                              <div
+                                key={idx}
+                                className="p-3 bg-card rounded-xl border border-border/80 shadow-2xs hover:shadow-sm hover:border-primary/40 cursor-pointer transition-all duration-200 group flex flex-col justify-between"
+                                onClick={handleOpen}
                               >
-                                {cit.suitability_percent}%
-                              </span>
-                            )}
-                          </div>
-                          {cit.metadata?.title && (
-                            <p className="font-semibold text-foreground text-xs mb-0.5">
-                              {cit.metadata.title} {cit.metadata.gr_number ? `(GR ${cit.metadata.gr_number})` : ""}
-                            </p>
-                          )}
-                          <p className="text-muted-foreground text-xs line-clamp-2">{cit.content}</p>
-                          {cit.metadata?.source_url && (
-                            <a href={cit.metadata.source_url} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline text-[11px] mt-1 inline-block">
-                              View full document
-                            </a>
-                          )}
-                        </div>
-                      ))}
+                                <div>
+                                  <div className="flex items-center justify-between mb-1.5 gap-1.5">
+                                    <div className="flex items-center gap-1.5 min-w-0 flex-wrap">
+                                      <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20 shrink-0">
+                                        <Scale className="w-3 h-3" />
+                                        Jurisprudence
+                                      </span>
+                                      {year && (
+                                        <Badge variant="outline" className="text-[10px] whitespace-nowrap bg-background font-mono">
+                                          {year}
+                                        </Badge>
+                                      )}
+                                    </div>
+
+                                    {cit.suitability_percent !== undefined && (
+                                      <span
+                                        className={`text-[11px] font-semibold px-1.5 py-0.5 rounded-md border tabular-nums shrink-0 ${cit.suitability_percent >= 85
+                                            ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
+                                            : cit.suitability_percent >= 70
+                                              ? "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60"
+                                              : "text-muted-foreground bg-muted border-border"
+                                          }`}
+                                      >
+                                        {cit.suitability_percent}%
+                                      </span>
+                                    )}
+                                  </div>
+
+                                  <div className="mb-1.5">
+                                    <h4 className="font-semibold text-xs text-foreground group-hover:text-primary transition-colors leading-snug line-clamp-2">
+                                      {title}
+                                    </h4>
+                                    {gr && (
+                                      <span className="text-[10px] font-mono text-muted-foreground block mt-0.5">
+                                        {gr}
+                                      </span>
+                                    )}
+                                  </div>
+
+                                  <p className="text-xs text-muted-foreground leading-relaxed line-clamp-2 mb-2">
+                                    {summary}
+                                  </p>
+                                </div>
+
+                                <div className="flex items-center justify-between pt-1.5 border-t border-border/50 text-[11px] font-semibold text-primary mt-auto">
+                                  <span className="flex items-center group-hover:translate-x-1 transition-transform">
+                                    Read full case <ArrowRight className="w-3 h-3 ml-1" />
+                                  </span>
+                                  {cit.metadata?.source_url && (
+                                    <span className="text-[10px] font-normal text-muted-foreground">
+                                      LawPhil
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          }
+
+                          return (
+                            <div key={idx} className="p-2.5 rounded-lg bg-card border border-border/60 shadow-2xs">
+                              <div className="flex items-center justify-between mb-1.5 gap-2">
+                                <span className="font-bold text-primary text-[11px] uppercase truncate">
+                                  {cit.parent_type === "civil_code" || cit.parent_type === "article"
+                                    ? `Civil Code — ${cit.parent_id}`
+                                    : `Document Excerpt ${cit.chunk_id ? `(#${parseInt(cit.chunk_id.split('_c').pop() || '0', 10) + 1})` : ''}`}
+                                </span>
+                                {cit.suitability_percent !== undefined && (
+                                  <span
+                                    className={`text-[11px] font-semibold px-1.5 py-0.5 rounded-md border tabular-nums shrink-0 ${cit.suitability_percent >= 85
+                                        ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
+                                        : cit.suitability_percent >= 70
+                                          ? "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60"
+                                          : "text-muted-foreground bg-muted border-border"
+                                      }`}
+                                  >
+                                    {cit.suitability_percent}%
+                                  </span>
+                                )}
+                              </div>
+                              {cit.metadata?.title && (
+                                <p className="font-semibold text-foreground text-xs mb-0.5">
+                                  {cit.metadata.title} {cit.metadata.gr_number ? `(GR ${cit.metadata.gr_number})` : ""}
+                                </p>
+                              )}
+                              <p className="text-muted-foreground text-xs line-clamp-2">{cit.content}</p>
+                              {cit.metadata?.source_url && (
+                                <a href={cit.metadata.source_url} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline text-[11px] mt-1 inline-block">
+                                  View full document
+                                </a>
+                              )}
+                            </div>
+                          );
+                        })}
                     </AccordionContent>
                   </AccordionItem>
                 </Accordion>
@@ -1097,22 +1530,22 @@ export default function ResearchPage() {
                 msg.role === "assistant" &&
                 (idx === messages.length - 1 || (idx === messages.length - 2 && isTyping));
               const effectiveRagStatus =
-                msg.ragStatus || (isLatestAssistant && isTyping ? ragStatus : null);
+                (isLatestAssistant && isTyping ? (ragStatus || msg.ragStatus) : msg.ragStatus) || null;
 
               return (
                 <div key={msg.id} className={`flex gap-3 ${msg.role === 'user' ? 'flex-row-reverse' : ''}`}>
-                  <Avatar className="w-6 h-6 mt-1 flex-shrink-0 shadow-sm">
+                  <Avatar className="w-7 h-7 mt-0.5 border border-border/80 shrink-0 rounded-lg overflow-hidden shadow-xs">
                     {msg.role === 'assistant' ? (
-                      <div className="bg-primary w-full h-full flex items-center justify-center">
-                        <ShieldCheck className="w-3 h-3 text-primary-foreground" />
+                      <div className="bg-accent w-full h-full flex items-center justify-center">
+                        <Scale className="w-3.5 h-3.5 text-primary" />
                       </div>
                     ) : (
                       <AvatarFallback className="bg-muted flex items-center justify-center">
-                        <User className="w-3 h-3 text-muted-foreground" />
+                        <User className="w-3.5 h-3.5 text-muted-foreground" />
                       </AvatarFallback>
                     )}
                   </Avatar>
-                  
+
                   <div className={`flex flex-col min-w-0 max-w-[85%] ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
                     {/* Stepper for assistant */}
                     {msg.role === 'assistant' && effectiveRagStatus && (
@@ -1122,13 +1555,14 @@ export default function ResearchPage() {
                       />
                     )}
 
-                    <div className={`px-3.5 py-2.5 text-sm rounded-2xl w-full shadow-sm ${
-                      msg.role === 'user' 
-                        ? 'bg-primary text-primary-foreground dark:bg-zinc-800 dark:text-zinc-100 rounded-tr-sm' 
-                        : 'bg-card border border-border/80 dark:border-white/10 text-foreground rounded-tl-sm'
-                    }`}>
+                    <div className={`px-3.5 py-2.5 text-sm rounded-2xl w-full shadow-xs ${msg.role === 'user'
+                      ? 'bg-primary text-primary-foreground dark:bg-zinc-800 dark:text-zinc-100 rounded-tr-sm'
+                      : 'bg-accent/40 dark:bg-card border border-border/80 dark:border-white/10 text-foreground rounded-tl-sm'
+                      }`}>
                       {msg.role === 'assistant' ? (
-                        msg.content ? (
+                        msg.id === 1 && (msg.content.includes("CIVIL-LEX") || msg.content.includes("Hello!") || msg.content.includes("Welcome back")) ? (
+                          <StartingTypewriterMessage content={msg.content} />
+                        ) : msg.content ? (
                           <AssistantMarkdown content={msg.content} />
                         ) : isTyping && isLatestAssistant ? (
                           <div className="flex items-center gap-2 text-xs text-muted-foreground py-1">
@@ -1149,37 +1583,131 @@ export default function ResearchPage() {
                               View Sources ({msg.citations.length})
                             </AccordionTrigger>
                             <AccordionContent className="text-xs text-muted-foreground bg-accent/10 p-3 rounded-b-lg border border-t-0 border-border flex flex-col gap-2 max-h-60 overflow-y-auto custom-scrollbar">
-                              {msg.citations.map((cit: any, cIdx: number) => (
-                                <div key={cIdx} className="flex flex-col gap-1 p-2.5 bg-card rounded-lg border border-border/60 shadow-2xs">
-                                  <div className="flex items-center justify-between gap-2">
-                                    <span className="font-bold text-primary text-[11px] uppercase truncate">
-                                      {cit.parent_type === "civil_code" ? "Civil Code Article" : cit.parent_type?.toUpperCase?.() ?? "SOURCE"} — {cit.parent_id}
-                                    </span>
-                                    {cit.suitability_percent !== undefined && (
-                                      <span
-                                        className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-md border tabular-nums shrink-0 ${
-                                          cit.suitability_percent >= 85
-                                            ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
-                                            : cit.suitability_percent >= 70
-                                            ? "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60"
-                                            : "text-muted-foreground bg-muted border-border"
-                                        }`}
+                              {[...msg.citations]
+                                .sort((a: any, b: any) => (Number(b?.suitability_percent) || 0) - (Number(a?.suitability_percent) || 0))
+                                .map((cit: any, cIdx: number) => {
+                                  const isCase =
+                                    cit.parent_type === "case" ||
+                                    cit.parent_type === "jurisprudence" ||
+                                    Boolean(cit.metadata?.gr_number) ||
+                                    String(cit.parent_id || "").startsWith("GR_");
+
+                                  if (isCase) {
+                                    const year = cit.metadata?.decision_date ? cit.metadata.decision_date.split(" ").pop() : null;
+                                    const title = cit.metadata?.title || cit.metadata?.gr_number || cit.parent_id;
+                                    const gr = cit.metadata?.gr_number || (String(cit.parent_id || "").startsWith("GR_") ? cit.parent_id : null);
+                                    const summary = cleanCaseSummary(cit.metadata?.content_summary || cit.content);
+
+                                    const handleOpen = () => {
+                                      setSelectedCaseModal({
+                                        caseData: {
+                                          case_uid: cit.metadata?.case_uid || cit.parent_id,
+                                          title: cit.metadata?.title || cit.parent_id,
+                                          gr_number: cit.metadata?.gr_number || cit.parent_id,
+                                          decision_date: cit.metadata?.decision_date || "",
+                                          content_summary: cit.metadata?.content_summary || summary,
+                                          source_url: cit.metadata?.source_url || "",
+                                          full_text: cit.metadata?.full_text,
+                                        },
+                                        suitabilityPercent: cit.suitability_percent,
+                                      });
+                                    };
+
+                                    return (
+                                      <div
+                                        key={cIdx}
+                                        className="p-3 bg-card rounded-xl border border-border/80 shadow-2xs hover:shadow-sm hover:border-primary/40 cursor-pointer transition-all duration-200 group flex flex-col justify-between"
+                                        onClick={handleOpen}
                                       >
-                                        {cit.suitability_percent}%
-                                      </span>
-                                    )}
-                                  </div>
-                                  {cit.metadata?.title && (
-                                    <span className="font-medium text-foreground text-xs">{cit.metadata.title}</span>
-                                  )}
-                                  <span className="text-muted-foreground text-xs line-clamp-2">{cit.content}</span>
-                                  {cit.metadata?.source_url && (
-                                    <a href={cit.metadata.source_url} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline text-[11px] mt-1 inline-block">
-                                      View full document
-                                    </a>
-                                  )}
-                                </div>
-                              ))}
+                                        <div>
+                                          <div className="flex items-center justify-between mb-1.5 gap-1.5">
+                                            <div className="flex items-center gap-1.5 min-w-0 flex-wrap">
+                                              <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20 shrink-0">
+                                                <Scale className="w-3 h-3" />
+                                                Jurisprudence
+                                              </span>
+                                              {year && (
+                                                <Badge variant="outline" className="text-[10px] whitespace-nowrap bg-background font-mono">
+                                                  {year}
+                                                </Badge>
+                                              )}
+                                            </div>
+
+                                            {cit.suitability_percent !== undefined && (
+                                              <span
+                                                className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-md border tabular-nums shrink-0 ${cit.suitability_percent >= 85
+                                                    ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
+                                                    : cit.suitability_percent >= 70
+                                                      ? "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60"
+                                                      : "text-muted-foreground bg-muted border-border"
+                                                  }`}
+                                              >
+                                                {cit.suitability_percent}%
+                                              </span>
+                                            )}
+                                          </div>
+
+                                          <div className="mb-1.5">
+                                            <h4 className="font-semibold text-xs text-foreground group-hover:text-primary transition-colors leading-snug line-clamp-2">
+                                              {title}
+                                            </h4>
+                                            {gr && (
+                                              <span className="text-[10px] font-mono text-muted-foreground block mt-0.5">
+                                                {gr}
+                                              </span>
+                                            )}
+                                          </div>
+
+                                          <p className="text-xs text-muted-foreground leading-relaxed line-clamp-2 mb-2">
+                                            {summary}
+                                          </p>
+                                        </div>
+
+                                        <div className="flex items-center justify-between pt-1.5 border-t border-border/50 text-[11px] font-semibold text-primary mt-auto">
+                                          <span className="flex items-center group-hover:translate-x-1 transition-transform">
+                                            Read full case <ArrowRight className="w-3 h-3 ml-1" />
+                                          </span>
+                                          {cit.metadata?.source_url && (
+                                            <span className="text-[10px] font-normal text-muted-foreground">
+                                              LawPhil
+                                            </span>
+                                          )}
+                                        </div>
+                                      </div>
+                                    );
+                                  }
+
+                                  return (
+                                    <div key={cIdx} className="flex flex-col gap-1 p-2.5 bg-card rounded-lg border border-border/60 shadow-2xs">
+                                      <div className="flex items-center justify-between gap-2">
+                                        <span className="font-bold text-primary text-[11px] uppercase truncate">
+                                          {cit.parent_type === "civil_code" ? "Civil Code Article" : cit.parent_type?.toUpperCase?.() ?? "SOURCE"} — {cit.parent_id}
+                                        </span>
+                                        {cit.suitability_percent !== undefined && (
+                                          <span
+                                            className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-md border tabular-nums shrink-0 ${cit.suitability_percent >= 85
+                                                ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
+                                                : cit.suitability_percent >= 70
+                                                  ? "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60"
+                                                  : "text-muted-foreground bg-muted border-border"
+                                              }`}
+                                          >
+                                            {cit.suitability_percent}%
+                                          </span>
+                                        )}
+                                      </div>
+                                      {cit.metadata?.title && (
+                                        <span className="font-medium text-foreground text-xs">{cit.metadata.title}</span>
+                                      )}
+                                      <span className="text-muted-foreground text-xs line-clamp-2">{cit.content}</span>
+                                      {cit.metadata?.source_url && (
+                                        <a href={cit.metadata.source_url} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline text-[11px] mt-1 inline-block">
+                                          View full document
+                                        </a>
+                                      )}
+                                    </div>
+                                  );
+                                })}
                             </AccordionContent>
                           </AccordionItem>
                         </Accordion>
@@ -1222,6 +1750,31 @@ export default function ResearchPage() {
             </div>
           </div>
         )}
+        {/* Suggested Next Inquiries (Dynamic Follow-Up Prompts with Smooth Transition Animation) */}
+        {!isTyping && followUpPrompts.length > 0 && messages.length > 1 && (
+          <div className="px-3 py-2 border-t border-border/40 bg-card/40 space-y-1.5 animate-fade-in-up transition-all duration-300 ease-out shrink-0">
+            <div className="flex items-center gap-1.5 text-[11px] font-semibold text-primary px-0.5">
+              <Sparkles className="w-3.5 h-3.5 text-primary animate-pulse" />
+              <span>Suggested Next Inquiries:</span>
+            </div>
+            <div className="flex flex-row items-center gap-1.5 w-full">
+              {followUpPrompts.slice(0, 2).map((prompt, i) => (
+                <button
+                  key={i}
+                  type="button"
+                  onClick={() => handleSend(prompt)}
+                  className="flex-1 min-w-0 group flex items-center justify-between gap-1.5 px-2.5 py-1.5 rounded-xl text-xs bg-accent/40 dark:bg-accent/20 hover:bg-primary hover:text-primary-foreground text-foreground border border-border/70 hover:border-primary/40 transition-all duration-200 shadow-2xs hover:shadow-xs active:scale-98 cursor-pointer"
+                  title={prompt}
+                >
+                  <span className="truncate text-xs text-left min-w-0 flex-1 group-hover:text-primary-foreground transition-colors font-medium">
+                    {prompt}
+                  </span>
+                  <ChevronRight className="w-3 h-3 opacity-50 group-hover:opacity-100 group-hover:translate-x-0.5 transition-all shrink-0" />
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Input */}
         <div className="p-4 border-t border-border bg-card/50 shrink-0">
@@ -1230,12 +1783,16 @@ export default function ResearchPage() {
               type="text"
               value={inputValue}
               onChange={(e) => setDocInputValue(activeDocId, e.target.value)}
+              onFocus={() => {
+                // Auto-collapse documents pane when user focuses on chat input to maximize preview & chat width
+                setIsDocListCollapsed(true);
+              }}
               onKeyDown={(e) => e.key === 'Enter' && handleSend()}
               placeholder={activeDocument ? `Ask about ${activeDocument.filename}...` : "Ask a general question..."}
               className="flex-1 bg-transparent dark:bg-transparent border-none shadow-none outline-none focus:outline-none focus:ring-0 text-foreground placeholder:text-muted-foreground px-4 h-11 text-sm"
             />
             {isTyping ? (
-              <Button 
+              <Button
                 type="button"
                 onClick={handleStop}
                 className="mr-1.5 bg-destructive hover:bg-destructive/90 text-destructive-foreground rounded-xl h-8 w-8 p-0 shrink-0 shadow-sm"
@@ -1244,7 +1801,7 @@ export default function ResearchPage() {
                 <Square className="w-3.5 h-3.5 fill-current" />
               </Button>
             ) : (
-              <Button 
+              <Button
                 type="button"
                 onClick={() => handleSend()}
                 disabled={!inputValue.trim()}
@@ -1294,18 +1851,17 @@ export default function ResearchPage() {
                       <span className="text-3xl font-extrabold text-foreground tabular-nums">
                         {legalAnalytics.nli_score}%
                       </span>
-                      <span className={`text-xs font-semibold px-2 py-0.5 rounded-full border ${
-                        legalAnalytics.nli_score >= 85
-                          ? "text-emerald-700 dark:text-emerald-400 bg-emerald-500/10 border-emerald-500/25"
-                          : legalAnalytics.nli_score >= 70
+                      <span className={`text-xs font-semibold px-2 py-0.5 rounded-full border ${legalAnalytics.nli_score >= 85
+                        ? "text-emerald-700 dark:text-emerald-400 bg-emerald-500/10 border-emerald-500/25"
+                        : legalAnalytics.nli_score >= 70
                           ? "text-blue-700 dark:text-blue-400 bg-blue-500/10 border-blue-500/25"
                           : "text-amber-700 dark:text-amber-400 bg-amber-500/10 border-amber-500/25"
-                      }`}>
+                        }`}>
                         {legalAnalytics.nli_score >= 85
                           ? "Strictly Grounded (Verified)"
                           : legalAnalytics.nli_score >= 70
-                          ? "Substantially Consistent"
-                          : "Preliminary Doctrine"}
+                            ? "Substantially Consistent"
+                            : "Preliminary Doctrine"}
                       </span>
                     </div>
                   </div>
@@ -1320,13 +1876,12 @@ export default function ResearchPage() {
                 <div className="space-y-1">
                   <div className="w-full bg-muted rounded-full h-2 overflow-hidden">
                     <div
-                      className={`h-full rounded-full transition-all duration-700 ${
-                        legalAnalytics.nli_score >= 85
-                          ? "bg-emerald-500"
-                          : legalAnalytics.nli_score >= 70
+                      className={`h-full rounded-full transition-all duration-700 ${legalAnalytics.nli_score >= 85
+                        ? "bg-emerald-500"
+                        : legalAnalytics.nli_score >= 70
                           ? "bg-blue-500"
                           : "bg-amber-500"
-                      }`}
+                        }`}
                       style={{ width: `${Math.min(100, Math.max(0, legalAnalytics.nli_score))}%` }}
                     />
                   </div>
@@ -1425,6 +1980,15 @@ export default function ResearchPage() {
           )}
         </DialogContent>
       </Dialog>
+
+      {/* Supreme Court Jurisprudence Full Reader Modal */}
+      <JurisprudenceModal
+        isOpen={Boolean(selectedCaseModal)}
+        onClose={() => setSelectedCaseModal(null)}
+        caseData={selectedCaseModal?.caseData || null}
+        suitabilityPercent={selectedCaseModal?.suitabilityPercent}
+      />
     </div>
   );
 }
+

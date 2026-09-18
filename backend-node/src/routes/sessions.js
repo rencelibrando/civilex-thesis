@@ -146,6 +146,42 @@ router.post('/:id/messages', requireAuth, async (req, res) => {
   }
 });
 
+// Update / rename a session
+router.patch('/:id', requireAuth, async (req, res) => {
+  try {
+    const sessionId = req.params.id;
+    const { title } = req.body;
+
+    if (!title || !title.trim()) {
+      return res.status(400).json({ error: 'Title cannot be empty' });
+    }
+
+    // Check if the session exists and belongs to the user
+    const { data: session, error: sessionError } = await req.supabase
+      .from('chat_sessions')
+      .select('user_id')
+      .eq('id', sessionId)
+      .single();
+
+    if (sessionError || !session || session.user_id !== req.user.id) {
+       return res.status(403).json({ error: 'Unauthorized or session not found' });
+    }
+
+    const { data, error } = await req.supabase
+      .from('chat_sessions')
+      .update({ title: title.trim() })
+      .eq('id', sessionId)
+      .select()
+      .single();
+
+    if (error) throw error;
+    res.json(data);
+  } catch (err) {
+    console.error("Error updating session:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Delete a session
 router.delete('/:id', requireAuth, async (req, res) => {
   try {

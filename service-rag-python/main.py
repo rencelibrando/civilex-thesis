@@ -569,7 +569,7 @@ def search_with_embedding(q_emb: list, query: str, document_id: Optional[str] = 
                     if statutory_articles:
                         art_ids = [a['parent_id'] for a in statutory_articles]
                         cur.execute("""
-                            SELECT r.article_id, j.case_uid, j.title, j.gr_number, j.content_summary, j.source_url
+                            SELECT r.article_id, j.case_uid, j.title, j.gr_number, j.content_summary, j.source_url, j.decision_date
                             FROM article_jurisprudence_relations r
                             JOIN jurisprudence_cases j ON r.case_uid = j.case_uid
                             WHERE r.article_id = ANY(%s)
@@ -583,11 +583,17 @@ def search_with_embedding(q_emb: list, query: str, document_id: Optional[str] = 
                                 "metadata": {
                                     "title": row.get('title'),
                                     "gr_number": row.get('gr_number'),
-                                    "source_url": row.get('source_url')
+                                    "source_url": row.get('source_url'),
+                                    "decision_date": row.get('decision_date'),
+                                    "content_summary": row.get('content_summary'),
+                                    "case_uid": row.get('case_uid')
                                 },
                                 "suitability_percent": round(max(60.0, min(95.0, 88.0 - (idx * 3.0))), 1)
                             })
-                    return doc_results + statutory_articles + linked_cases
+                    all_found = doc_results + statutory_articles + linked_cases
+                    all_found.sort(key=lambda x: float(x.get('suitability_percent', 0.0)), reverse=True)
+                    return all_found
+                doc_results.sort(key=lambda x: float(x.get('suitability_percent', 0.0)), reverse=True)
                 return doc_results
 
             # 1. Exact match extraction for Civil Code Articles (e.g. "article 77", "Art 2176", "Article 33")
@@ -642,7 +648,7 @@ def search_with_embedding(q_emb: list, query: str, document_id: Optional[str] = 
             if articles:
                 article_ids = [a['parent_id'] for a in articles]
                 cur.execute("""
-                    SELECT r.article_id, j.case_uid, j.title, j.gr_number, j.content_summary, j.source_url
+                    SELECT r.article_id, j.case_uid, j.title, j.gr_number, j.content_summary, j.source_url, j.decision_date
                     FROM article_jurisprudence_relations r
                     JOIN jurisprudence_cases j ON r.case_uid = j.case_uid
                     WHERE r.article_id = ANY(%s)
@@ -660,7 +666,10 @@ def search_with_embedding(q_emb: list, query: str, document_id: Optional[str] = 
                         "metadata": {
                             "title": row.get('title'),
                             "gr_number": row.get('gr_number'),
-                            "source_url": row.get('source_url')
+                            "source_url": row.get('source_url'),
+                            "decision_date": row.get('decision_date'),
+                            "content_summary": row.get('content_summary'),
+                            "case_uid": row.get('case_uid')
                         },
                         "suitability_percent": round(max(60.0, min(95.0, top_art_score * 0.92 - (idx * 2.5))), 1)
                     })
@@ -673,7 +682,7 @@ def search_with_embedding(q_emb: list, query: str, document_id: Optional[str] = 
                 if clean_terms:
                     case_search_query = " ".join(clean_terms[:6])
                     cur.execute("""
-                        SELECT case_uid, title, gr_number, source_url, content_summary
+                        SELECT case_uid, title, gr_number, source_url, content_summary, decision_date
                         FROM jurisprudence_cases
                         WHERE to_tsvector('simple', title || ' ' || coalesce(content_summary, '')) @@ plainto_tsquery('simple', %s)
                         LIMIT 2;
@@ -686,13 +695,18 @@ def search_with_embedding(q_emb: list, query: str, document_id: Optional[str] = 
                             "metadata": {
                                 "title": row.get('title'),
                                 "gr_number": row.get('gr_number'),
-                                "source_url": row.get('source_url')
+                                "source_url": row.get('source_url'),
+                                "decision_date": row.get('decision_date'),
+                                "content_summary": row.get('content_summary'),
+                                "case_uid": row.get('case_uid')
                             },
                             "suitability_percent": round(max(55.0, 82.0 - (idx * 4.0)), 1)
                         })
 
-            # Merge: Civil Code statutory articles ALWAYS lead first, followed by supporting jurisprudence
-            return articles + linked_cases + cases
+            # Merge and sort by percentage (highest suitability_percent on top)
+            all_found = articles + linked_cases + cases
+            all_found.sort(key=lambda x: float(x.get('suitability_percent', 0.0)), reverse=True)
+            return all_found
     finally:
         conn.close()
 
@@ -776,13 +790,26 @@ async def search_documents(request: SearchRequest):
                 logging.info(f"Contextualized search query: {search_query}")
 
                 # Stage 1: Embedding the prompt
-                yield f"data: {dumps({'type': 'status', 'stage': 'embedding', 'message': 'Generating vector embedding for query...'})}\n\n"
+                is_doc_analysis = bool(request.document_id)
+                emb_msg = (
+                    f"Generating embedding & aligning query with {doc_filename or 'document'}..."
+                    if is_doc_analysis
+                    else "Generating vector embedding for query..."
+                )
+                yield f"data: {dumps({'type': 'status', 'stage': 'embedding', 'message': emb_msg})}\n\n"
                 q_emb = await asyncio.to_thread(compute_embedding, search_query)
+                await asyncio.sleep(0.65)
 
-                # Stage 2: Getting the relevant document
-                yield f"data: {dumps({'type': 'status', 'stage': 'retrieving', 'message': 'Searching Philippine Civil Code articles & jurisprudence...'})}\n\n"
+                # Stage 2: Getting the relevant document & statutory authorities
+                ret_msg = (
+                    f"Cross-referencing {doc_filename or 'document'} with Philippine Civil Code & jurisprudence..."
+                    if is_doc_analysis
+                    else "Searching Philippine Civil Code articles & jurisprudence..."
+                )
+                yield f"data: {dumps({'type': 'status', 'stage': 'retrieving', 'message': ret_msg})}\n\n"
                 results = await asyncio.to_thread(search_with_embedding, q_emb, search_query, request.document_id)
                 logging.info(f"Found {len(results)} relevant citations for current query.")
+                await asyncio.sleep(0.65)
 
                 # Deduplicate prior citations and newly retrieved citations using chunk-specific keys
                 def get_citation_key(cit: dict) -> str:
@@ -810,11 +837,16 @@ async def search_documents(request: SearchRequest):
                 # Cap retained prior citations to top 6 to preserve memory without context explosion
                 retained_prior = retained_prior[:6]
                 accumulated_citations = results + retained_prior
+                accumulated_citations.sort(key=lambda x: float(x.get('suitability_percent', 0.0)), reverse=True)
 
-                # Send citations and retrieval completion status
-                yield f"data: {dumps({'type': 'citations', 'data': results})}\n\n"
-                yield f"data: {dumps({'type': 'accumulated_citations', 'data': accumulated_citations})}\n\n"
-                yield f"data: {dumps({'type': 'status', 'stage': 'retrieving_done', 'message': f'Retrieved {len(results)} relevant legal provisions & doctrines ({len(accumulated_citations)} retained in active chat)', 'count': len(results)})}\n\n"
+                # Send retrieval completion status (Citations are deferred until streaming starts)
+                ret_done_msg = (
+                    f"Retrieved {len(results)} relevant clauses & statutory authorities ({len(accumulated_citations)} retained in active chat)"
+                    if is_doc_analysis
+                    else f"Retrieved {len(results)} relevant legal provisions & doctrines ({len(accumulated_citations)} retained in active chat)"
+                )
+                yield f"data: {dumps({'type': 'status', 'stage': 'retrieving_done', 'message': ret_done_msg, 'count': len(results)})}\n\n"
+                await asyncio.sleep(0.45)
 
                 # Calculate NLI Faithfulness / Grounding score
                 statutory_present = any(c.get('parent_type') in ('article', 'civil_code') for c in results)
@@ -825,10 +857,15 @@ async def search_documents(request: SearchRequest):
                     'nli_status': 'Grounded' if nli_score >= 80 else 'Unverified',
                     'top_article_score': top_score,
                 }
-                yield f"data: {dumps({'type': 'legal_analytics', 'data': analytics_payload})}\n\n"
 
                 # Stage 3: Passing final prompt & context to model
-                yield f"data: {dumps({'type': 'status', 'stage': 'prompting', 'message': 'Synthesizing statutory context & preparing model prompt...'})}\n\n"
+                prompt_msg = (
+                    "Synthesizing document clauses, statutory grounding & preparing model prompt..."
+                    if is_doc_analysis
+                    else "Synthesizing statutory context & preparing model prompt..."
+                )
+                yield f"data: {dumps({'type': 'status', 'stage': 'prompting', 'message': prompt_msg})}\n\n"
+                await asyncio.sleep(0.65)
                 
                 # Separate retrieved and prior items by type to enforce strict statutory Civil Code priority
                 statutory_items = []
@@ -968,7 +1005,12 @@ CONTEXT:
 """
 
                 # Stage 4: Thinking / Reasoning
-                yield f"data: {dumps({'type': 'status', 'stage': 'thinking', 'message': 'Analyzing statutory provisions and formulating legal reasoning...'})}\n\n"
+                think_msg = (
+                    "Analyzing contractual terms, legal risks, and formulating reasoning..."
+                    if is_doc_analysis
+                    else "Analyzing statutory provisions and formulating legal reasoning..."
+                )
+                yield f"data: {dumps({'type': 'status', 'stage': 'thinking', 'message': think_msg})}\n\n"
 
                 # Stage 5: Character stream from LLM
                 history_dicts = [{"role": msg.role, "content": msg.content} for msg in request.history]
@@ -979,8 +1021,18 @@ CONTEXT:
                     if is_first_chunk:
                         is_first_chunk = False
                         yield f"data: {dumps({'type': 'status', 'stage': 'streaming', 'message': 'Streaming legal analysis...'})}\n\n"
+                        # Deferred emission: deliver citations and grounding analytics right when streaming starts
+                        yield f"data: {dumps({'type': 'citations', 'data': results})}\n\n"
+                        yield f"data: {dumps({'type': 'accumulated_citations', 'data': accumulated_citations})}\n\n"
+                        yield f"data: {dumps({'type': 'legal_analytics', 'data': analytics_payload})}\n\n"
                     full_text += chunk
                     yield f"data: {dumps({'type': 'text', 'text': chunk})}\n\n"
+
+                # Fallback emission if stream finished without any chunks
+                if is_first_chunk:
+                    yield f"data: {dumps({'type': 'citations', 'data': results})}\n\n"
+                    yield f"data: {dumps({'type': 'accumulated_citations', 'data': accumulated_citations})}\n\n"
+                    yield f"data: {dumps({'type': 'legal_analytics', 'data': analytics_payload})}\n\n"
 
                 # Signal completion
                 logging.info("Finished streaming response.")

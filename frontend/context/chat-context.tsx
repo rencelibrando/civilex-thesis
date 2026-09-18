@@ -351,11 +351,13 @@ export function mergeCitations(existing: any[], incoming: any[]): any[] {
   }
   const merged = Array.from(map.values());
   return merged.sort((a, b) => {
+    const scoreA = Number(a?.suitability_percent) || 0;
+    const scoreB = Number(b?.suitability_percent) || 0;
+    const scoreDiff = scoreB - scoreA;
+    if (scoreDiff !== 0) return scoreDiff;
     const priority = (type?: string) =>
       type === "article" || type === "civil_code" ? 1 : type === "user_document" ? 2 : 3;
-    const pDiff = priority(a.parent_type) - priority(b.parent_type);
-    if (pDiff !== 0) return pDiff;
-    return (b.suitability_percent || 0) - (a.suitability_percent || 0);
+    return priority(a.parent_type) - priority(b.parent_type);
   });
 }
 
@@ -672,7 +674,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                     )
                   );
                 } else if (data.type === "citations") {
-                  receivedCitations = data.data || [];
+                  receivedCitations = (data.data || []).sort(
+                    (a: any, b: any) => (Number(b?.suitability_percent) || 0) - (Number(a?.suitability_percent) || 0)
+                  );
                   setCurrentCitations(receivedCitations);
                   setRetainedCitations((prev) => mergeCitations(prev, receivedCitations));
                   setMessages((prev) =>
@@ -689,6 +693,10 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                   );
                 } else if (data.type === "accumulated_citations") {
                   const accumulated = (data.data || []).sort((a: any, b: any) => {
+                    const scoreA = Number(a?.suitability_percent) || 0;
+                    const scoreB = Number(b?.suitability_percent) || 0;
+                    const scoreDiff = scoreB - scoreA;
+                    if (scoreDiff !== 0) return scoreDiff;
                     const priority = (type?: string) =>
                       type === "article" || type === "civil_code" ? 1 : type === "user_document" ? 2 : 3;
                     return priority(a.parent_type) - priority(b.parent_type);

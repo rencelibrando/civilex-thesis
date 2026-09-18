@@ -9,7 +9,47 @@ import React, {
   ReactNode,
 } from "react";
 import { supabase } from "@/lib/supabase";
-import { RagStatus, RagStage, mergeCitations, getCitationKey, LegalAnalytics } from "./chat-context";
+import { RagStatus, RagStage, mergeCitations, getCitationKey, LegalAnalytics, generateFollowUpPrompts } from "./chat-context";
+
+export function generateDocFollowUpPrompts(lastAnswer: string, citations: any[] = [], filename?: string): string[] {
+  const base = generateFollowUpPrompts(lastAnswer, citations);
+  const suggestions: string[] = [...base];
+  const seen = new Set<string>(suggestions.map((s) => s.toLowerCase()));
+
+  const addPrompt = (p: string) => {
+    const clean = p.trim();
+    if (!seen.has(clean.toLowerCase()) && suggestions.length < 3) {
+      seen.add(clean.toLowerCase());
+      suggestions.push(clean);
+    }
+  };
+
+  const lower = lastAnswer.toLowerCase();
+  if (lower.includes("clause") || lower.includes("stipulation") || lower.includes("agreement") || lower.includes("contract")) {
+    addPrompt("Are any clauses in this document void under public policy or the Civil Code?");
+    addPrompt("What formal written demand is legally required under Article 1169?");
+    addPrompt("What competent court has jurisdiction under RA 11576?");
+  }
+  if (lower.includes("liability") || lower.includes("damages") || lower.includes("penalty") || lower.includes("breach")) {
+    addPrompt("Can the liquidated damages or penalty clause be equitably reduced under Art. 1229?");
+    addPrompt("What affirmative defenses can be raised against liability?");
+  }
+  if (lower.includes("termination") || lower.includes("rescission") || lower.includes("default")) {
+    addPrompt("What is the prescriptive period to file an action for judicial rescission under Art. 1191?");
+  }
+
+  const docFallbacks = [
+    "What are the critical dispute risks identified in this document?",
+    "Can you outline a step-by-step compliance checklist for these clauses?",
+    "What competent court has jurisdiction if a civil action is filed?",
+  ];
+  for (const fb of docFallbacks) {
+    if (suggestions.length >= 3) break;
+    addPrompt(fb);
+  }
+
+  return suggestions.slice(0, 3);
+}
 
 export interface DocChatMessage {
   id: number;
@@ -29,6 +69,7 @@ export interface DocChatState {
   isTyping: boolean;
   ragStatus: RagStatus | null;
   legalAnalytics: LegalAnalytics | null;
+  followUpPrompts: string[];
 }
 
 const DEFAULT_DOC_MESSAGES: DocChatMessage[] = [
@@ -49,6 +90,7 @@ const INITIAL_STATE: DocChatState = {
   isTyping: false,
   ragStatus: null,
   legalAnalytics: null,
+  followUpPrompts: [],
 };
 
 interface DocChatContextType {
@@ -118,6 +160,7 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
                   allCits.push(c);
                 }
               }
+              parsedCits.sort((a: any, b: any) => (Number(b?.suitability_percent) || 0) - (Number(a?.suitability_percent) || 0));
             }
             return {
               id: m.id ? Number(m.id) || idx + 2 : idx + 2,
@@ -127,12 +170,16 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
             };
           });
 
+          allCits.sort((a, b) => (Number(b?.suitability_percent) || 0) - (Number(a?.suitability_percent) || 0));
           const topSuit = allCits[0]?.suitability_percent || 88;
           const loadedAnalytics: LegalAnalytics = {
             nli_score: Math.min(98, Math.max(72, Math.round(topSuit * 1.02))),
             nli_status: topSuit >= 70 ? "Grounded" : "Unverified",
             top_article_score: topSuit,
           };
+
+          const lastAssistant = formattedMessages.filter((m: any) => m.role === "assistant").pop();
+          const loadedFollowUps = lastAssistant ? generateDocFollowUpPrompts(lastAssistant.content, allCits) : [];
 
           setDocChats((prev) => {
             const current = prev[docId] || INITIAL_STATE;
@@ -144,6 +191,7 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
                 legalAnalytics: loadedAnalytics,
                 retainedCitations: allCits,
                 currentCitations: allCits.slice(0, 5),
+                followUpPrompts: loadedFollowUps,
                 messages: [
                   {
                     id: 1,
@@ -262,6 +310,8 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
             ...cur,
             inputValue: "",
             isTyping: true,
+            currentCitations: [],
+            followUpPrompts: [],
             ragStatus: initialStatus,
             messages: [
               ...currentHistory,
@@ -328,7 +378,47 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
         const decoder = new TextDecoder();
         let done = false;
         let buffer = "";
+        let fullResponseAccumulator = "";
         let receivedCitations: any[] = [];
+        let pendingCitations: any[] | null = null;
+        let pendingAccumulatedCitations: any[] | null = null;
+        let pendingLegalAnalytics: LegalAnalytics | null = null;
+        let hasStartedStreaming = false;
+
+        const commitDocCitations = () => {
+          if (pendingCitations !== null || pendingAccumulatedCitations !== null || pendingLegalAnalytics !== null) {
+            const citsToCommit = pendingCitations || [];
+            const analyticsToCommit = pendingLegalAnalytics;
+            const accumulatedToCommit = pendingAccumulatedCitations;
+
+            setDocChats((prev) => {
+              const cur = prev[docId] || INITIAL_STATE;
+              const updatedRetained = accumulatedToCommit || mergeCitations(cur.retainedCitations, citsToCommit);
+              return {
+                ...prev,
+                [docId]: {
+                  ...cur,
+                  legalAnalytics: analyticsToCommit || cur.legalAnalytics,
+                  currentCitations: citsToCommit.length > 0 ? citsToCommit : cur.currentCitations,
+                  retainedCitations: updatedRetained,
+                  messages: cur.messages.map((m) =>
+                    m.id === assistantId
+                      ? {
+                          ...m,
+                          citations: citsToCommit.length > 0 ? citsToCommit : m.citations,
+                          legalAnalytics: analyticsToCommit || m.legalAnalytics,
+                        }
+                      : m
+                  ),
+                },
+              };
+            });
+
+            pendingCitations = null;
+            pendingAccumulatedCitations = null;
+            pendingLegalAnalytics = null;
+          }
+        };
 
         while (!done) {
           const { value, done: readerDone } = await reader.read();
@@ -363,55 +453,36 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
                       };
                     });
                   } else if (data.type === "citations") {
-                    receivedCitations = (data.data || []).map((c: any) => {
-                      if (c.suitability_percent === undefined) {
-                        const rawScore = c.similarity ?? c.score ?? 0.88;
-                        return {
-                          ...c,
-                          suitability_percent: Math.round(rawScore > 1 ? rawScore : rawScore * 100),
-                        };
-                      }
-                      return c;
-                    });
+                    receivedCitations = (data.data || [])
+                      .map((c: any) => {
+                        if (c.suitability_percent === undefined) {
+                          const rawScore = c.similarity ?? c.score ?? 0.88;
+                          return {
+                            ...c,
+                            suitability_percent: Math.round(rawScore > 1 ? rawScore : rawScore * 100),
+                          };
+                        }
+                        return c;
+                      })
+                      .sort((a: any, b: any) => (Number(b?.suitability_percent) || 0) - (Number(a?.suitability_percent) || 0));
                     const topScore = receivedCitations[0]?.suitability_percent || 88;
                     const calculatedNli: LegalAnalytics = {
                       nli_score: Math.min(98, Math.max(72, Math.round(topScore * 1.02))),
                       nli_status: "Grounded",
                       top_article_score: topScore,
                     };
-                    setDocChats((prev) => {
-                      const cur = prev[docId] || INITIAL_STATE;
-                      const updatedRetained = mergeCitations(cur.retainedCitations, receivedCitations);
-                      return {
-                        ...prev,
-                        [docId]: {
-                          ...cur,
-                          legalAnalytics: cur.legalAnalytics || calculatedNli,
-                          currentCitations: receivedCitations,
-                          retainedCitations: updatedRetained,
-                          messages: cur.messages.map((m) =>
-                            m.id === assistantId
-                              ? { ...m, citations: receivedCitations, legalAnalytics: m.legalAnalytics || calculatedNli }
-                              : m
-                          ),
-                        },
-                      };
-                    });
+
+                    pendingCitations = receivedCitations;
+                    pendingLegalAnalytics = calculatedNli;
+                    if (hasStartedStreaming) {
+                      commitDocCitations();
+                    }
                   } else if (data.type === "legal_analytics") {
                     const analytics: LegalAnalytics = data.data;
-                    setDocChats((prev) => {
-                      const cur = prev[docId] || INITIAL_STATE;
-                      return {
-                        ...prev,
-                        [docId]: {
-                          ...cur,
-                          legalAnalytics: analytics,
-                          messages: cur.messages.map((m) =>
-                            m.id === assistantId ? { ...m, legalAnalytics: analytics } : m
-                          ),
-                        },
-                      };
-                    });
+                    pendingLegalAnalytics = analytics;
+                    if (hasStartedStreaming) {
+                      commitDocCitations();
+                    }
                   } else if (data.type === "accumulated_citations") {
                     const accumulated = (data.data || [])
                       .map((c: any) => {
@@ -425,21 +496,24 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
                         return c;
                       })
                       .sort((a: any, b: any) => {
+                        const scoreA = Number(a?.suitability_percent) || 0;
+                        const scoreB = Number(b?.suitability_percent) || 0;
+                        const scoreDiff = scoreB - scoreA;
+                        if (scoreDiff !== 0) return scoreDiff;
                         const priority = (type?: string) =>
                           type === "article" || type === "civil_code" ? 1 : type === "user_document" ? 2 : 3;
                         return priority(a.parent_type) - priority(b.parent_type);
                       });
-                    setDocChats((prev) => {
-                      const cur = prev[docId] || INITIAL_STATE;
-                      return {
-                        ...prev,
-                        [docId]: {
-                          ...cur,
-                          retainedCitations: accumulated,
-                        },
-                      };
-                    });
+                    pendingAccumulatedCitations = accumulated;
+                    if (hasStartedStreaming) {
+                      commitDocCitations();
+                    }
                   } else if (data.type === "text") {
+                    if (!hasStartedStreaming) {
+                      hasStartedStreaming = true;
+                      commitDocCitations();
+                    }
+                    fullResponseAccumulator += data.text;
                     setDocChats((prev) => {
                       const cur = prev[docId] || INITIAL_STATE;
                       return {
@@ -453,6 +527,8 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
                       };
                     });
                   } else if (data.type === "done") {
+                    commitDocCitations();
+                    const followUps = generateDocFollowUpPrompts(fullResponseAccumulator, receivedCitations, filename);
                     setDocChats((prev) => {
                       const cur = prev[docId] || INITIAL_STATE;
                       const topCit = cur.currentCitations[0] || cur.retainedCitations[0];
@@ -467,6 +543,7 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
                         [docId]: {
                           ...cur,
                           legalAnalytics: finalAnalytics,
+                          followUpPrompts: followUps,
                           ragStatus: { stage: "completed", message: "Analysis complete" },
                           messages: cur.messages.map((m) =>
                             m.id === assistantId

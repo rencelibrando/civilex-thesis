@@ -246,6 +246,7 @@ body {
     opacity: 0;
     transform: translateY(8px);
   }
+
   to {
     opacity: 1;
     transform: translateY(0);
@@ -257,8 +258,13 @@ body {
 }
 
 @keyframes fade-in {
-  from { opacity: 0; }
-  to { opacity: 1; }
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
 }
 
 .animate-fade-in {
@@ -270,6 +276,7 @@ body {
     opacity: 0;
     transform: translateX(12px);
   }
+
   to {
     opacity: 1;
     transform: translateX(0);
@@ -325,6 +332,7 @@ body {
   .typing-dot {
     animation: none !important;
   }
+
   .animate-fade-in-up,
   .animate-fade-in,
   .animate-slide-in-right,
@@ -345,10 +353,12 @@ body {
 }
 
 @keyframes civ-glow-pulse {
+
   0%,
   100% {
     opacity: 0.65;
   }
+
   50% {
     opacity: 1;
   }
@@ -366,6 +376,7 @@ body {
   .animate-civ-spin-slow {
     animation-duration: 8s;
   }
+
   .animate-civ-glow-pulse {
     animation: none;
   }
@@ -384,9 +395,11 @@ body {
   * {
     @apply border-border outline-ring/50;
   }
+
   body {
     @apply bg-background text-foreground;
   }
+
   html {
     @apply font-sans;
   }

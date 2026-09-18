@@ -1,12 +1,40 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import Link from "next/link";
-import { History as HistoryIcon, Search, FileText, ChevronRight, MessageSquare, Trash2 } from "lucide-react";
+import {
+  History as HistoryIcon,
+  Search,
+  FileText,
+  ChevronRight,
+  MessageSquare,
+  Trash2,
+  Pencil,
+  ArrowUpDown,
+  X,
+  AlertTriangle,
+  Loader2,
+  Plus,
+  Calendar,
+  Sparkles,
+  Layers,
+  ArrowRight,
+} from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Button, buttonVariants } from "@/components/ui/button";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+  DialogClose,
+} from "@/components/ui/dialog";
+import { Skeleton } from "@/components/ui/skeleton";
 import { supabase } from "@/lib/supabase";
 
 interface Session {
@@ -17,15 +45,71 @@ interface Session {
   document_id?: string;
 }
 
+type SortOption = "newest" | "oldest" | "az" | "za";
+
+// ---------------------------------------------------------------------------
+// Time grouping & formatting helpers
+// ---------------------------------------------------------------------------
+function formatRelativeTime(dateString: string): string {
+  const date = new Date(dateString);
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffMinutes = Math.floor(diffMs / (1000 * 60));
+  const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+
+  if (diffMinutes < 1) return "Just now";
+  if (diffMinutes < 60) return `${diffMinutes}m ago`;
+  if (diffHours < 24) return `${diffHours}h ago`;
+  if (diffDays === 1) return "Yesterday";
+  if (diffDays < 7) return `${diffDays}d ago`;
+
+  return date.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
+function getTimeGroup(dateString: string): string {
+  const date = new Date(dateString);
+  const now = new Date();
+
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const itemDate = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const diffDays = Math.floor((today.getTime() - itemDate.getTime()) / (1000 * 60 * 60 * 24));
+
+  if (diffDays <= 0) return "Today";
+  if (diffDays === 1) return "Yesterday";
+  if (diffDays <= 7) return "Past 7 Days";
+  if (diffDays <= 30) return "Earlier This Month";
+  return "Older Archives";
+}
+
+const TIME_GROUP_ORDER = ["Today", "Yesterday", "Past 7 Days", "Earlier This Month", "Older Archives"];
+
 export default function HistoryPage() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [isLoading, setIsLoading] = useState(true);
+  const [activeTab, setActiveTab] = useState<"all" | "legal" | "document">("all");
+  const [sortBy, setSortBy] = useState<SortOption>("newest");
+
+  // Rename modal state
+  const [renamingSession, setRenamingSession] = useState<Session | null>(null);
+  const [newTitle, setNewTitle] = useState("");
+  const [isSubmittingRename, setIsSubmittingRename] = useState(false);
+
+  // Delete modal state
+  const [deletingSession, setDeletingSession] = useState<Session | null>(null);
+  const [isSubmittingDelete, setIsSubmittingDelete] = useState(false);
 
   useEffect(() => {
     async function fetchSessions() {
       try {
-        const { data: { session } } = await supabase.auth.getSession();
+        const {
+          data: { session },
+        } = await supabase.auth.getSession();
         if (!session) {
           setIsLoading(false);
           return;
@@ -33,8 +117,8 @@ export default function HistoryPage() {
 
         const res = await fetch("http://localhost:4000/api/sessions", {
           headers: {
-            "Authorization": `Bearer ${session.access_token}`
-          }
+            Authorization: `Bearer ${session.access_token}`,
+          },
         });
 
         if (res.ok) {
@@ -50,143 +134,573 @@ export default function HistoryPage() {
     fetchSessions();
   }, []);
 
-  const handleDelete = async (e: React.MouseEvent, id: string) => {
+  // Handle Rename Submit
+  const handleRenameSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    e.stopPropagation();
-    if (!window.confirm("Are you sure you want to delete this case history?")) return;
-    
+    if (!renamingSession || !newTitle.trim()) return;
+
+    setIsSubmittingRename(true);
     try {
-      const { data: { session } } = await supabase.auth.getSession();
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
       if (!session) return;
-      
-      const res = await fetch(`http://localhost:4000/api/sessions/${id}`, {
-        method: 'DELETE',
+
+      const res = await fetch(`http://localhost:4000/api/sessions/${renamingSession.id}`, {
+        method: "PATCH",
         headers: {
-          "Authorization": `Bearer ${session.access_token}`
-        }
+          Authorization: `Bearer ${session.access_token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ title: newTitle.trim() }),
       });
-      
+
       if (res.ok) {
-        setSessions(prev => prev.filter(s => s.id !== id));
+        const updated = await res.json();
+        setSessions((prev) =>
+          prev.map((s) => (s.id === renamingSession.id ? { ...s, title: updated.title || newTitle.trim() } : s))
+        );
+        setRenamingSession(null);
+      } else {
+        console.error("Failed to rename session");
+      }
+    } catch (err) {
+      console.error("Error renaming session", err);
+    } finally {
+      setIsSubmittingRename(false);
+    }
+  };
+
+  // Handle Delete Confirm
+  const handleDeleteConfirm = async () => {
+    if (!deletingSession) return;
+
+    setIsSubmittingDelete(true);
+    try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      if (!session) return;
+
+      const res = await fetch(`http://localhost:4000/api/sessions/${deletingSession.id}`, {
+        method: "DELETE",
+        headers: {
+          Authorization: `Bearer ${session.access_token}`,
+        },
+      });
+
+      if (res.ok) {
+        setSessions((prev) => prev.filter((s) => s.id !== deletingSession.id));
+        setDeletingSession(null);
       } else {
         console.error("Failed to delete session");
       }
     } catch (err) {
       console.error("Failed to delete session", err);
+    } finally {
+      setIsSubmittingDelete(false);
     }
   };
 
-  const filteredSessions = sessions.filter(s => 
-    s.title.toLowerCase().includes(searchQuery.toLowerCase())
+  // Metric counts
+  const totalCount = sessions.length;
+  const legalCount = useMemo(
+    () => sessions.filter((s) => s.session_type !== "document" && s.session_type !== "document_analysis" && !s.document_id).length,
+    [sessions]
+  );
+  const docCount = useMemo(
+    () => sessions.filter((s) => s.session_type === "document" || s.session_type === "document_analysis" || Boolean(s.document_id)).length,
+    [sessions]
   );
 
-  const legalChats = filteredSessions.filter(s => !s.session_type || s.session_type === 'legal_chat');
-  const documentChats = filteredSessions.filter(s => s.session_type === 'document_analysis');
+  // Filtered and Sorted Sessions
+  const processedSessions = useMemo(() => {
+    let list = [...sessions];
 
-  const renderSessionList = (items: Session[], type: 'legal' | 'document') => {
-    if (isLoading) {
-      return <div className="text-center py-10 text-muted-foreground">Loading history...</div>;
+    // Filter by Tab
+    if (activeTab === "legal") {
+      list = list.filter((s) => s.session_type !== "document" && s.session_type !== "document_analysis" && !s.document_id);
+    } else if (activeTab === "document") {
+      list = list.filter((s) => s.session_type === "document" || s.session_type === "document_analysis" || Boolean(s.document_id));
     }
-    if (items.length === 0) {
-      return (
-        <div className="text-center py-12 text-muted-foreground bg-card/50 rounded-2xl border border-dashed border-border/70 p-8 my-6">
-          <HistoryIcon className="w-8 h-8 mx-auto mb-2 opacity-30 text-muted-foreground" />
-          <p className="text-sm font-medium">
-            {searchQuery 
-              ? `No ${type === 'legal' ? 'legal chats' : 'document analyses'} match "${searchQuery}".` 
-              : `No ${type === 'legal' ? 'legal chat' : 'document analysis'} history found.`}
-          </p>
-        </div>
-      );
+
+    // Filter by Search
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase().trim();
+      list = list.filter((s) => s.title.toLowerCase().includes(q));
     }
-    return (
-      <div className="space-y-3 mt-6">
-        {items.map((item) => (
-          <Link key={item.id} href={type === 'legal' ? `/chat?session=${item.id}` : `/research?session=${item.id}`} className="block">
-            <Card className="hover:border-primary/50 hover:shadow-md transition-all group bg-card hover:bg-accent/20 border-border rounded-xl overflow-hidden cursor-pointer">
-              <CardContent className="p-4 flex items-center justify-between">
-                <div className="flex items-start gap-4 min-w-0">
-                  <div className="mt-1 w-10 h-10 rounded-xl bg-primary/10 dark:bg-primary/20 flex items-center justify-center flex-shrink-0 group-hover:bg-primary/20 transition-colors">
-                    {type === 'legal' ? (
-                      <MessageSquare className="w-5 h-5 text-primary transition-colors" />
-                    ) : (
-                      <FileText className="w-5 h-5 text-emerald-600 dark:text-emerald-400 transition-colors" />
-                    )}
-                  </div>
-                  <div className="min-w-0">
-                    <h3 className="font-semibold text-foreground text-base group-hover:text-primary transition-colors line-clamp-1 pr-4">
-                      {item.title}
-                    </h3>
-                    <div className="flex items-center gap-3 mt-1 text-xs text-muted-foreground">
-                      <span>{new Date(item.created_at).toLocaleDateString()}</span>
-                      <span className="w-1 h-1 rounded-full bg-border"></span>
-                      <Badge variant="outline" className={`text-[10px] uppercase font-semibold ${type === 'legal' ? 'text-primary border-primary/25 bg-primary/10' : 'text-emerald-600 dark:text-emerald-400 border-emerald-500/25 bg-emerald-500/10'}`}>
-                        {type === 'legal' ? 'Chat Session' : 'Document Analysis'}
-                      </Badge>
-                    </div>
-                  </div>
-                </div>
-                <div className="flex items-center gap-3 shrink-0">
-                  <button
-                    onClick={(e) => handleDelete(e, item.id)}
-                    className="p-2 text-muted-foreground hover:text-destructive hover:bg-destructive/10 rounded-lg transition-colors z-10 relative cursor-pointer"
-                    title="Delete case history"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
-                  <ChevronRight className="w-5 h-5 text-muted-foreground group-hover:text-primary transition-colors" />
-                </div>
-              </CardContent>
-            </Card>
-          </Link>
-        ))}
-      </div>
-    );
-  };
+
+    // Sort
+    list.sort((a, b) => {
+      if (sortBy === "newest") {
+        return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+      }
+      if (sortBy === "oldest") {
+        return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+      }
+      if (sortBy === "az") {
+        return a.title.localeCompare(b.title);
+      }
+      if (sortBy === "za") {
+        return b.title.localeCompare(a.title);
+      }
+      return 0;
+    });
+
+    return list;
+  }, [sessions, activeTab, searchQuery, sortBy]);
+
+  // Grouped by time period
+  const groupedSessions = useMemo(() => {
+    const groups: Record<string, Session[]> = {};
+
+    for (const item of processedSessions) {
+      const group = getTimeGroup(item.created_at);
+      if (!groups[group]) {
+        groups[group] = [];
+      }
+      groups[group].push(item);
+    }
+
+    return groups;
+  }, [processedSessions]);
 
   return (
     <div className="h-full overflow-y-auto custom-scrollbar">
-      <div className="max-w-5xl mx-auto space-y-6 animate-fade-in pb-8">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          <div>
-            <h1 className="text-2xl font-bold text-foreground flex items-center gap-2">
-              <HistoryIcon className="w-6 h-6 text-primary" />
-              Case History
+      <div className="max-w-5xl mx-auto space-y-6 animate-fade-in pb-12 px-1 sm:px-2">
+        {/* =============================================================== */}
+        {/* 1. HEADER & OVERVIEW                                           */}
+        {/* =============================================================== */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pt-1">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
+              <Badge
+                variant="outline"
+                className="bg-primary/5 text-primary border-primary/20 text-xs font-semibold uppercase tracking-wider py-0.5 px-2"
+              >
+                Case Archives
+              </Badge>
+              <span className="text-xs text-muted-foreground">•</span>
+              <span className="text-xs text-muted-foreground font-medium">
+                {totalCount} Total Recorded Sessions
+              </span>
+            </div>
+            <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-foreground flex items-center gap-2.5">
+              <HistoryIcon className="w-7 h-7 text-primary" />
+              Case History & Research Archives
             </h1>
-            <p className="text-muted-foreground text-sm mt-1">Review your past inquiries, drafts, and research.</p>
+            <p className="text-sm text-muted-foreground">
+              Review, organize, and resume your statutory inquiries, consultation drafts, and document verification audits.
+            </p>
           </div>
-          
-          <div className="relative w-full sm:w-72">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-            <Input 
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search history..." 
-              className="pl-9 bg-card border-border rounded-xl text-foreground placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-primary/20"
-            />
+
+          <div className="flex items-center gap-2 shrink-0 self-start sm:self-center">
+            <Link
+              href="/research"
+              className={buttonVariants({
+                variant: "outline",
+                size: "sm",
+                className: "rounded-xl h-9 px-3 text-xs font-medium border-border/80 hover:bg-accent cursor-pointer",
+              })}
+            >
+              <FileText className="w-3.5 h-3.5 mr-1.5 text-emerald-600 dark:text-emerald-400" />
+              Upload Document
+            </Link>
+            <Link
+              href="/chat"
+              className={buttonVariants({
+                size: "sm",
+                className:
+                  "rounded-xl h-9 px-3.5 text-xs font-medium bg-primary text-primary-foreground hover:bg-primary/90 shadow-xs cursor-pointer",
+              })}
+            >
+              <Plus className="w-3.5 h-3.5 mr-1.5" />
+              New Chat
+            </Link>
           </div>
         </div>
 
-        <Tabs defaultValue="legal" className="w-full">
-          <TabsList className="bg-muted/70 border border-border p-1 rounded-xl">
-            <TabsTrigger value="legal" className="rounded-lg data-[state=active]:bg-card data-[state=active]:text-foreground data-[state=active]:shadow-xs text-muted-foreground">
-              <MessageSquare className="w-4 h-4 mr-2" />
-              Legal Chat
-            </TabsTrigger>
-            <TabsTrigger value="document" className="rounded-lg data-[state=active]:bg-card data-[state=active]:text-foreground data-[state=active]:shadow-xs text-muted-foreground">
-              <FileText className="w-4 h-4 mr-2" />
-              Document Analysis
-            </TabsTrigger>
-          </TabsList>
-          
-          <TabsContent value="legal" className="mt-0">
-            {renderSessionList(legalChats, 'legal')}
-          </TabsContent>
-          <TabsContent value="document" className="mt-0">
-            {renderSessionList(documentChats, 'document')}
-          </TabsContent>
-        </Tabs>
+        {/* =============================================================== */}
+        {/* 2. CONTROLS BAR: SEARCH, TABS & SORT                           */}
+        {/* =============================================================== */}
+        <div className="space-y-4">
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+            {/* Search Input */}
+            <div className="relative flex-1 min-w-0">
+              <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
+              <Input
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search case title or inquiry keyword..."
+                className="pl-10 pr-9 bg-card border-border/80 rounded-xl text-foreground placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-primary/20 h-10 text-sm"
+              />
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setSearchQuery("")}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground cursor-pointer p-0.5 rounded-full hover:bg-muted"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
 
+            {/* Sort Selector */}
+            <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
+              <span className="text-xs text-muted-foreground font-medium flex items-center gap-1">
+                <ArrowUpDown className="w-3.5 h-3.5 text-muted-foreground" />
+                Sort:
+              </span>
+              <select
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value as SortOption)}
+                className="bg-card border border-border/80 text-foreground text-xs rounded-xl px-3 py-2 outline-none focus:border-primary/50 cursor-pointer font-medium"
+              >
+                <option value="newest">Newest First</option>
+                <option value="oldest">Oldest First</option>
+                <option value="az">Title (A to Z)</option>
+                <option value="za">Title (Z to A)</option>
+              </select>
+            </div>
+          </div>
+
+          {/* Three-Tier Filter Tabs */}
+          <div className="flex items-center gap-1.5 p-1 bg-muted/60 dark:bg-muted/40 border border-border/60 rounded-xl w-fit">
+            <button
+              type="button"
+              onClick={() => setActiveTab("all")}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors cursor-pointer ${
+                activeTab === "all"
+                  ? "bg-background text-foreground shadow-xs font-semibold"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              <Layers className="w-3.5 h-3.5" />
+              <span>All History</span>
+              <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4 ml-0.5">
+                {totalCount}
+              </Badge>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveTab("legal")}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors cursor-pointer ${
+                activeTab === "legal"
+                  ? "bg-background text-foreground shadow-xs font-semibold"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              <MessageSquare className="w-3.5 h-3.5 text-primary" />
+              <span>Consultations</span>
+              <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4 ml-0.5">
+                {legalCount}
+              </Badge>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveTab("document")}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors cursor-pointer ${
+                activeTab === "document"
+                  ? "bg-background text-foreground shadow-xs font-semibold"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              <FileText className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+              <span>Document Audits</span>
+              <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4 ml-0.5">
+                {docCount}
+              </Badge>
+            </button>
+          </div>
+        </div>
+
+        {/* =============================================================== */}
+        {/* 3. CASE LIST: CHRONOLOGICAL TIMELINE                           */}
+        {/* =============================================================== */}
+        {isLoading ? (
+          <div className="space-y-3 pt-2">
+            {[1, 2, 3, 4].map((i) => (
+              <Card key={i} className="rounded-xl border-border/80 bg-card p-4">
+                <div className="flex items-center justify-between gap-4">
+                  <div className="flex items-center gap-3.5 flex-1">
+                    <Skeleton className="w-10 h-10 rounded-xl" />
+                    <div className="space-y-2 flex-1 max-w-md">
+                      <Skeleton className="h-4 w-3/4 rounded" />
+                      <Skeleton className="h-3 w-1/3 rounded" />
+                    </div>
+                  </div>
+                  <Skeleton className="h-8 w-20 rounded-lg" />
+                </div>
+              </Card>
+            ))}
+          </div>
+        ) : processedSessions.length === 0 ? (
+          <div className="text-center py-16 text-muted-foreground bg-card rounded-2xl border border-dashed border-border/80 p-8 my-4 space-y-3">
+            <div className="w-12 h-12 rounded-2xl bg-muted flex items-center justify-center mx-auto text-muted-foreground">
+              <HistoryIcon className="w-6 h-6 opacity-60" />
+            </div>
+            <div className="space-y-1">
+              <h3 className="text-sm font-semibold text-foreground">
+                {searchQuery ? `No records found matching "${searchQuery}"` : "No case history recorded yet"}
+              </h3>
+              <p className="text-xs text-muted-foreground max-w-md mx-auto">
+                {searchQuery
+                  ? "Try searching for a different case title or clear the active search filter."
+                  : "Start an AI consultation on Philippine Civil Law or upload a contract/pleading to build your case archives."}
+              </p>
+            </div>
+            {searchQuery ? (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setSearchQuery("")}
+                className="rounded-xl h-8 px-3 text-xs"
+              >
+                Clear Search
+              </Button>
+            ) : (
+              <div className="flex items-center justify-center gap-2.5 pt-2">
+                <Link href="/chat" className={buttonVariants({ variant: "outline", size: "sm", className: "rounded-xl text-xs" })}>
+                  <MessageSquare className="w-3.5 h-3.5 mr-1.5 text-primary" /> Start Consultation
+                </Link>
+                <Link href="/research" className={buttonVariants({ variant: "outline", size: "sm", className: "rounded-xl text-xs" })}>
+                  <FileText className="w-3.5 h-3.5 mr-1.5 text-emerald-600 dark:text-emerald-400" /> Upload Document
+                </Link>
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="space-y-6 pt-1">
+            {TIME_GROUP_ORDER.map((groupTitle) => {
+              const groupItems = groupedSessions[groupTitle];
+              if (!groupItems || groupItems.length === 0) return null;
+
+              return (
+                <div key={groupTitle} className="space-y-2.5">
+                  {/* Group Header */}
+                  <div className="flex items-center justify-between px-1">
+                    <div className="flex items-center gap-2">
+                      <Calendar className="w-3.5 h-3.5 text-muted-foreground" />
+                      <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                        {groupTitle}
+                      </h2>
+                    </div>
+                    <span className="text-[11px] text-muted-foreground font-mono">
+                      {groupItems.length} {groupItems.length === 1 ? "record" : "records"}
+                    </span>
+                  </div>
+
+                  {/* Group Cards */}
+                  <div className="space-y-2">
+                    {groupItems.map((item) => {
+                      const isDoc =
+                        item.session_type === "document" ||
+                        item.session_type === "document_analysis" ||
+                        Boolean(item.document_id);
+                      const linkHref = isDoc ? `/research?session=${item.id}` : `/chat?session=${item.id}`;
+
+                      return (
+                        <Card
+                          key={item.id}
+                          className="rounded-xl border-border/80 bg-card hover:border-primary/40 hover:shadow-sm transition-all group overflow-hidden"
+                        >
+                          <CardContent className="p-3.5 sm:p-4 flex items-center justify-between gap-3">
+                            <Link href={linkHref} className="flex items-center gap-3.5 min-w-0 flex-1 cursor-pointer">
+                              <div
+                                className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 transition-colors ${
+                                  isDoc
+                                    ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 group-hover:bg-emerald-500/20"
+                                    : "bg-primary/10 text-primary group-hover:bg-primary/20"
+                                }`}
+                              >
+                                {isDoc ? <FileText className="w-5 h-5" /> : <MessageSquare className="w-5 h-5" />}
+                              </div>
+
+                              <div className="min-w-0 space-y-0.5">
+                                <h3 className="font-semibold text-foreground text-sm sm:text-base group-hover:text-primary transition-colors line-clamp-1 pr-2">
+                                  {item.title}
+                                </h3>
+                                <div className="flex items-center gap-2 text-xs text-muted-foreground flex-wrap">
+                                  <span>{formatRelativeTime(item.created_at)}</span>
+                                  <span>•</span>
+                                  <span>
+                                    {new Date(item.created_at).toLocaleDateString(undefined, {
+                                      month: "short",
+                                      day: "numeric",
+                                      year: "numeric",
+                                    })}
+                                  </span>
+                                  <span>•</span>
+                                  <Badge
+                                    variant="outline"
+                                    className={`text-[10px] uppercase font-semibold py-0 px-1.5 h-4.5 ${
+                                      isDoc
+                                        ? "text-emerald-600 dark:text-emerald-400 border-emerald-500/20 bg-emerald-500/5"
+                                        : "text-primary border-primary/20 bg-primary/5"
+                                    }`}
+                                  >
+                                    {isDoc ? "Document Audit" : "Consultation"}
+                                  </Badge>
+                                </div>
+                              </div>
+                            </Link>
+
+                            {/* Action Buttons */}
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              {/* Rename Button */}
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setRenamingSession(item);
+                                  setNewTitle(item.title);
+                                }}
+                                className="p-2 text-muted-foreground hover:text-foreground hover:bg-muted rounded-lg transition-colors cursor-pointer"
+                                title="Rename case title"
+                              >
+                                <Pencil className="w-3.5 h-3.5" />
+                              </button>
+
+                              {/* Delete Button */}
+                              <button
+                                type="button"
+                                onClick={() => setDeletingSession(item)}
+                                className="p-2 text-muted-foreground hover:text-destructive hover:bg-destructive/10 rounded-lg transition-colors cursor-pointer"
+                                title="Delete case history"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+
+                              {/* Resume Link */}
+                              <Link
+                                href={linkHref}
+                                className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:bg-primary hover:text-primary-foreground transition-all rounded-lg px-2.5 py-1.5 ml-1"
+                              >
+                                <span className="hidden sm:inline">Resume</span>
+                                <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-0.5 transition-transform" />
+                              </Link>
+                            </div>
+                          </CardContent>
+                        </Card>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* =============================================================== */}
+        {/* 4. RENAME CASE MODAL (DIALOG)                                   */}
+        {/* =============================================================== */}
+        <Dialog open={!!renamingSession} onOpenChange={(open) => !open && setRenamingSession(null)}>
+          <DialogContent className="sm:max-w-md bg-card border-border/80 rounded-2xl">
+            <DialogHeader>
+              <DialogTitle className="text-base font-semibold flex items-center gap-2">
+                <Pencil className="w-4 h-4 text-primary" />
+                Rename Case Record
+              </DialogTitle>
+              <DialogDescription className="text-xs text-muted-foreground">
+                Give this consultation or document review a descriptive case title for easy reference.
+              </DialogDescription>
+            </DialogHeader>
+
+            <form onSubmit={handleRenameSubmit} className="space-y-4 pt-2">
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-foreground">Case Title</label>
+                <Input
+                  value={newTitle}
+                  onChange={(e) => setNewTitle(e.target.value)}
+                  placeholder="e.g., Tan v. Republic Psychological Incapacity Inquiry"
+                  className="bg-muted/40 border-border/80 rounded-xl text-sm"
+                  autoFocus
+                  required
+                />
+              </div>
+
+              <DialogFooter className="flex items-center justify-end gap-2 pt-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setRenamingSession(null)}
+                  className="rounded-xl text-xs"
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="submit"
+                  size="sm"
+                  disabled={isSubmittingRename || !newTitle.trim()}
+                  className="bg-primary hover:bg-primary/90 text-primary-foreground rounded-xl text-xs"
+                >
+                  {isSubmittingRename ? (
+                    <>
+                      <Loader2 className="w-3 h-3 mr-1.5 animate-spin" />
+                      Saving...
+                    </>
+                  ) : (
+                    "Save Changes"
+                  )}
+                </Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
+
+        {/* =============================================================== */}
+        {/* 5. DELETE CONFIRMATION MODAL (DIALOG)                           */}
+        {/* =============================================================== */}
+        <Dialog open={!!deletingSession} onOpenChange={(open) => !open && setDeletingSession(null)}>
+          <DialogContent className="sm:max-w-md bg-card border-border/80 rounded-2xl">
+            <DialogHeader>
+              <div className="w-10 h-10 rounded-xl bg-destructive/10 text-destructive flex items-center justify-center mb-2">
+                <AlertTriangle className="w-5 h-5" />
+              </div>
+              <DialogTitle className="text-base font-semibold text-foreground">
+                Delete Case Record?
+              </DialogTitle>
+              <DialogDescription className="text-xs text-muted-foreground leading-relaxed pt-1">
+                Are you sure you want to permanently delete{" "}
+                <span className="font-semibold text-foreground">
+                  &ldquo;{deletingSession?.title}&rdquo;
+                </span>
+                ? This will remove all associated chat transcripts, statutory citations, and audit logs. This action cannot be undone.
+              </DialogDescription>
+            </DialogHeader>
+
+            <DialogFooter className="flex items-center justify-end gap-2 pt-4">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setDeletingSession(null)}
+                className="rounded-xl text-xs"
+              >
+                Keep Case
+              </Button>
+              <Button
+                type="button"
+                variant="destructive"
+                size="sm"
+                onClick={handleDeleteConfirm}
+                disabled={isSubmittingDelete}
+                className="rounded-xl text-xs cursor-pointer"
+              >
+                {isSubmittingDelete ? (
+                  <>
+                    <Loader2 className="w-3 h-3 mr-1.5 animate-spin" />
+                    Deleting...
+                  </>
+                ) : (
+                  "Delete Permanently"
+                )}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </div>
     </div>
   );

@@ -24,15 +24,23 @@ import {
   ShieldCheck,
   Info,
   AlertCircle,
+  ArrowRight,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { supabase } from "@/lib/supabase";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { JurisprudenceModal, JurisprudenceCase } from "@/components/jurisprudence-modal";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useChat, RagStatus, getCitationKey } from "@/context/chat-context";
+
+function cleanCaseSummary(text?: string): string {
+  if (!text) return "No summary available for this case.";
+  return text.replace(/^\[(?:Supporting Case Doctrine|Jurisprudence Doctrine)[^\]]*\]\s*/i, "").trim();
+}
 
 // ---------------------------------------------------------------------------
 // Markdown renderer for assistant messages
@@ -59,6 +67,51 @@ function AssistantMarkdown({ content }: { content: string }) {
     "
     >
       <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Typewriter effect for the starting welcome message
+// ---------------------------------------------------------------------------
+function StartingTypewriterMessage({ content }: { content: string }) {
+  const [displayedText, setDisplayedText] = useState("");
+  const [isDone, setIsDone] = useState(false);
+
+  useEffect(() => {
+    let index = 0;
+    setDisplayedText("");
+    setIsDone(false);
+
+    // 25ms interval per character gives a crisp, pleasant typewriter effect
+    const interval = setInterval(() => {
+      index++;
+      if (index <= content.length) {
+        setDisplayedText(content.slice(0, index));
+      } else {
+        setIsDone(true);
+        clearInterval(interval);
+      }
+    }, 20);
+
+    return () => clearInterval(interval);
+  }, [content]);
+
+  return (
+    <div
+      onClick={() => {
+        if (!isDone) {
+          setDisplayedText(content);
+          setIsDone(true);
+        }
+      }}
+      className="prose prose-sm dark:prose-invert max-w-none text-foreground font-normal leading-relaxed select-text cursor-default"
+      title={!isDone ? "Click to show full message immediately" : undefined}
+    >
+      <span>{displayedText}</span>
+      {!isDone && (
+        <span className="inline-block w-1.5 h-4 ml-0.5 bg-primary animate-pulse align-middle rounded-xs" />
+      )}
     </div>
   );
 }
@@ -105,19 +158,33 @@ function RagPipelineStepper({ status, isLive }: { status: RagStatus | null; isLi
   const currentStage = status?.stage || "idle";
 
   const getStepState = (stepId: string) => {
-    const order = ["idle", "embedding", "retrieving", "retrieving_done", "prompting", "thinking", "streaming", "completed"];
-    const currentIndex = order.indexOf(currentStage === "retrieving_done" ? "retrieving" : currentStage);
-    const stepIndex = order.indexOf(stepId);
-
     if (currentStage === "completed") return "completed";
     if (currentStage === "error") return "error";
+
+    // When retrieval is finished, both Vectorize and Retrieve are completed
+    if (currentStage === "retrieving_done") {
+      if (stepId === "embedding" || stepId === "retrieving") return "completed";
+      return "pending";
+    }
+
+    const order = ["idle", "embedding", "retrieving", "prompting", "thinking", "streaming", "completed"];
+    const currentIndex = order.indexOf(currentStage);
+    const stepIndex = order.indexOf(stepId);
+
     if (currentIndex > stepIndex) return "completed";
     if (currentIndex === stepIndex) return "active";
     return "pending";
   };
 
   // If live and still before text streaming: show active prominent stepper
-  if (isLive && (currentStage === "embedding" || currentStage === "retrieving" || currentStage === "prompting" || currentStage === "thinking")) {
+  const isPreStreamingStage =
+    currentStage === "embedding" ||
+    currentStage === "retrieving" ||
+    currentStage === "retrieving_done" ||
+    currentStage === "prompting" ||
+    currentStage === "thinking";
+
+  if (isLive && isPreStreamingStage) {
     return (
       <div className="w-full max-w-md p-3.5 rounded-2xl bg-card border border-border/80 dark:border-white/10 shadow-xs animate-fade-in space-y-2.5">
         <div className="flex items-center justify-between text-xs font-semibold text-primary">
@@ -126,7 +193,11 @@ function RagPipelineStepper({ status, isLive }: { status: RagStatus | null; isLi
             CIVIL-LEX Legal Processing
           </span>
           <span className="text-[10px] font-mono uppercase tracking-wider bg-primary/10 text-primary px-2 py-0.5 rounded-full border border-primary/20">
-            {currentStage}
+            {currentStage === "retrieving_done"
+              ? "retrieved"
+              : currentStage === "thinking"
+                ? "reasoning"
+                : currentStage}
           </span>
         </div>
 
@@ -137,22 +208,20 @@ function RagPipelineStepper({ status, isLive }: { status: RagStatus | null; isLi
             return (
               <div key={step.id} className="flex flex-col items-center gap-1">
                 <div
-                  className={`w-full h-1.5 rounded-full transition-all duration-300 ${
-                    state === "completed"
-                      ? "bg-green-500"
-                      : state === "active"
+                  className={`w-full h-1.5 rounded-full transition-all duration-300 ${state === "completed"
+                    ? "bg-green-500"
+                    : state === "active"
                       ? "bg-primary animate-pulse"
                       : "bg-muted dark:bg-muted/40"
-                  }`}
+                    }`}
                 />
                 <span
-                  className={`text-[9px] truncate max-w-full font-medium ${
-                    state === "active"
-                      ? "text-primary font-bold"
-                      : state === "completed"
+                  className={`text-[9px] truncate max-w-full font-medium ${state === "active"
+                    ? "text-primary font-bold"
+                    : state === "completed"
                       ? "text-foreground"
                       : "text-muted-foreground"
-                  }`}
+                    }`}
                 >
                   {step.name.split(". ")[1]}
                 </span>
@@ -303,7 +372,7 @@ export default function ChatPage() {
                 if (m.citations) {
                   try {
                     parsedCits = typeof m.citations === "string" ? JSON.parse(m.citations) : m.citations;
-                  } catch (e) {}
+                  } catch (e) { }
                 }
                 if (Array.isArray(parsedCits)) {
                   for (const c of parsedCits) {
@@ -313,6 +382,7 @@ export default function ChatPage() {
                       allCits.push(c);
                     }
                   }
+                  parsedCits.sort((a: any, b: any) => (Number(b?.suitability_percent) || 0) - (Number(a?.suitability_percent) || 0));
                 }
                 return {
                   id: m.id ? Number(m.id) || idx + 2 : idx + 2,
@@ -322,6 +392,7 @@ export default function ChatPage() {
                 };
               });
 
+              allCits.sort((a, b) => (Number(b?.suitability_percent) || 0) - (Number(a?.suitability_percent) || 0));
               setRetainedCitations(allCits);
               setMessages([
                 {
@@ -380,10 +451,10 @@ export default function ChatPage() {
                   key={msg.id}
                   className={`flex gap-4 ${msg.role === "user" ? "flex-row-reverse" : ""}`}
                 >
-                  <Avatar className="w-8 h-8 mt-1 border border-border shrink-0">
+                  <Avatar className="w-8 h-8 mt-1 border border-border/80 shrink-0 rounded-lg overflow-hidden">
                     {isAssistant ? (
-                      <div className="bg-primary w-full h-full flex items-center justify-center">
-                        <Scale className="w-4 h-4 text-primary-foreground" />
+                      <div className="bg-accent w-full h-full flex items-center justify-center">
+                        <Scale className="w-4 h-4 text-primary" />
                       </div>
                     ) : (
                       <AvatarFallback className="bg-muted flex items-center justify-center">
@@ -393,14 +464,13 @@ export default function ChatPage() {
                   </Avatar>
 
                   <div
-                    className={`flex flex-col min-w-0 max-w-[85%] ${
-                      msg.role === "user" ? "items-end" : "items-start"
-                    }`}
+                    className={`flex flex-col min-w-0 max-w-[85%] ${msg.role === "user" ? "items-end" : "items-start"
+                      }`}
                   >
                     {/* Assistant RAG Pipeline Stepper */}
                     {isAssistant && msg.id !== 1 && (
                       <RagPipelineStepper
-                        status={isLatestAssistant && isTyping ? ragStatus : msg.ragStatus || null}
+                        status={isLatestAssistant && isTyping ? (ragStatus || msg.ragStatus || null) : msg.ragStatus || null}
                         isLive={isLatestAssistant && isTyping}
                       />
                     )}
@@ -408,14 +478,17 @@ export default function ChatPage() {
                     {/* Message Bubble */}
                     {(msg.content || !isAssistant) && (
                       <div
-                        className={`px-4 py-3 rounded-2xl w-full ${
-                          msg.role === "user"
-                            ? "bg-primary text-primary-foreground dark:bg-zinc-800 dark:text-zinc-100 rounded-tr-sm text-sm shadow-xs"
-                            : "bg-accent/40 dark:bg-card border border-border/80 dark:border-white/10 text-foreground rounded-tl-sm shadow-xs"
-                        }`}
+                        className={`px-4 py-3 rounded-2xl w-full ${msg.role === "user"
+                          ? "bg-primary text-primary-foreground dark:bg-zinc-800 dark:text-zinc-100 rounded-tr-sm text-sm shadow-xs"
+                          : "bg-accent/40 dark:bg-card border border-border/80 dark:border-white/10 text-foreground rounded-tl-sm shadow-xs"
+                          }`}
                       >
                         {isAssistant ? (
-                          <AssistantMarkdown content={msg.content} />
+                          msg.id === 1 && msg.content.includes("Hello. I am CIVIL-LEX") ? (
+                            <StartingTypewriterMessage content={msg.content} />
+                          ) : (
+                            <AssistantMarkdown content={msg.content} />
+                          )
                         ) : (
                           msg.content
                         )}
@@ -576,22 +649,20 @@ export default function ChatPage() {
             <button
               type="button"
               onClick={() => setActiveCitationFilter("all")}
-              className={`py-1.5 px-2 rounded-lg font-medium transition-all text-center cursor-pointer ${
-                activeCitationFilter === "all"
-                  ? "bg-background text-foreground shadow-2xs font-semibold"
-                  : "text-muted-foreground hover:text-foreground"
-              }`}
+              className={`py-1.5 px-2 rounded-lg font-medium transition-all text-center cursor-pointer ${activeCitationFilter === "all"
+                ? "bg-background text-foreground shadow-2xs font-semibold"
+                : "text-muted-foreground hover:text-foreground"
+                }`}
             >
               All Sources ({retainedCitations.length})
             </button>
             <button
               type="button"
               onClick={() => setActiveCitationFilter("latest")}
-              className={`py-1.5 px-2 rounded-lg font-medium transition-all text-center cursor-pointer ${
-                activeCitationFilter === "latest"
-                  ? "bg-background text-foreground shadow-2xs font-semibold"
-                  : "text-muted-foreground hover:text-foreground"
-              }`}
+              className={`py-1.5 px-2 rounded-lg font-medium transition-all text-center cursor-pointer ${activeCitationFilter === "latest"
+                ? "bg-background text-foreground shadow-2xs font-semibold"
+                : "text-muted-foreground hover:text-foreground"
+                }`}
             >
               Latest ({currentCitations.length})
             </button>
@@ -601,12 +672,16 @@ export default function ChatPage() {
         {/* Scrollable citations list */}
         <div ref={citationScrollRef} className="flex-1 overflow-y-auto p-4 custom-scrollbar min-h-0">
           {(() => {
-            const displayCitations =
+            const rawDisplayCitations =
               activeCitationFilter === "latest"
                 ? currentCitations
                 : retainedCitations.length > 0
-                ? retainedCitations
-                : currentCitations;
+                  ? retainedCitations
+                  : currentCitations;
+
+            const displayCitations = [...rawDisplayCitations].sort(
+              (a, b) => (Number(b?.suitability_percent) || 0) - (Number(a?.suitability_percent) || 0)
+            );
 
             if (displayCitations.length > 0) {
               return (
@@ -623,13 +698,12 @@ export default function ChatPage() {
                     >
                       <div className="flex items-start justify-between gap-2">
                         <div className="flex items-center gap-2.5 min-w-0">
-                          <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 border transition-transform group-hover:scale-105 ${
-                            legalAnalytics.nli_score >= 85
-                              ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-600 dark:text-emerald-400"
-                              : legalAnalytics.nli_score >= 70
+                          <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 border transition-transform group-hover:scale-105 ${legalAnalytics.nli_score >= 85
+                            ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-600 dark:text-emerald-400"
+                            : legalAnalytics.nli_score >= 70
                               ? "bg-blue-500/10 border-blue-500/20 text-blue-600 dark:text-blue-400"
                               : "bg-amber-500/10 border-amber-500/20 text-amber-600 dark:text-amber-400"
-                          }`}>
+                            }`}>
                             <ShieldCheck className="w-4 h-4" />
                           </div>
                           <div className="min-w-0">
@@ -649,13 +723,12 @@ export default function ChatPage() {
 
                         <div className="flex items-center gap-1 shrink-0">
                           <span
-                            className={`text-xs font-bold px-2 py-0.5 rounded-md border tabular-nums ${
-                              legalAnalytics.nli_score >= 85
-                                ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
-                                : legalAnalytics.nli_score >= 70
+                            className={`text-xs font-bold px-2 py-0.5 rounded-md border tabular-nums ${legalAnalytics.nli_score >= 85
+                              ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
+                              : legalAnalytics.nli_score >= 70
                                 ? "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60"
                                 : "text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/50 border-amber-200 dark:border-amber-800/60"
-                            }`}
+                              }`}
                           >
                             {legalAnalytics.nli_score}%
                           </span>
@@ -666,13 +739,12 @@ export default function ChatPage() {
                       {/* Dynamic Visual Progress Meter */}
                       <div className="w-full bg-muted/70 dark:bg-muted/40 rounded-full h-1.5 overflow-hidden mt-2.5">
                         <div
-                          className={`h-full rounded-full transition-all duration-700 ease-out ${
-                            legalAnalytics.nli_score >= 85
-                              ? "bg-emerald-500"
-                              : legalAnalytics.nli_score >= 70
+                          className={`h-full rounded-full transition-all duration-700 ease-out ${legalAnalytics.nli_score >= 85
+                            ? "bg-emerald-500"
+                            : legalAnalytics.nli_score >= 70
                               ? "bg-blue-500"
                               : "bg-amber-500"
-                          }`}
+                            }`}
                           style={{ width: `${Math.min(100, Math.max(0, legalAnalytics.nli_score))}%` }}
                         />
                       </div>
@@ -681,19 +753,18 @@ export default function ChatPage() {
                       <div className="flex items-center justify-between mt-2 text-[10px]">
                         <span className="flex items-center gap-1.5 text-muted-foreground">
                           <span
-                            className={`w-1.5 h-1.5 rounded-full ${
-                              legalAnalytics.nli_score >= 85
-                                ? "bg-emerald-500 animate-pulse"
-                                : legalAnalytics.nli_score >= 70
+                            className={`w-1.5 h-1.5 rounded-full ${legalAnalytics.nli_score >= 85
+                              ? "bg-emerald-500 animate-pulse"
+                              : legalAnalytics.nli_score >= 70
                                 ? "bg-blue-500"
                                 : "bg-amber-500"
-                            }`}
+                              }`}
                           />
                           {legalAnalytics.nli_score >= 85
                             ? "Strict Statutory Entailment"
                             : legalAnalytics.nli_score >= 70
-                            ? "Substantially Consistent"
-                            : "Generalized Principles"}
+                              ? "Substantially Consistent"
+                              : "Generalized Principles"}
                         </span>
                         <span className="text-[10px] font-medium text-muted-foreground group-hover:text-primary transition-colors inline-flex items-center gap-0.5">
                           Inspect audit <ChevronRight className="w-3 h-3 group-hover:translate-x-0.5 transition-transform" />
@@ -702,53 +773,139 @@ export default function ChatPage() {
                     </div>
                   )}
 
-                  {displayCitations.map((cit, idx) => (
-                    <div
-                      key={idx}
-                      className="p-3 bg-card rounded-lg border border-border hover:bg-muted/40 cursor-pointer transition-colors shadow-xs group"
-                      onClick={() => setSelectedCitation(cit)}
-                    >
-                      <div className="flex items-center justify-between mb-1.5 gap-2">
-                        <div className="min-w-0 flex items-center gap-1.5">
-                          <h4 className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider truncate">
-                            {cit.parent_type === "civil_code" || cit.parent_type === "article"
-                              ? "Civil Code"
-                              : cit.parent_type === "case"
-                              ? "Jurisprudence"
-                              : "Legal Authority"}
-                          </h4>
-                          <span className="text-[11px] font-mono font-medium text-foreground/80 px-1.5 py-0.5 rounded bg-muted border border-border/60 shrink-0">
-                            {cit.parent_id}
-                          </span>
-                        </div>
+                  {displayCitations.map((cit, idx) => {
+                    const isCase =
+                      cit.parent_type === "case" ||
+                      cit.parent_type === "jurisprudence" ||
+                      Boolean(cit.metadata?.gr_number) ||
+                      String(cit.parent_id || "").startsWith("GR_");
 
-                        {/* Suitability Match Percentage (Upper Right) - Color Coded (Green for Best Matches) */}
-                        {cit.suitability_percent !== undefined && (
-                          <span
-                            className={`text-xs font-semibold px-2 py-0.5 rounded-md border tabular-nums shrink-0 ${
-                              cit.suitability_percent >= 85
+                    if (isCase) {
+                      const year = cit.metadata?.decision_date ? cit.metadata.decision_date.split(" ").pop() : null;
+                      const title = cit.metadata?.title || cit.metadata?.gr_number || cit.parent_id;
+                      const gr = cit.metadata?.gr_number || (String(cit.parent_id || "").startsWith("GR_") ? cit.parent_id : null);
+                      const summary = cleanCaseSummary(cit.metadata?.content_summary || cit.content);
+
+                      return (
+                        <div
+                          key={idx}
+                          className="p-3.5 bg-card/90 dark:bg-card/70 rounded-xl border border-border/80 shadow-xs hover:shadow-md hover:-translate-y-0.5 hover:border-primary/40 cursor-pointer transition-all duration-300 group flex flex-col justify-between"
+                          onClick={() => setSelectedCitation(cit)}
+                        >
+                          <div>
+                            <div className="flex items-center justify-between mb-2 gap-1.5">
+                              <div className="flex items-center gap-1.5 min-w-0 flex-wrap">
+                                <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20 shrink-0">
+                                  <Scale className="w-3 h-3" />
+                                  Jurisprudence
+                                </span>
+                                {year && (
+                                  <Badge variant="outline" className="text-[10px] whitespace-nowrap bg-background font-mono">
+                                    {year}
+                                  </Badge>
+                                )}
+                              </div>
+
+                              {cit.suitability_percent !== undefined && (
+                                <span
+                                  className={`text-xs font-semibold px-2 py-0.5 rounded-md border tabular-nums shrink-0 ${cit.suitability_percent >= 85
+                                    ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
+                                    : cit.suitability_percent >= 70
+                                      ? "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60"
+                                      : "text-muted-foreground bg-muted border-border"
+                                    }`}
+                                >
+                                  {cit.suitability_percent}%
+                                </span>
+                              )}
+                            </div>
+
+                            <div className="mb-2">
+                              <h4 className="font-semibold text-xs text-foreground group-hover:text-primary transition-colors leading-snug line-clamp-2">
+                                {title}
+                              </h4>
+                              {gr && (
+                                <span className="text-[10px] font-mono text-muted-foreground block mt-0.5">
+                                  {gr}
+                                </span>
+                              )}
+                            </div>
+
+                            <p className="text-xs text-muted-foreground leading-relaxed line-clamp-3 mb-3">
+                              {summary}
+                            </p>
+                          </div>
+
+                          <div className="flex items-center justify-between pt-2 border-t border-border/50 text-xs font-semibold text-primary mt-auto">
+                            <span className="flex items-center group-hover:translate-x-1 transition-transform">
+                              Read full case <ArrowRight className="w-3 h-3 ml-1" />
+                            </span>
+                            {cit.metadata?.source_url && (
+                              <span className="text-[10px] font-normal text-muted-foreground">
+                                LawPhil
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    }
+
+                    return (
+                      <div
+                        key={idx}
+                        className="p-3 bg-card rounded-lg border border-border hover:bg-muted/40 cursor-pointer transition-colors shadow-xs group"
+                        onClick={() => setSelectedCitation(cit)}
+                      >
+                        <div className="flex items-center justify-between mb-1.5 gap-2">
+                          <div className="min-w-0 flex items-center gap-1.5">
+                            <h4 className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider truncate">
+                              {cit.parent_type === "civil_code" || cit.parent_type === "article"
+                                ? "Civil Code"
+                                : "Legal Authority"}
+                            </h4>
+                            <span className="text-[11px] font-mono font-medium text-foreground/80 px-1.5 py-0.5 rounded bg-muted border border-border/60 shrink-0">
+                              {cit.parent_id}
+                            </span>
+                          </div>
+
+                          {cit.suitability_percent !== undefined && (
+                            <span
+                              className={`text-xs font-semibold px-2 py-0.5 rounded-md border tabular-nums shrink-0 ${cit.suitability_percent >= 85
                                 ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
                                 : cit.suitability_percent >= 70
-                                ? "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60"
-                                : "text-muted-foreground bg-muted border-border"
-                            }`}
-                          >
-                            {cit.suitability_percent}%
-                          </span>
-                        )}
-                      </div>
+                                  ? "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60"
+                                  : "text-muted-foreground bg-muted border-border"
+                                }`}
+                            >
+                              {cit.suitability_percent}%
+                            </span>
+                          )}
+                        </div>
 
-                      {cit.metadata?.title && (
-                        <p className="text-xs font-semibold text-foreground line-clamp-1 mb-1">
-                          {cit.metadata.title} {cit.metadata.gr_number ? `(GR ${cit.metadata.gr_number})` : ""}
+                        {cit.metadata?.title && (
+                          <p className="text-xs font-semibold text-foreground line-clamp-1 mb-1">
+                            {cit.metadata.title} {cit.metadata.gr_number ? `(GR ${cit.metadata.gr_number})` : ""}
+                          </p>
+                        )}
+                        <p className="text-xs text-muted-foreground leading-relaxed line-clamp-3">
+                          {cit.content}
                         </p>
-                      )}
-                      <p className="text-xs text-muted-foreground leading-relaxed line-clamp-3">
-                        {cit.content}
-                      </p>
-                    </div>
-                  ))}
+                      </div>
+                    );
+                  })}
                   <div className="h-2" />
+                </div>
+              );
+            }
+
+            if (isTyping && displayCitations.length === 0) {
+              return (
+                <div className="h-full flex flex-col items-center justify-center text-center text-muted-foreground space-y-2.5 pt-16 animate-fade-in px-4">
+                  <Loader2 className="w-6 h-6 text-primary animate-spin opacity-80" />
+                  <p className="text-xs font-semibold text-foreground">Processing legal inquiry...</p>
+                  <p className="text-[11px] text-muted-foreground max-w-xs leading-relaxed">
+                    Relevant statutory provisions and jurisprudence will appear once the response begins streaming.
+                  </p>
                 </div>
               );
             }
@@ -774,120 +931,156 @@ export default function ChatPage() {
         </div>
       </div>
 
-      {/* Citation Detail Modal - Covers 70% of the screen */}
-      <Dialog open={!!selectedCitation} onOpenChange={(open) => !open && setSelectedCitation(null)}>
-        <DialogContent className="w-[92vw] sm:w-[70vw] sm:max-w-[70vw] max-w-[70vw] max-h-[88vh] overflow-y-auto custom-scrollbar p-6 sm:p-8 rounded-2xl">
-          <DialogHeader className="space-y-3 pb-4 border-b border-border/70">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <span className="inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider px-2.5 py-1 rounded-full bg-primary/10 text-primary border border-primary/20">
-                  <Scale className="w-3.5 h-3.5" />
-                  {selectedCitation?.parent_type === "civil_code" || selectedCitation?.parent_type === "article"
-                    ? "Philippine Civil Code Provision"
-                    : selectedCitation?.parent_type === "case"
-                    ? "Supreme Court Jurisprudence"
-                    : (selectedCitation?.parent_type?.toUpperCase?.() ?? "LEGAL AUTHORITY")}
-                </span>
-                {selectedCitation?.parent_id && (
-                  <span className="text-xs font-mono font-medium text-muted-foreground bg-accent/40 dark:bg-accent/20 px-2 py-0.5 rounded-md border border-border/50">
-                    {selectedCitation.parent_id}
-                  </span>
-                )}
-                {selectedCitation?.suitability_percent !== undefined && (
-                  <div className="inline-flex items-center gap-1.5 text-xs">
-                    <span className="text-[11px] text-muted-foreground font-medium">
-                      Suitability:
-                    </span>
-                    <span
-                      className={`text-xs font-semibold px-2 py-0.5 rounded-md border tabular-nums ${
-                        selectedCitation.suitability_percent >= 85
-                          ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
-                          : selectedCitation.suitability_percent >= 70
-                          ? "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60"
-                          : "text-muted-foreground bg-muted border-border"
-                      }`}
-                    >
-                      {selectedCitation.suitability_percent}%
-                    </span>
+      {/* Supreme Court Jurisprudence Full Document Reader Modal - Matches Table of Contents */}
+      {(() => {
+        const isSelectedCase = Boolean(
+          selectedCitation &&
+          (selectedCitation.parent_type === "case" ||
+            selectedCitation.parent_type === "jurisprudence" ||
+            Boolean(selectedCitation.metadata?.gr_number) ||
+            String(selectedCitation.parent_id || "").startsWith("GR_"))
+        );
+
+        const caseModalData: JurisprudenceCase | null = isSelectedCase
+          ? {
+            case_uid: selectedCitation.metadata?.case_uid || selectedCitation.parent_id,
+            title: selectedCitation.metadata?.title || selectedCitation.parent_id,
+            gr_number: selectedCitation.metadata?.gr_number || selectedCitation.parent_id,
+            decision_date: selectedCitation.metadata?.decision_date || "",
+            content_summary: selectedCitation.metadata?.content_summary || cleanCaseSummary(selectedCitation.content),
+            source_url: selectedCitation.metadata?.source_url || "",
+            full_text: selectedCitation.metadata?.full_text,
+          }
+          : null;
+
+        return (
+          <>
+            <JurisprudenceModal
+              isOpen={Boolean(selectedCitation && isSelectedCase)}
+              onClose={() => setSelectedCitation(null)}
+              caseData={caseModalData}
+              suitabilityPercent={selectedCitation?.suitability_percent}
+            />
+
+            {/* Statutory / General Citation Detail Modal */}
+            <Dialog open={Boolean(selectedCitation && !isSelectedCase)} onOpenChange={(open) => !open && setSelectedCitation(null)}>
+              <DialogContent className="w-[92vw] sm:w-[70vw] sm:max-w-[70vw] max-w-[70vw] max-h-[88vh] overflow-y-auto custom-scrollbar p-6 sm:p-8 rounded-2xl">
+                <DialogHeader className="space-y-3 pb-4 border-b border-border/70">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <span className="inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider px-2.5 py-1 rounded-full bg-primary/10 text-primary border border-primary/20">
+                        <Scale className="w-3.5 h-3.5" />
+                        {selectedCitation?.parent_type === "civil_code" || selectedCitation?.parent_type === "article"
+                          ? "Philippine Civil Code Provision"
+                          : (selectedCitation?.parent_type?.toUpperCase?.() ?? "LEGAL AUTHORITY")}
+                      </span>
+                      {selectedCitation?.parent_id && (
+                        <span className="text-xs font-mono font-medium text-muted-foreground bg-accent/40 dark:bg-accent/20 px-2 py-0.5 rounded-md border border-border/50">
+                          {selectedCitation.parent_id}
+                        </span>
+                      )}
+                      {selectedCitation?.suitability_percent !== undefined && (
+                        <div className="inline-flex items-center gap-1.5 text-xs">
+                          <span className="text-[11px] text-muted-foreground font-medium">
+                            Suitability:
+                          </span>
+                          <span
+                            className={`text-xs font-semibold px-2 py-0.5 rounded-md border tabular-nums ${selectedCitation.suitability_percent >= 85
+                              ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
+                              : selectedCitation.suitability_percent >= 70
+                                ? "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60"
+                                : "text-muted-foreground bg-muted border-border"
+                              }`}
+                          >
+                            {selectedCitation.suitability_percent}%
+                          </span>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      {selectedCitation?.content && (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => handleCopyCitation(selectedCitation.content)}
+                          className="h-8 text-xs gap-1.5 rounded-lg border-border hover:bg-accent cursor-pointer"
+                        >
+                          {copiedCitation ? (
+                            <>
+                              <Check className="w-3.5 h-3.5 text-emerald-500" />
+                              <span className="text-emerald-600 dark:text-emerald-400 font-medium">Copied</span>
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="w-3.5 h-3.5 text-muted-foreground" />
+                              <span>Copy Citation</span>
+                            </>
+                          )}
+                        </Button>
+                      )}
+
+                      {selectedCitation?.metadata?.source_url && (
+                        <a
+                          href={selectedCitation.metadata.source_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center justify-center h-8 px-3 text-xs gap-1.5 rounded-lg border border-primary/30 text-primary hover:bg-primary/10 transition-colors font-medium cursor-pointer"
+                        >
+                          <ExternalLink className="w-3.5 h-3.5" />
+                          <span>Official Record</span>
+                        </a>
+                      )}
+                    </div>
                   </div>
-                )}
-              </div>
 
-              <div className="flex items-center gap-2">
-                {selectedCitation?.content && (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() => handleCopyCitation(selectedCitation.content)}
-                    className="h-8 text-xs gap-1.5 rounded-lg border-border hover:bg-accent cursor-pointer"
-                  >
-                    {copiedCitation ? (
-                      <>
-                        <Check className="w-3.5 h-3.5 text-emerald-500" />
-                        <span className="text-emerald-600 dark:text-emerald-400 font-medium">Copied</span>
-                      </>
-                    ) : (
-                      <>
-                        <Copy className="w-3.5 h-3.5 text-muted-foreground" />
-                        <span>Copy Citation</span>
-                      </>
+                  <div>
+                    <DialogTitle className="text-xl sm:text-2xl font-bold text-foreground tracking-tight">
+                      {selectedCitation?.metadata?.title || (
+                        selectedCitation?.parent_type === "civil_code" || selectedCitation?.parent_type === "article"
+                          ? `Civil Code of the Philippines — ${selectedCitation?.parent_id}`
+                          : `${selectedCitation?.parent_type?.toUpperCase?.() ?? "SOURCE"} — ${selectedCitation?.parent_id}`
+                      )}
+                    </DialogTitle>
+                    {selectedCitation?.metadata?.hierarchy && (
+                      <p className="text-xs text-muted-foreground mt-1">
+                        {[
+                          selectedCitation.metadata.hierarchy.book_name,
+                          selectedCitation.metadata.hierarchy.title_name,
+                          selectedCitation.metadata.hierarchy.chapter_name,
+                        ]
+                          .filter(Boolean)
+                          .join(" • ")}
+                      </p>
                     )}
-                  </Button>
-                )}
+                  </div>
+                </DialogHeader>
 
-                {selectedCitation?.metadata?.source_url && (
-                  <a
-                    href={selectedCitation.metadata.source_url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center justify-center h-8 px-3 text-xs gap-1.5 rounded-lg border border-primary/30 text-primary hover:bg-primary/10 transition-colors font-medium cursor-pointer"
-                  >
-                    <ExternalLink className="w-3.5 h-3.5" />
-                    <span>Official Record</span>
-                  </a>
-                )}
-              </div>
-            </div>
+                <div className="mt-4 space-y-4">
+                  <div className="p-5 sm:p-6 bg-accent/20 dark:bg-accent/10 rounded-xl border border-border/70 text-foreground font-serif leading-relaxed text-sm sm:text-base whitespace-pre-wrap tracking-wide selection:bg-primary/20">
+                    {selectedCitation?.content}
+                  </div>
 
-            <div>
-              <DialogTitle className="text-xl sm:text-2xl font-bold text-foreground tracking-tight">
-                {selectedCitation?.metadata?.title || (
-                  selectedCitation?.parent_type === "civil_code" || selectedCitation?.parent_type === "article"
-                    ? `Civil Code of the Philippines — ${selectedCitation?.parent_id}`
-                    : `${selectedCitation?.parent_type?.toUpperCase?.() ?? "SOURCE"} — ${selectedCitation?.parent_id}`
-                )}
-              </DialogTitle>
-              {selectedCitation?.metadata?.gr_number && (
-                <p className="text-xs text-muted-foreground font-mono mt-1">
-                  Docket: {selectedCitation.metadata.gr_number}
-                  {selectedCitation.metadata.decision_date ? ` • Promulgated: ${selectedCitation.metadata.decision_date}` : ""}
-                </p>
-              )}
-            </div>
-          </DialogHeader>
-
-          <div className="mt-4 space-y-4">
-            <div className="p-5 sm:p-6 bg-accent/20 dark:bg-accent/10 rounded-xl border border-border/70 text-foreground font-serif leading-relaxed text-sm sm:text-base whitespace-pre-wrap tracking-wide selection:bg-primary/20">
-              {selectedCitation?.content}
-            </div>
-
-            {selectedCitation?.metadata?.source_url && (
-              <div className="flex items-center justify-between text-xs text-muted-foreground pt-2 border-t border-border/40">
-                <span>Verified Philippine Legal Source Grounding</span>
-                <a
-                  href={selectedCitation.metadata.source_url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-primary hover:underline inline-flex items-center gap-1 font-medium"
-                >
-                  View full source documentation <ExternalLink className="w-3 h-3" />
-                </a>
-              </div>
-            )}
-          </div>
-        </DialogContent>
-      </Dialog>
+                  {selectedCitation?.metadata?.source_url && (
+                    <div className="flex items-center justify-between text-xs text-muted-foreground pt-2 border-t border-border/40">
+                      <span>Verified Philippine Legal Source Grounding</span>
+                      <a
+                        href={selectedCitation.metadata.source_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-primary hover:underline inline-flex items-center gap-1 font-medium"
+                      >
+                        View full source documentation <ExternalLink className="w-3 h-3" />
+                      </a>
+                    </div>
+                  )}
+                </div>
+              </DialogContent>
+            </Dialog>
+          </>
+        );
+      })()}
 
       {/* Natural Language Inference (NLI) Audit Modal */}
       <Dialog open={isNliModalOpen} onOpenChange={setIsNliModalOpen}>
@@ -921,18 +1114,17 @@ export default function ChatPage() {
                       <span className="text-3xl font-extrabold text-foreground tabular-nums">
                         {legalAnalytics.nli_score}%
                       </span>
-                      <span className={`text-xs font-semibold px-2 py-0.5 rounded-full border ${
-                        legalAnalytics.nli_score >= 85
-                          ? "text-emerald-700 dark:text-emerald-400 bg-emerald-500/10 border-emerald-500/25"
-                          : legalAnalytics.nli_score >= 70
+                      <span className={`text-xs font-semibold px-2 py-0.5 rounded-full border ${legalAnalytics.nli_score >= 85
+                        ? "text-emerald-700 dark:text-emerald-400 bg-emerald-500/10 border-emerald-500/25"
+                        : legalAnalytics.nli_score >= 70
                           ? "text-blue-700 dark:text-blue-400 bg-blue-500/10 border-blue-500/25"
                           : "text-amber-700 dark:text-amber-400 bg-amber-500/10 border-amber-500/25"
-                      }`}>
+                        }`}>
                         {legalAnalytics.nli_score >= 85
                           ? "Strictly Grounded (Verified)"
                           : legalAnalytics.nli_score >= 70
-                          ? "Substantially Consistent"
-                          : "Preliminary Doctrine"}
+                            ? "Substantially Consistent"
+                            : "Preliminary Doctrine"}
                       </span>
                     </div>
                   </div>
@@ -947,13 +1139,12 @@ export default function ChatPage() {
                 <div className="space-y-1">
                   <div className="w-full bg-muted rounded-full h-2 overflow-hidden">
                     <div
-                      className={`h-full rounded-full transition-all duration-700 ${
-                        legalAnalytics.nli_score >= 85
-                          ? "bg-emerald-500"
-                          : legalAnalytics.nli_score >= 70
+                      className={`h-full rounded-full transition-all duration-700 ${legalAnalytics.nli_score >= 85
+                        ? "bg-emerald-500"
+                        : legalAnalytics.nli_score >= 70
                           ? "bg-blue-500"
                           : "bg-amber-500"
-                      }`}
+                        }`}
                       style={{ width: `${Math.min(100, Math.max(0, legalAnalytics.nli_score))}%` }}
                     />
                   </div>

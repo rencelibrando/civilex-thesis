@@ -210,6 +210,8 @@ export default function DashboardPage() {
   const [searchScope, setSearchScope] = useState<"all" | "statutes" | "jurisprudence" | "documents">("all");
   const [recentSessions, setRecentSessions] = useState<SessionItem[]>([]);
   const [userDocs, setUserDocs] = useState<UserDocItem[]>([]);
+  const [jurisprudenceCount, setJurisprudenceCount] = useState<number>(11879);
+  const [articlesCount, setArticlesCount] = useState<number>(2270);
   const [isLoading, setIsLoading] = useState(true);
 
   // Spotlight index state
@@ -222,6 +224,15 @@ export default function DashboardPage() {
   useEffect(() => {
     async function loadDashboardData() {
       try {
+        // Fetch jurisprudence & article counts dynamically
+        fetch("http://localhost:4000/api/civil-code/stats")
+          .then((res) => (res.ok ? res.json() : null))
+          .then((stats) => {
+            if (stats?.total_cases) setJurisprudenceCount(stats.total_cases);
+            if (stats?.total_articles) setArticlesCount(stats.total_articles);
+          })
+          .catch((err) => console.error("Failed to load civil code stats:", err));
+
         const {
           data: { session },
         } = await supabase.auth.getSession();
@@ -438,7 +449,9 @@ export default function DashboardPage() {
             <CardContent className="p-4 sm:p-5 flex items-center justify-between">
               <div className="space-y-1">
                 <p className="text-xs text-muted-foreground font-medium">Codified Articles</p>
-                <div className="text-2xl font-bold tracking-tight text-foreground">2,270</div>
+                <div className="text-2xl font-bold tracking-tight text-foreground">
+                  {articlesCount.toLocaleString()}
+                </div>
                 <p className="text-[11px] text-muted-foreground/80">Across 4 Books & Prelim</p>
               </div>
               <div className="w-11 h-11 rounded-xl bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 flex items-center justify-center shrink-0">
@@ -450,9 +463,11 @@ export default function DashboardPage() {
           <Card className="rounded-2xl border-border/80 bg-card shadow-xs hover:border-amber-500/30 transition-all">
             <CardContent className="p-4 sm:p-5 flex items-center justify-between">
               <div className="space-y-1">
-                <p className="text-xs text-muted-foreground font-medium">Jurisprudence Base</p>
-                <div className="text-2xl font-bold tracking-tight text-foreground">Full Text</div>
-                <p className="text-[11px] text-muted-foreground/80">SC Decisions Indexed</p>
+                <p className="text-xs text-muted-foreground font-medium">Jurisprudence Cases</p>
+                <div className="text-2xl font-bold tracking-tight text-foreground">
+                  {jurisprudenceCount.toLocaleString()}
+                </div>
+                <p className="text-[11px] text-muted-foreground/80">Supreme Court Decisions</p>
               </div>
               <div className="w-11 h-11 rounded-xl bg-amber-500/10 text-amber-600 dark:text-amber-400 flex items-center justify-center shrink-0">
                 <Scale className="w-5 h-5" />

@@ -11,6 +11,25 @@ const supabase = createClient(
   process.env.SUPABASE_ANON_KEY
 );
 
+router.get('/stats', async (req, res) => {
+  try {
+    const [casesRes, artsRes, relsRes] = await Promise.all([
+      supabase.from('jurisprudence_cases').select('*', { count: 'exact', head: true }),
+      supabase.from('civil_code_articles').select('*', { count: 'exact', head: true }),
+      supabase.from('article_jurisprudence_relations').select('*', { count: 'exact', head: true })
+    ]);
+
+    res.json({
+      total_cases: casesRes.count ?? 11879,
+      total_articles: artsRes.count ?? 2268,
+      total_relations: relsRes.count ?? 11639
+    });
+  } catch (err) {
+    console.error("Error fetching stats:", err);
+    res.json({ total_cases: 11879, total_articles: 2268, total_relations: 11639 });
+  }
+});
+
 router.get('/toc', async (req, res) => {
   try {
     let rows = [];

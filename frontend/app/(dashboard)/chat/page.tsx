@@ -1058,7 +1058,7 @@ export default function ChatPage() {
                 </DialogHeader>
 
                 <div className="mt-4 space-y-4">
-                  <div className="p-5 sm:p-6 bg-accent/20 dark:bg-accent/10 rounded-xl border border-border/70 text-foreground font-serif leading-relaxed text-sm sm:text-base whitespace-pre-wrap tracking-wide selection:bg-primary/20">
+                  <div className="p-5 sm:p-6 bg-accent/20 dark:bg-accent/10 rounded-xl border border-border/70 text-foreground leading-relaxed text-sm sm:text-base whitespace-pre-wrap selection:bg-primary/20">
                     {selectedCitation?.content}
                   </div>
 

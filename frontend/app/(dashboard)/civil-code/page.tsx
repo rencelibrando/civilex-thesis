@@ -438,7 +438,7 @@ export default function CivilCodePage() {
                         <div className="flex-1 overflow-y-auto p-6 sm:p-8 min-h-0 custom-scrollbar">
                             <div className="max-w-4xl mx-auto space-y-10 pb-8">
                                 <div className="prose prose-slate dark:prose-invert max-w-none">
-                                    <p className="text-lg text-foreground leading-relaxed font-serif tracking-wide">
+                                    <p className="text-base sm:text-lg text-foreground leading-relaxed font-normal">
                                         {articleData.content}
                                     </p>
                                 </div>

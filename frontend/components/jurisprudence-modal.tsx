@@ -195,7 +195,7 @@ export const JurisprudenceParagraph = memo(function JurisprudenceParagraph({
   return (
     <p
       style={{ contentVisibility: "auto", containIntrinsicSize: "1px 75px" }}
-      className={`font-serif text-foreground/90 tracking-normal text-justify ${
+      className={`text-foreground/90 text-justify ${
         fontSize === "sm"
           ? "text-sm leading-6"
           : fontSize === "lg"
@@ -511,7 +511,7 @@ export function JurisprudenceModal({
                   <span className="text-[10px] font-mono uppercase tracking-widest text-primary font-bold">
                     Supreme Court of the Philippines • Official Record
                   </span>
-                  <p className="text-xs text-muted-foreground font-serif leading-relaxed max-w-2xl mx-auto">
+                  <p className="text-xs text-muted-foreground leading-relaxed max-w-2xl mx-auto">
                     {parsedJurisprudence.courtHeader}
                   </p>
                 </div>
@@ -574,7 +574,7 @@ export function JurisprudenceModal({
                     </Badge>
                   </div>
                   <p
-                    className={`font-serif font-semibold text-foreground leading-relaxed ${
+                    className={`font-semibold text-foreground leading-relaxed ${
                       docFontSize === "sm"
                         ? "text-sm leading-6"
                         : docFontSize === "lg"
@@ -593,7 +593,7 @@ export function JurisprudenceModal({
                   <span className="font-semibold uppercase tracking-wider text-foreground">
                     Concurring Justices & Votes
                   </span>
-                  <p className="font-serif italic text-foreground/80">{parsedJurisprudence.concurrences}</p>
+                  <p className="text-foreground/80">{parsedJurisprudence.concurrences}</p>
                 </div>
               )}
 
@@ -604,7 +604,7 @@ export function JurisprudenceModal({
                     <BookOpen className="w-3.5 h-3.5 text-primary" />
                     Footnotes & Statutory Citations ({parsedJurisprudence.footnotes.length})
                   </h4>
-                  <div className="space-y-1.5 text-xs text-muted-foreground font-serif">
+                  <div className="space-y-1.5 text-xs text-muted-foreground">
                     {parsedJurisprudence.footnotes.map((fn, idx) => (
                       <p key={idx} className="leading-relaxed">
                         {fn}

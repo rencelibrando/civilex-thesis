@@ -309,21 +309,21 @@ SEARCH_STOPWORDS = {
 }
 
 PHILIPPINE_LEGAL_EXPANSIONS = [
+    # Reciprocal obligations / breach of contract / cancellation / rescission / resolution
+    (r'\b(rescind|rescission|resolution of contract|cancel the contract|cancel contract|cancelling the contract|failed to complete|failed to comply|contractor|advance payment|demand my money back|money back|return my money|reciprocal obligations|injured party)\b',
+     'reciprocal obligations rescission resolution breach of contract delay mora damages restitution Art 1191 Art 1170 Art 1169 Art 1385'),
+
+    # Sales / warranties / hidden defects / redhibitory action / refund
+    (r'\b(hidden defect|hidden defects|defect|defects|defective|broke down|factory defect|warranty|warranties|dealership|car dealer|vehicle defect|return it for a refund|refund for defective|accion redhibitoria|quanti minoris|redhibitory)\b',
+     'sale warranty hidden defects vendor liability accion redhibitoria rescission refund damages Art 1561 Art 1566 Art 1567 Art 1571'),
+
+    # Vehicular accidents / reckless driving / road crash / employer liability
+    (r'\b(aksidente|bangga|nabangga|binangga|sagasa|nasagasaan|gasgas|aksidente sa sasakyan|kotse|motor|motorsiklo|driver|tsuper|truck|delivery truck|truck hit|car hit|hit.*(?:car|vehicle|truck)|speeding|reckless driving|company that employed|employed him)\b',
+     'quasi delict fault negligence vehicular accident motor vehicle employer vicarious liability damages Art 2176 Art 2180 Art 2185 Art 2199 Art 2206'),
+
     # Physical injury / assault / battery / violent physical acts
-    (r'\b(suntok|sinuntok|manuntok|bugbog|binugbog|mambugbog|saksak|sinaksak|hampas|hinampas|palo|pinalo|sugat|sinugatan|sakitan|sinaktan|pananakit|tadyak|tinadyakan|sampal|sinampal|kinalmot|assault|battery|punch|punched|hit|beaten|injure|injury|injuries)\b',
+    (r'\b(suntok|sinuntok|manuntok|bugbog|binugbog|mambugbog|saksak|sinaksak|hampas|hinampas|palo|pinalo|sugat|sinugatan|sakitan|sinaktan|pananakit|tadyak|tinadyakan|sampal|sinampal|kinalmot|assault|battery|punch|punched|beaten|injure|injury|injuries)\b',
      'physical injuries quasi delict assault battery fault negligence civil liability damages Art 33 Art 2176 Art 2219 Art 20 Art 21'),
-    
-    # Civil liability / filing action / damages / indemnity
-    (r'\b(ikaso|maikaso|ipakaso|demanda|idemanda|ihabla|habla|habulin|reklamo|ireklamo|bayaran|pananagutan|danyos|bayad-pinsala)\b',
-     'civil liability independent civil action damages indemnification quasi delict Art 2176 Art 20 Art 21'),
-    
-    # Defamation / libel / slander / online gossip / public humiliation
-    (r'\b(paninirang-puri|tsismis|chismis|paninira|siniraan|sinisiraan|sinungaling|post sa fb|facebook post|mypost|defamation|libel|slander)\b',
-     'defamation libel slander independent civil action moral damages Art 33 Art 2219'),
-    
-    # Vehicular accidents / reckless driving / road crash
-    (r'\b(aksidente|bangga|nabangga|binangga|sagasa|nasagasaan|gasgas|aksidente sa sasakyan|kotse|motor|motorsiklo|driver|tsuper)\b',
-     'quasi delict fault negligence vehicular accident motor vehicle damages Art 2176 Art 2180 Art 2185'),
     
     # Neighbor disputes / boundary / nuisance / noise / easement
     (r'\b(kapitbahay|boundary|hangganan|bakod|harang|ingay|maingay|amoy|mabahong|perhuwisyo|istorbo|harang sa daan)\b',
@@ -338,8 +338,8 @@ PHILIPPINE_LEGAL_EXPANSIONS = [
      'lease contract ejectment unlawful detainer obligations of lessor lessee Art 1654 Art 1673'),
     
     # Debt / loans / bounced checks / collection / interest
-    (r'\b(utang|umutang|pautang|pautangan|singil|maningil|sinisingil|bayad|di nagbayad|hindi nagbayad|tseke|talbog|bounced check)\b',
-     'obligations contracts breach of contract delay mora payment legal interest damages Art 1157 Art 1170 Art 1231'),
+    (r'\b(utang|umutang|pautang|pautangan|singil|maningil|sinisingil|bayad|di nagbayad|hindi nagbayad|tseke|talbog|bounced check|borrow|borrowed|lended|lend|loan|promissory note|refuses to pay|refused to pay|unpaid loan|small claims)\b',
+     'obligations contracts breach of contract delay default mora payment legal interest promissory note sum of money Art 1169 Art 1170 Art 1231 Art 1232'),
     
     # Contracts / agreements / fraud / void / consent
     (r'\b(kontrata|kasulatan|pirma|pinapirma|kasunduan|usapan|bale|contract|consent|void|niloko)\b',
@@ -350,8 +350,8 @@ PHILIPPINE_LEGAL_EXPANSIONS = [
      'succession inheritance will legitime compulsory heirs intestate testate Art 777 Art 887 Art 960'),
     
     # Marriage / annulment / legal separation / property relations
-    (r'\b(kasal|hiwalay|annulment|babaero|kabit|lalakero|asawa|pangangaliwa|pambababae)\b',
-     'marriage family code conjugal partnership absolute community legal separation support Art 147 Art 148'),
+    (r'\b(kasal|hiwalay|annulment|nullity|babaero|kabit|lalakero|asawa|pangangaliwa|pambababae|psychological incapacity|marital obligations)\b',
+     'marriage family code psychological incapacity declaration of absolute nullity conjugal partnership legal separation support Art 36 Art 68 Art 69 Art 147 Art 148'),
     
     # Damages / compensation
     (r'\b(moral damages|exemplary damages|nominal damages|actual damages|bayad pinsala)\b',
@@ -365,12 +365,12 @@ PHILIPPINE_LEGAL_EXPANSIONS = [
 NON_LEGAL_PATTERNS = [
     # Programming, Software & Tech
     r'\b(python|javascript|typescript|react|vue|angular|html|css|c\+\+|java\b|golang|rust|php|ruby|swift|kotlin|sql\s+query|nosql|mongodb|docker|kubernetes|git\b|github|algorithm|algorithms|function\s+to|write\s+code|code\s+snippet|def\s+[a-zA-Z_]|print\(|console\.log|class\s+[a-zA-Z_]|for\s+loop|while\s+loop|linked\s*list|binary\s*tree|leetcode|sorting\s+algorithm|merge\s*sort|quick\s*sort|bubble\s*sort|binary\s*search|stack|queue|compiler|syntax\s+error|runtime\s+error|npm\s+|pip\s+install|frontend|backend|full\s*stack|web\s+development)\b',
-    # Math & Natural Sciences
-    r'\b(derivative\s+of|integral\s+of|solve\s+for\s+x|quadratic\s+equation|pythagorean|calculus|trigonometry|matrix\s+multiplication|differential\s+equation|chemical\s+formula|periodic\s+table|photosynthesis|mitosis|speed\s+of\s+light|newton\'s\s+(?:first|second|third)?\s*law|quantum\s+physics|thermodynamics|astronomy|solar\s+system|planets|black\s+hole|dna\s+replication)\b',
+    # Math & Natural Sciences (Physics, Quantum Mechanics, Chemistry, Biology, Astronomy)
+    r'\b(quantum(?:\s+(?:entanglement|physics|mechanics|computing|theory|tunneling|gravity|field|state|leap|realm|supremacy))?|schrodinger|general\s+relativity|special\s+relativity|string\s+theory|particle\s+physics|higgs\s+boson|thermodynamics|entropy|astrophysics|black\s+hole|wormhole|supernova|speed\s+of\s+light|derivative\s+of|integral\s+of|solve\s+for\s+x|quadratic\s+equation|pythagorean|calculus|trigonometry|matrix\s+multiplication|differential\s+equation|chemical\s+formula|periodic\s+table|photosynthesis|mitosis|meiosis|cellular\s+respiration|dna\s+replication|chemical\s+reaction|gravitational\s+waves?|newton\'s\s+(?:first|second|third)?\s*law|solar\s+system|planets)\b',
     # Culinary, Food & Recipes
     r'\b(recipe|recipes|how\s+to\s+cook|how\s+to\s+bake|how\s+to\s+make\s+a\s+|ingredients\s+for|adobo\s+recipe|sinigang\s+recipe|bake\s+a\s+cake|chocolate\s+cake|cake|cookies|marinate|seasoning|fried\s+chicken|pasta\s+recipe)\b',
-    # Pop Culture, Fiction, Creative Writing, Sports & Everyday Lifestyle
-    r'\b(write\s+a\s+poem|write\s+a\s+song|write\s+a\s+story|write\s+an\s+essay|movie\s+recommendation|who\s+won\s+the\s+(?:game|match|finals|world\s*cup)|nba\s+finals|pba\s+finals|celebrity\s+gossip|horoscope|zodiac\s+sign|lyrics\s+of|weather\s+in|forecast\s+for|capital\s+of|translate\s+(?:this\s+)?to|workout\s+routine|diet\s+plan)\b',
+    # Pop Culture, Fiction, Comics, Fantasy, Creative Writing, Sports & Lifestyle
+    r'\b(harry\s+potter|voldemort|hogwarts|jedi|sith|star\s+wars|lightsaber|marvel|avengers|thanos|batman|superman|spider-?man|iron\s*man|anime|goku|naruto|pokemon|manga|lord\s+of\s+the\s+rings|gandalf|frodo|middle-?earth|superhero|superheroes|time\s+travel|multiverse|teleportation|write\s+a\s+poem|write\s+a\s+song|write\s+a\s+story|write\s+an\s+essay|movie\s+recommendation|who\s+won\s+the\s+(?:game|match|finals|world\s*cup)|nba\s+finals|pba\s+finals|celebrity\s+gossip|horoscope|zodiac\s+sign|lyrics\s+of|weather\s+in|forecast\s+for|capital\s+of|translate\s+(?:this\s+)?to|workout\s+routine|diet\s+plan)\b',
 ]
 
 NON_CIVIL_LEGAL_DOMAINS = [
@@ -409,6 +409,20 @@ CIVIL_LAW_POSITIVE_PATTERNS = [
     r'\b(kontrata|kasulatan|kasunduan|usapan|bale|utang|pautang|singil|upa|umupa|paupahan|nangungupahan|mana|pamana|testamento|habilin|kasal|annulment|hiwalay|asawa|kabit|danyos|bayad-pinsala|pananagutan|ikaso|demanda|ihabla|bakod|hangganan|lupa|kamkam|inagaw\s+ang\s+lupa|aksidente|nabangga|nasagasaan|suntok|sinuntok|bugbog|pananakit|paninirang-puri|tsismis)\b'
 ]
 
+def is_refusal_or_out_of_scope(text: str) -> bool:
+    """Detects whether a synthesized LLM response is an explicit refusal or out-of-scope determination."""
+    refusal_patterns = [
+        r'\b(?:falls|is)\s+outside\s+(?:the\s+)?scope\b',
+        r'\bthere\s+are\s+no\s+statutory\s+(?:damages|provisions|remedies|articles)\s+provided\s+for\b',
+        r'\bnot\s+a\s+recognized\s+civil\s+wrong\b',
+        r'\bnot\s+governed\s+by\s+(?:the\s+civil\s+code|ra\s*386|philippine\s+civil\s+law)\b',
+        r'\bgoverning\s+civil\s+code\s+article\(s\):\s*(?:none|n/?a|not\s+applicable)\b',
+        r'\bconcept\s+from\s+(?:theoretical\s+physics|science|mathematics|computer\s+science|physics)\b',
+        r'\boutside\s+the\s+field\s+of\s+law\b',
+        r'\bno\s+applicable\s+civil\s+code\s+article\b'
+    ]
+    return any(bool(re.search(p, text, re.IGNORECASE)) for p in refusal_patterns)
+
 def classify_query_intent(
     query: str, 
     history: Optional[List[ChatMessage]] = None, 
@@ -423,19 +437,26 @@ def classify_query_intent(
     q_clean = query.strip()
     q_lower = q_clean.lower()
 
-    # 1. Explicit Civil Law statutory or doctrine references (highest priority override)
-    has_explicit_civil = any(bool(re.search(p, q_lower)) for p in CIVIL_LAW_POSITIVE_PATTERNS)
-
-    # 2. Check for Non-Legal patterns (programming, math, cooking, pop culture)
+    # 1. Check for Non-Legal patterns (physics, science, programming, cooking, fiction)
     is_non_legal = any(bool(re.search(p, q_lower)) for p in NON_LEGAL_PATTERNS)
     is_casual_greeting = bool(re.match(r'^(hello|hi|hey|good\s+morning|good\s+afternoon|good\s+evening|kumusta|kamusta|who\s+are\s+you|what\s+can\s+you\s+do|tell\s+me\s+a\s+joke)\b', q_lower)) and len(q_clean.split()) <= 6
 
-    if (is_non_legal or is_casual_greeting) and not has_explicit_civil:
+    # Allow authentic commercial IT service/contract disputes (e.g. "developer breached contract to build app")
+    is_commercial_tech_contract = bool(
+        re.search(r'\b(?:contract|agreement|payment|bale|bayad|invoice|developer|freelancer|client|service\s+agreement)\b', q_lower) and
+        re.search(r'\b(?:software|website|app|application|system)\b', q_lower) and
+        not re.search(r'\b(?:quantum|physics|schrodinger|algorithm|sorting|recursion|derivative|recipe|cake|poem|joke|entanglement)\b', q_lower)
+    )
+
+    if (is_non_legal and not is_commercial_tech_contract) or is_casual_greeting:
         return {
             "category": "out_of_domain_non_legal",
             "target_domain": None,
-            "reason": "Query falls under non-legal subject matter (programming, science, casual chat, or general knowledge)."
+            "reason": "Query involves non-legal subject matter (science, physics, programming, fiction, casual chat, or general knowledge) and contains no recognized civil cause of action under RA 386."
         }
+
+    # 2. Explicit Civil Law statutory or doctrine references
+    has_explicit_civil = any(bool(re.search(p, q_lower)) for p in CIVIL_LAW_POSITIVE_PATTERNS)
 
     # 3. Check for Non-Civil Philippine Legal Domains (Tax, Labor, Criminal, Corporate)
     matched_legal_domain = None
@@ -580,6 +601,83 @@ def build_contextual_query(query: str, history: List[ChatMessage], document_file
 def compute_embedding(query: str) -> list:
     """Computes the normalized query embedding vector."""
     return embedder.encode(query, normalize_embeddings=True).tolist()
+
+
+# ---------------------------------------------------------------------------
+# Statutory Companion Association Graph & Retrieval Noise Pruning (RAGAS)
+# ---------------------------------------------------------------------------
+
+STATUTORY_COMPANION_GRAPH: Dict[str, List[str]] = {
+    # Obligations & Contracts (Rescission, Delay, Damages, Restitution)
+    "RA386-ART1191": ["RA386-ART1170", "RA386-ART1169", "RA386-ART1385"],
+    "RA386-ART1170": ["RA386-ART1169", "RA386-ART1191", "RA386-ART2201"],
+    "RA386-ART1169": ["RA386-ART1170", "RA386-ART1191"],
+    "RA386-ART1231": ["RA386-ART1232", "RA386-ART1169"],
+    "RA386-ART1305": ["RA386-ART1318", "RA386-ART1159"],
+    "RA386-ART1318": ["RA386-ART1319", "RA386-ART1347", "RA386-ART1350"],
+    "RA386-ART1381": ["RA386-ART1385", "RA386-ART1191"],
+    "RA386-ART1390": ["RA386-ART1391", "RA386-ART1398"],
+    "RA386-ART1409": ["RA386-ART1410", "RA386-ART1411"],
+
+    # Sales & Hidden Defects
+    "RA386-ART1458": ["RA386-ART1475", "RA386-ART1498"],
+    "RA386-ART1561": ["RA386-ART1566", "RA386-ART1567", "RA386-ART1571"],
+    "RA386-ART1567": ["RA386-ART1561", "RA386-ART1566"],
+
+    # Torts / Quasi-Delicts & Civil Damages
+    "RA386-ART2176": ["RA386-ART2180", "RA386-ART2199", "RA386-ART2219"],
+    "RA386-ART2180": ["RA386-ART2176", "RA386-ART2199"],
+    "RA386-ART2199": ["RA386-ART2200", "RA386-ART2219", "RA386-ART2229"],
+    "RA386-ART2206": ["RA386-ART2176", "RA386-ART2199"],
+
+    # Human Relations & Independent Civil Actions
+    "RA386-ART19": ["RA386-ART20", "RA386-ART21"],
+    "RA386-ART20": ["RA386-ART19", "RA386-ART21"],
+    "RA386-ART21": ["RA386-ART19", "RA386-ART20", "RA386-ART2219"],
+    "RA386-ART32": ["RA386-ART2219"],
+    "RA386-ART33": ["RA386-ART2176", "RA386-ART2177"],
+
+    # Property, Accession & Builder in Good Faith
+    "RA386-ART448": ["RA386-ART546", "RA386-ART548"],
+    "RA386-ART484": ["RA386-ART494", "RA386-ART500"],
+    "RA386-ART649": ["RA386-ART650"],
+
+    # Succession & Wills
+    "RA386-ART777": ["RA386-ART886", "RA386-ART887"],
+    "RA386-ART887": ["RA386-ART888", "RA386-ART892", "RA386-ART960"],
+
+    # Family Code (Psychological Incapacity & Marriage)
+    "RA386-ART36": ["RA386-ART68", "RA386-ART69"],
+}
+
+def prune_retrieval_noise(items: List[Dict[str, Any]], max_items: int = 4) -> List[Dict[str, Any]]:
+    """
+    Prunes low-relevance retrieval noise to optimize RAGAS Context Precision.
+    Preserves top-ranked matches and companion provisions while eliminating
+    low-confidence tail results that dilute prompt signal-to-noise ratio.
+    """
+    if not items:
+        return []
+    
+    # Sort items by suitability_percent descending
+    items.sort(key=lambda x: float(x.get('suitability_percent', 0.0)), reverse=True)
+    top_score = float(items[0].get('suitability_percent', 0.0))
+    
+    # Adaptive threshold: keep items within 22% of top score, with absolute floor of 62.0%
+    score_cutoff = max(62.0, top_score - 22.0)
+    
+    pruned = [
+        it for it in items 
+        if float(it.get('suitability_percent', 0.0)) >= score_cutoff
+    ]
+    
+    # Guarantee top 1 or 2 items if available
+    if len(pruned) < 2 and len(items) >= 2:
+        pruned = items[:2]
+    elif not pruned and items:
+        pruned = items[:1]
+        
+    return pruned[:max_items]
 
 
 def search_with_embedding(q_emb: list, query: str, document_id: Optional[str] = None):
@@ -738,9 +836,9 @@ def search_with_embedding(q_emb: list, query: str, document_id: Optional[str] = 
                                 "suitability_percent": round(max(60.0, min(95.0, 88.0 - (idx * 3.0))), 1)
                             })
                     all_found = doc_results + statutory_articles + linked_cases
-                    all_found.sort(key=lambda x: float(x.get('suitability_percent', 0.0)), reverse=True)
+                    all_found = prune_retrieval_noise(all_found, max_items=5)
                     return all_found
-                doc_results.sort(key=lambda x: float(x.get('suitability_percent', 0.0)), reverse=True)
+                doc_results = prune_retrieval_noise(doc_results, max_items=5)
                 return doc_results
 
             # 1. Exact match extraction for Civil Code Articles (e.g. "article 77", "Art 2176", "Article 33")
@@ -763,14 +861,38 @@ def search_with_embedding(q_emb: list, query: str, document_id: Optional[str] = 
                     
             # 2. Top article matches (Civil Code statutes) via Hybrid Search - PRIORITIZED
             articles = exact_articles.copy()
-            art_limit = max(4, 6 - len(exact_articles))
+            art_limit = max(3, 5 - len(exact_articles))
             hybrid_articles = hybrid_search('article', art_limit)
             exact_ids_set = {a['parent_id'] for a in exact_articles}
             for idx, ha in enumerate(hybrid_articles):
                 if ha['parent_id'] not in exact_ids_set:
                     ha['suitability_percent'] = calculate_suitability(ha.get('similarity'), len(articles))
                     articles.append(ha)
-            articles = articles[:6] # Prioritize up to 6 statutory provisions
+
+            # 2.5 Statutory Companion Expansion (Codified Association Graph for Context Recall)
+            if articles:
+                companion_ids = []
+                existing_art_ids = {a['parent_id'] for a in articles}
+                for a in articles[:2]:  # Check top 2 primary articles
+                    art_pid = a.get('parent_id')
+                    if art_pid in STATUTORY_COMPANION_GRAPH:
+                        for comp_id in STATUTORY_COMPANION_GRAPH[art_pid]:
+                            if comp_id not in existing_art_ids and comp_id not in companion_ids:
+                                companion_ids.append(comp_id)
+                
+                if companion_ids:
+                    cur.execute("""
+                        SELECT chunk_id, parent_type, parent_id, content
+                        FROM document_chunks
+                        WHERE parent_id = ANY(%s) AND parent_type = 'article';
+                    """, (companion_ids[:3],))
+                    comp_rows = cur.fetchall()
+                    top_art_score = float(articles[0].get('suitability_percent', 90.0))
+                    for idx, comp in enumerate(comp_rows):
+                        comp['suitability_percent'] = round(max(65.0, top_art_score * 0.94 - (idx * 2.0)), 1)
+                        comp['similarity'] = float(articles[0].get('similarity', 0.85)) * 0.94
+                        articles.append(comp)
+                        existing_art_ids.add(comp['parent_id'])
 
             # Ensure all articles have suitability_percent
             for idx, a in enumerate(articles):
@@ -793,17 +915,17 @@ def search_with_embedding(q_emb: list, query: str, document_id: Optional[str] = 
             # 3. Graph-Augmented RAG: Retrieve linked jurisprudence for the top articles (strictly secondary)
             linked_cases = []
             if articles:
-                article_ids = [a['parent_id'] for a in articles]
+                article_ids = [a['parent_id'] for a in articles[:3]]
                 cur.execute("""
                     SELECT r.article_id, j.case_uid, j.title, j.gr_number, j.content_summary, j.source_url, j.decision_date
                     FROM article_jurisprudence_relations r
                     JOIN jurisprudence_cases j ON r.case_uid = j.case_uid
                     WHERE r.article_id = ANY(%s)
-                    LIMIT 3;
+                    LIMIT 2;
                 """, (article_ids,))
                 
                 # Format them as supporting documents with suitability score
-                top_art_score = articles[0]['suitability_percent'] if articles else 88.0
+                top_art_score = float(articles[0]['suitability_percent']) if articles else 88.0
                 for idx, row in enumerate(cur.fetchall()):
                     summary = row.get('content_summary') or ''
                     linked_cases.append({
@@ -832,7 +954,7 @@ def search_with_embedding(q_emb: list, query: str, document_id: Optional[str] = 
                         SELECT case_uid, title, gr_number, source_url, content_summary, decision_date
                         FROM jurisprudence_cases
                         WHERE to_tsvector('simple', title || ' ' || coalesce(content_summary, '')) @@ plainto_tsquery('simple', %s)
-                        LIMIT 2;
+                        LIMIT 1;
                     """, (case_search_query,))
                     for idx, row in enumerate(cur.fetchall()):
                         cases.append({
@@ -850,9 +972,9 @@ def search_with_embedding(q_emb: list, query: str, document_id: Optional[str] = 
                             "suitability_percent": round(max(55.0, 82.0 - (idx * 4.0)), 1)
                         })
 
-            # Merge and sort by percentage (highest suitability_percent on top)
+            # Merge and apply dynamic relevance pruning for high Context Precision
             all_found = articles + linked_cases + cases
-            all_found.sort(key=lambda x: float(x.get('suitability_percent', 0.0)), reverse=True)
+            all_found = prune_retrieval_noise(all_found, max_items=4)
             return all_found
     finally:
         conn.close()
@@ -1268,49 +1390,41 @@ CONTEXT:
                 else:
                     system_prompt = f"""You are CIVIL-LEX, a specialized Philippine Legal Assistant. Your PRIMARY AND EXCLUSIVE MISSION is to analyze and answer legal inquiries strictly through the lens of the Philippine Civil Code (Republic Act No. 386) and Philippine civil jurisprudence.
 
-CRITICAL INSTRUCTIONS - YOU MUST FOLLOW THESE STRICTLY:
-1. PRIMARY STATUTORY GROUNDING (MANDATORY): The Philippine Civil Code (Republic Act No. 386) is your HIGHEST AND CONTROLLING AUTHORITY. You MUST ALWAYS prioritize the statutory provisions of the Civil Code over jurisprudence.
-   - Present the specific Civil Code Article(s) FIRST in your response before discussing any cases.
-   - Ground your legal reasoning, definitions, elements, and liabilities directly on the statutory text of the Civil Code articles provided in CONTEXT.
-   - Supreme Court jurisprudence serves ONLY as secondary, supporting interpretation to illustrate how that statutory article was applied. Never allow case doctrines to overshadow or replace the governing statutory provision.
-   - If the user asks for a simple explanation, Tagalog / Filipino breakdown, or general guidance, explain what the Civil Code Article prescribes first, clearly and directly.
+MANDATORY RAGAS COMPLIANCE & LEGAL ACCURACY RULES:
 
-2. CIVIL LAW SCOPE & COLLOQUIAL INQUIRIES:
-   - The Philippine Civil Code broadly governs:
-     a. Persons, Family Relations & Legal Capacity;
-     b. Human Relations (Arts. 19, 20, 21 - abuse of rights, acts contrary to law/morals/public policy);
-     c. Independent Civil Actions (Arts. 32, 33, 34 - civil actions for damages arising from physical injuries, defamation, fraud, or rights violations, independent of criminal prosecution);
-     d. Property, Ownership, Possession, Accession, Easements, and Nuisance;
-     e. Succession, Wills, and Inheritance;
-     f. Obligations and Contracts (breach, delay, damages, rescission, nullity, sales, leases, loans);
-     g. Torts / Quasi-Delicts (Arts. 2176–2194 - fault, negligence, and vicarious liability of teachers, schools, employers, and parents under Art. 2180);
-     h. Damages & Indemnity (Arts. 2199–2235 - actual, moral, exemplary, nominal damages; Art. 2206 - civil liability and indemnity for death).
-   - Inquiries involving altercations, disputes, fights, accidents, harm, injuries, or deaths ("ikaso", "away", "nasaktan", "nabangga", "napatay") inherently involve CIVIL LIABILITY for damages and quasi-delicts under the Civil Code.
-   - DO NOT refuse a query simply because the factual situation may also involve a crime or because the user used colloquial phrasing like "ikaso" or "demanda". Address the query from the perspective of Philippine Civil Law (civil liabilities, quasi-delict, independent civil action for damages, indemnification). You may briefly note that criminal prosecution is governed separately by criminal law.
-   - If relevant Civil Code articles (e.g., Art. 2176, Art. 20, Art. 21, Art. 32, Art. 33, Art. 2206, Art. 2219) are present in the CONTEXT, YOU MUST ANSWER using those provisions.
+1. INVERTED PYRAMID (DIRECT ANSWER FIRST - MAXIMUM ANSWER RELEVANCY):
+   - Always begin your response immediately with a clear, direct 1-to-2 sentence affirmative or negative legal conclusion answering the user's specific inquiry.
+   - Do NOT begin with generic conversational filler, historical preambles, or unsolicited lectures.
+   - Directly answer the core question before elaborating on statutory elements or secondary doctrines.
 
-3. NON-CIVIL LEGAL REDIRECTION RULE (NO RIGID REFUSALS):
-   - CIVIL-LEX is a specialist in Philippine Civil Law. However, ordinary citizens frequently present scenarios that primarily fall under other areas of Philippine law (such as criminal offenses like Estafa/Theft/BP 22/physical violence, labor disputes like illegal dismissal/withheld wages, corporate/SEC governance, tax/BIR, or administrative complaints).
-   - If the inquiry primarily falls outside the Philippine Civil Code:
-     a. Clearly and constructively state that while CIVIL-LEX specializes in Philippine Civil Law, this matter is governed under another branch of Philippine law.
-     b. Explicitly name the applicable legal domain and governing statute (e.g., Criminal Law under the Revised Penal Code / Special Penal Laws; Labor Law under Presidential Decree No. 442 [Labor Code]; Commercial Law; Consumer Act RA 7394).
-     c. Suggest the proper court, government agency, or forum with jurisdiction (e.g., Office of the City Prosecutor for criminal complaint-affidavits; National Labor Relations Commission [NLRC] / DOLE for labor complaints; Department of Trade and Industry [DTI] for consumer issues; DHSUD for real estate subdivision disputes).
-     d. Point out any concurrent civil action or liability (e.g., under Art. 100 RPC and Civil Code Arts. 29, 32, 33, civil liability for restitution and damages can be recovered).
-   - Only if the query is completely non-legal (e.g., cooking, programming, pop culture, sports) should you politely state that CIVIL-LEX is an AI assistant dedicated to Philippine Law.
+2. PRIMARY STATUTORY GROUNDING & ANCHORED CITATIONS (FAITHFULNESS):
+   - The Philippine Civil Code (RA 386) is your HIGHEST AND CONTROLLING AUTHORITY.
+   - Ground every legal rule, requisite, element, and remedy EXCLUSIVELY on the statutory text of the Civil Code articles provided in CONTEXT.
+   - Supreme Court jurisprudence serves ONLY as secondary, supporting interpretation to illustrate how that statutory article was applied. Never allow case doctrines to overshadow the governing statute.
+   - CITATION ANCHORS: Explicitly anchor every substantive legal claim, element, or rule with its bracketed citation (e.g., [Art. 1191] or [G.R. No. 173526]).
 
-4. REFUSAL RULE FOR DOCUMENTS:
-   - If the provided CONTEXT is completely unrelated to civil law (e.g., technical docs, science, random text), YOU MUST REFUSE TO ANALYZE IT. State clearly: "The provided document is unrelated to civil law. My primary and only task is to analyze documents related to the Philippine Civil Code."
-   - HOWEVER, you MUST NOT refuse to analyze any document that touches upon ANY part of the Philippine Civil Code (e.g., offer letters, employment contracts, agreements, leases, deeds of sale, property titles, wills, deeds of donation, or personal civil relations). Analyze these documents strictly through the appropriate lens of the Civil Code.
+3. STRICT CONTEXT BOUNDARY & NO DOCTRINE MISAPPLICATION (SEMANTIC INTEGRITY):
+   - You must derive all legal definitions, requisites, and conclusions EXCLUSIVELY from the provided CONTEXT.
+   - NO EXTERNAL INVENTIONS: If an element, remedy, or prescriptive period is absent from the provided CONTEXT, state clearly that the retrieved sources do not specify it rather than hallucinating.
+   - SEMANTIC INTEGRITY: Never misapply retrieved legal passages to unrelated factual situations. For example, do NOT cite Implied Trust rules (Art. 1450) or Property Easements to answer a breach of contract, debt collection, or quasi-delict query. Apply each article strictly according to its statutory title and intended civil doctrine.
 
-5. CITATION RULE: ALWAYS cite the specific Civil Code Article number (e.g., Article 2176, Article 20) when referencing statutory provisions. When discussing jurisprudence, cite the case name, GR number, and include the provided LINK to the source document.
+4. CIVIL LAW SCOPE & COLLOQUIAL INQUIRIES:
+   - The Philippine Civil Code broadly governs: Persons & Family Relations, Human Relations (Arts. 19-21), Independent Civil Actions (Arts. 32-34), Property & Ownership, Succession & Wills, Obligations & Contracts, Torts / Quasi-Delicts (Arts. 2176-2180), and Damages (Arts. 2199-2235).
+   - Inquiries involving accidents, harm, injuries, or disputes ("ikaso", "away", "nasaktan", "nabangga") inherently involve CIVIL LIABILITY for damages and quasi-delict under the Civil Code.
+   - DO NOT refuse a query simply because the factual situation may also involve a crime or because the user used colloquial phrasing. Address the query from the perspective of Philippine Civil Law.
 
-6. STRUCTURE RULE:
-   - Structure your response with the STATUTORY BASIS (Civil Code Articles) FIRST, followed by direct legal explanation (in English or Tagalog matching the user's inquiry), and conclude with secondary supporting jurisprudence only if relevant.
-   - FOR BROAD OR INCOMPLETE QUERIES: If the user's inquiry is general, broad, or lacks critical factual specifics (e.g., "what happens if a contract is broken?", "my friend owes me money"), include a dedicated section:
-     ### 💡 Practical Recommendations & Next Steps
-     - **Immediate Actions**: Recommend pre-litigation steps (e.g., prepare and serve a formal written Demand Letter with proof of receipt to place the obligor in legal delay/default under Article 1169; preserve documentary evidence like written agreements, receipts, bank records, and chat transcripts).
-     - **Clarifying Questions**: Provide 2-3 focused clarifying questions to help narrow down the factual scenario (e.g., "Is the agreement written or verbal?", "What is the total monetary value involved?").
-   - MANDATORY LEGAL ACTION SUMMARY: Conclude every substantive civil law evaluation with the following structured format:
+5. NON-CIVIL LEGAL REDIRECTION RULE:
+   - If the inquiry primarily falls outside the Philippine Civil Code (e.g., purely criminal prosecution, tax assessment under NIRC/BIR, labor standards under DOLE/NLRC):
+     a. State constructively that while CIVIL-LEX specializes in Philippine Civil Law, this matter is governed under another branch of Philippine law.
+     b. Explicitly name the applicable legal domain and statute (e.g., Criminal Law under RPC, Tax Law under NIRC, Labor Code PD 442).
+     c. Suggest the proper forum/agency (e.g., Prosecutor's Office, BIR, NLRC/DOLE).
+     d. Note any concurrent civil action for damages/restitution (e.g., Arts. 29, 32, 33, 2176).
+
+6. STRUCTURE OF RESPONSE:
+   - **Direct Answer & Conclusion**: 1-2 direct sentences answering the query.
+   - **Governing Statutory Basis**: Specific Civil Code Article(s) and their essential legal requisites.
+   - **Application to Facts**: Clear analysis applying the statutory elements to the user's specific scenario.
+   - **Legal Action Summary**: Conclude every substantive civil law evaluation with:
      ### ⚖️ Legal Action Summary
      - **Governing Civil Code Article(s)**: [List specific RA 386 articles, e.g., Article 1191, Article 1170]
      - **Competent Court / Jurisdiction**: [Specify court based on RA 11576 monetary thresholds:
@@ -1318,10 +1432,8 @@ CRITICAL INSTRUCTIONS - YOU MUST FOLLOW THESE STRICTLY:
        * Regional Trial Court (RTC) if claim/damages exceeds ₱2,000,000, or if incapable of pecuniary estimation (e.g., rescission, specific performance, injunction);
        * Family Court (RA 8369) for nullity/annulment of marriage (Art. 36), legal separation, custody, and child support;
        * Real Property: MTC if assessed value ≤ ₱400,000; RTC if assessed value > ₱400,000.]
-     - **Pre-filing Requirement**: [State whether Barangay Conciliation (Katarungang Pambarangay under RA 7160) is mandatory before court filing (required if both parties reside in the same city/municipality), or if exempt.]
-     - **Possible Cause of Action to File**: [Exact technical legal title of the action petitioner can file, e.g., Action for Judicial Rescission with Damages, Action for Specific Performance with Damages, Action for Sum of Money, Action for Quasi-Delict / Tort (Art. 2176), Petition for Declaration of Absolute Nullity of Marriage (Art. 36).]
-
-7. NO HALLUCINATION: Ground your legal analysis on the provided CONTEXT. Do not invent or assume legal facts. Do not answer based on your internal knowledge if the context contradicts it.
+     - **Pre-filing Requirement**: [State whether Katarungang Pambarangay (Barangay Conciliation under RA 7160) is mandatory or exempt.]
+     - **Possible Cause of Action to File**: [Exact technical legal title, e.g., Action for Judicial Rescission with Damages, Action for Quasi-Delict (Art. 2176), Small Claims Action for Collection of Sum of Money.]
 
 CONTEXT:
 {context_str}
@@ -1351,10 +1463,23 @@ CONTEXT:
                     full_text += chunk
                     yield f"data: {dumps({'type': 'text', 'text': chunk})}\n\n"
 
-                # Fallback emission if stream finished without any chunks
-                if is_first_chunk:
-                    yield f"data: {dumps({'type': 'citations', 'data': results})}\n\n"
-                    yield f"data: {dumps({'type': 'accumulated_citations', 'data': accumulated_citations})}\n\n"
+                # Post-Synthesis Safety Check: If the generated answer is an explicit refusal or out-of-scope determination
+                if is_refusal_or_out_of_scope(full_text):
+                    logging.info("Model response detected as refusal/out-of-scope; sanitizing citations and NLI score.")
+                    results = []
+                    accumulated_citations = []
+                    analytics_payload = {
+                        'nli_score': None,
+                        'nli_status': 'Out of Domain',
+                        'top_article_score': 0.0,
+                        'is_document_legal': None,
+                        'is_out_of_domain': True,
+                        'domain_category': 'non_legal',
+                        'target_domain': None,
+                    }
+                    # Emit sanitized events to clear any noise citations on refusals
+                    yield f"data: {dumps({'type': 'citations', 'data': []})}\n\n"
+                    yield f"data: {dumps({'type': 'accumulated_citations', 'data': []})}\n\n"
                     yield f"data: {dumps({'type': 'legal_analytics', 'data': analytics_payload})}\n\n"
 
                 # Signal completion

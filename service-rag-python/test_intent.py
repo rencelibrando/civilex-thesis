@@ -11,7 +11,8 @@ test_cases = [
     ("Under Article 1191, what are the remedies of the injured party?", "in_domain_civil"),
     ("What happens if the buyer defaults on installment payments for land under Maceda Law?", "in_domain_civil"),
     ("Nabangga ang kotse ko ng lasing na driver, ano ang pwede kong ikaso para sa danyos?", "in_domain_civil"),
-    ("Sinuntok ako ng kapitbahay ko, pwede ba akong humingi ng danyos?", "in_domain_civil")
+    ("Sinuntok ako ng kapitbahay ko, pwede ba akong humingi ng danyos?", "in_domain_civil"),
+    ("What are the exact statutory damages for quantum entanglement breach under RA 386?", "out_of_domain_non_legal")
 ]
 
 print("=== PART 1: Intent Classification Unit Tests ===")

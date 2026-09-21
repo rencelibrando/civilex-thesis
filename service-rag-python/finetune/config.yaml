@@ -1,11 +1,17 @@
+# ==============================================================================
+# Pure Hugging Face Fine-Tuning Configuration for NVIDIA H100 (80GB VRAM)
+# Target Model: Google Gemma 4 E4B (Multimodal, 128k context, native system role)
+# ==============================================================================
+
 model:
-  name_or_path: "unsloth/gemma-2-2b-it-bnb-4bit" # Switched to 2B to fit inside 6GB VRAM
-  load_in_4bit: true
+  name_or_path: "google/gemma-4-E4B-it"
+  load_in_4bit: false # Pure 16-bit BF16 (No quantization noise; maximum Tensor Core throughput)
+  attn_implementation: "flash_attention_2"
 
 lora:
-  r: 16
-  lora_alpha: 32
-  target_modules: 
+  r: 32 # Higher rank captures nuanced legal reasoning and statutory exceptions
+  lora_alpha: 64 # Standard scaling ratio (alpha / r = 2.0)
+  target_modules:
     - "q_proj"
     - "k_proj"
     - "v_proj"
@@ -13,26 +19,28 @@ lora:
     - "gate_proj"
     - "up_proj"
     - "down_proj"
-  lora_dropout: 0 # Unsloth optimizes dropout = 0
+  lora_dropout: 0.0 # Standard 0.0 dropout for modern instruction LoRA
   bias: "none"
 
 training:
-  output_dir: "./output/gemma4-civil-code-qlora"
+  output_dir: "./output/gemma-4-e4b-civil-code-lora"
   num_train_epochs: 3
-  per_device_train_batch_size: 1 # Reduced from 2 to fit in 6GB VRAM
-  gradient_accumulation_steps: 8 # Increased to maintain effective batch size of 8
-  learning_rate: 2.0e-5 # Lowered from 2e-4. Gemma-2 is very sensitive and will output word salad on high learning rates.
+  per_device_train_batch_size: 8 # Optimized for H100 80GB (~24 GB VRAM used out of 80 GB)
+  gradient_accumulation_steps: 2 # Effective batch size = 16
+  learning_rate: 1.0e-4 # Optimal learning rate for 16-bit LoRA on Gemma 4
   lr_scheduler_type: "cosine"
-  warmup_ratio: 0.1 # Increased slightly to prevent early loss spikes
-  max_seq_length: 1024 # Reduced from 2048 to save activation memory on 6GB GPU
-  packing: false
+  warmup_ratio: 0.05
+  max_seq_length: 2048 # Accommodates 100% of dataset samples (0% truncation)
   bf16: true
+  fp16: false
+  optim: "adamw_torch_fused" # Fast fused AdamW for NVIDIA Hopper Tensor Cores
   logging_steps: 10
   save_strategy: "epoch"
   eval_strategy: "epoch"
   load_best_model_at_end: true
   metric_for_best_model: "eval_loss"
   seed: 3407
+  dataloader_num_workers: 4
 
 dataset:
   train_file: "train_clean.jsonl"

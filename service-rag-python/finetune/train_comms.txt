@@ -1,0 +1,41 @@
+# ==============================================================================
+# CIVIL-LEX: RunPod H100 Fine-Tuning Commands
+# ==============================================================================
+
+# 1. Navigate to the fine-tuning directory
+cd /workspace/finetune   # or cd service-rag-python/finetune
+
+# 2. Virtual Environment (IMPORTANT FOR RUNPOD):
+# In RunPod, the container is ALREADY an isolated Docker instance with PyTorch + CUDA pre-installed.
+# If you are in the failed empty venv, first remove it:
+deactivate
+rm -rf venv
+
+# OPTION A (Recommended on RunPod): Use the container directly (no venv needed)
+pip install setuptools wheel packaging ninja
+
+# OPTION B (If you prefer using a venv): You MUST include --system-site-packages
+# python3 -m venv venv --system-site-packages
+# source venv/bin/activate
+# pip install setuptools wheel packaging ninja
+
+# 3. Dependencies
+# Note: flash-attn is optional; finetune_gemma4.py will automatically fall back to
+# native PyTorch SDPA (Scaled Dot-Product Attention) which is equally fast on H100!
+pip install flash-attn --no-build-isolation || echo "Proceeding with PyTorch native SDPA"
+pip install -r requirements.txt
+
+# 4. Log in to Hugging Face (Required for gated Gemma models)
+# Option A: Interactive CLI login (paste your token when prompted)
+huggingface-cli login
+# Option B (or export as env variable):
+# export HF_TOKEN="hf_your_token_here"
+
+# 5. Launch training (Google Gemma 4 E4B in pure BF16)
+python finetune_gemma4.py
+
+# 6. Losslessly merge LoRA weights directly into BF16 base weights
+python merge_lora.py
+
+# 7. (Optional) Export to GGUF for LM Studio / Ollama
+python export_gguf.py

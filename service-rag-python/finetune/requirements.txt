@@ -1,20 +1,26 @@
-# Fine-Tuning Environment (Unsloth + TRL) for Windows
-# ===================================================
-# 1. First, install PyTorch 2.5.1 with CUDA 12.1 (Must be done BEFORE running pip install -r):
-# pip install torch==2.5.1 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+# ==============================================================================
+# Pure Hugging Face Training Stack for NVIDIA H100 (80GB VRAM / CUDA 12.4+)
+# Zero Unsloth dependencies — Native PyTorch, TRL, PEFT, and FlashAttention-2
+# ==============================================================================
+# Installation Instructions:
+#
+# 1. Install FlashAttention-2 (Native Hopper Tensor Core acceleration):
+#    pip install packaging ninja
+#    pip install flash-attn --no-build-isolation
+#
+# 2. Install Fine-Tuning Dependencies:
+#    pip install -r requirements.txt
+# ==============================================================================
 
-# 2. Install the rest of the dependencies:
-unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git
-trl
-peft
-accelerate
-bitsandbytes
-transformers
-datasets
-pyyaml
-
-# ===================================================
-#  WINDOWS TROUBLESHOOTING NOTES:
-# - Do NOT install `xformers`. PyTorch 2.5.1 has native SDPA (Flash Attention) built-in. Compiling xformers on Windows is unnecessary and prone to failure.
-# - If your script crashes with `AttributeError: module 'torch' has no attribute 'int1'`, it means a package automatically pulled in `torchao` which breaks PyTorch 2.5. Fix it by running:
-#   pip uninstall -y torchao
+transformers>=4.48.0
+trl>=0.12.0
+peft>=0.13.0
+accelerate>=1.0.0
+datasets>=3.0.0
+bitsandbytes>=0.44.0
+safetensors>=0.4.5
+pyyaml>=6.0.0
+sentencepiece>=0.2.0
+protobuf>=4.25.0
+huggingface_hub>=0.26.0
+scipy

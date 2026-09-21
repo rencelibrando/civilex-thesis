@@ -378,7 +378,7 @@ export default function DashboardPage() {
               </span>
             </div>
             <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-foreground">
-              Welcome back, {userName ? `Atty. ${userName}` : "Counsel"}
+              Welcome back{userName ? `, ${userName}` : ""}
             </h1>
             <p className="text-sm sm:text-base text-muted-foreground max-w-2xl">
               Philippine Civil Law statutory analysis, Supreme Court jurisprudence retrieval, and automated document compliance.

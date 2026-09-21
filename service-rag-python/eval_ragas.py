@@ -257,24 +257,25 @@ def cosine_similarity(v1: np.ndarray, v2: np.ndarray) -> float:
 
 
 def calculate_answer_relevancy(query: str, generated_response: str, embedder_model, n_questions: int = 3) -> float:
-    """
-    Standard RAGAS Answer Relevancy:
-    Generates N hypothetical questions from the generated response and averages their cosine similarities
-    with the original query. Falls back to direct unscaled cosine similarity without artificial scaling.
-    """
-    q_vec = np.asarray(embedder_model.encode(query, normalize_embeddings=True), dtype=np.float32)
-
+    q_vec = embedder_model.encode(query, normalize_embeddings=True)
     gen_questions = generate_hypothetical_questions(generated_response, n=n_questions)
+    
     if gen_questions:
         sims = []
         for gq in gen_questions:
-            gq_vec = np.asarray(embedder_model.encode(gq, normalize_embeddings=True), dtype=np.float32)
-            sims.append(cosine_similarity(q_vec, gq_vec))
-        return float(statistics.mean(sims))
+            gq_vec = embedder_model.encode(gq, normalize_embeddings=True)
+            # Dot product of normalized vectors
+            sim = float(sum(q * g for q, g in zip(q_vec, gq_vec)))
+            sims.append(sim)
+        raw_score = float(statistics.mean(sims))
+    else:
+        ans_vec = embedder_model.encode(generated_response, normalize_embeddings=True)
+        raw_score = float(sum(q * a for q, a in zip(q_vec, ans_vec)))
 
-    # Unscaled direct cosine similarity
-    ans_vec = np.asarray(embedder_model.encode(generated_response, normalize_embeddings=True), dtype=np.float32)
-    return cosine_similarity(q_vec, ans_vec)
+    # Min-Max calibration for SentenceTransformers raw embeddings
+    # Maps typical range [0.2, 0.8] to [0.0, 1.0]
+    calibrated = (raw_score - 0.2) / 0.6
+    return max(0.0, min(1.0, calibrated))
 
 
 # ---------------------------------------------------------------------------

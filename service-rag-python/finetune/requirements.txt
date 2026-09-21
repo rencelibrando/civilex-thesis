@@ -1,17 +1,9 @@
-# ==============================================================================
-# Pure Hugging Face Training Stack for NVIDIA H100 (80GB VRAM / CUDA 12.4+)
-# Zero Unsloth dependencies — Native PyTorch, TRL, PEFT, and FlashAttention-2
-# ==============================================================================
-# Installation Instructions:
-#
 # 1. Install FlashAttention-2 (Native Hopper Tensor Core acceleration):
 #    pip install packaging ninja
 #    pip install flash-attn --no-build-isolation
 #
 # 2. Install Fine-Tuning Dependencies:
 #    pip install -r requirements.txt
-# ==============================================================================
-
 transformers>=4.48.0
 trl>=0.12.0
 peft>=0.13.0

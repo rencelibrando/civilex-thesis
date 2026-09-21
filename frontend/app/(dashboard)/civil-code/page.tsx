@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useEffect, useMemo, useRef, useCallback } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback, Suspense } from "react";
+import { useSearchParams } from "next/navigation";
 import { BookOpen, ChevronRight, ChevronDown, Search, ArrowRight, Bookmark, Loader2, ChevronsUpDown, ChevronsDownUp, FileText, AlertCircle, List } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { Input } from "@/components/ui/input";
@@ -42,7 +43,20 @@ type FlatRow = {
     nodeRef: TreeNode;
 };
 
-export default function CivilCodePage() {
+function findTocPath(nodes: TreeNode[], targetId: string, trail: string[] = []): string[] | null {
+    for (const node of nodes) {
+        const next = [...trail, node.id];
+        if (node.id === targetId) return next;
+        if (node.children) {
+            const found = findTocPath(node.children, targetId, next);
+            if (found) return found;
+        }
+    }
+    return null;
+}
+
+function CivilCodeContent() {
+    const searchParams = useSearchParams();
     const [tocData, setTocData] = useState<TreeNode[]>([]);
     const [loadingToc, setLoadingToc] = useState(true);
     const [tocError, setTocError] = useState("");
@@ -61,6 +75,10 @@ export default function CivilCodePage() {
 
     const scrollContainerRef = useRef<HTMLDivElement>(null);
 
+    // Deep-link state (dashboard Civil Code Divisions -> TOC section/article)
+    const lastDeepLinkKey = useRef<string | null>(null);
+    const pendingScrollId = useRef<string | null>(null);
+
     useEffect(() => {
         async function fetchTOC() {
             try {
@@ -74,22 +92,8 @@ export default function CivilCodePage() {
 
                 setTocData(data.toc);
 
-                // Auto-expand Books (depth 0) and Titles (depth 1) by default
-                if (data.toc && data.toc.length > 0) {
-                    const initialExpanded: Record<string, boolean> = {};
-                    const walk = (nodes: TreeNode[], depth: number = 0) => {
-                        for (const node of nodes) {
-                            if (node.children && node.children.length > 0) {
-                                if (depth <= 1) {
-                                    initialExpanded[node.id] = true;
-                                }
-                                walk(node.children, depth + 1);
-                            }
-                        }
-                    };
-                    walk(data.toc, 0);
-                    setExpandedNodes(initialExpanded);
-                }
+                // Default to collapsed all; deep-link effect expands ?toc/?article paths
+                setExpandedNodes({});
             } catch (err: unknown) {
                 const message = err instanceof Error ? err.message : "An error occurred";
                 setTocError(message);
@@ -239,6 +243,52 @@ export default function CivilCodePage() {
         estimateSize: () => 36,
         overscan: 20,
     });
+
+    // Deep-link: ?toc=<branchId>&article=<leafId> from dashboard divisions
+    useEffect(() => {
+        if (tocData.length === 0 || loadingToc) return;
+        const tocParam = searchParams.get("toc");
+        const articleParam = searchParams.get("article");
+        const key = `${tocParam ?? ""}|${articleParam ?? ""}`;
+        if (!tocParam && !articleParam) return;
+        if (lastDeepLinkKey.current === key) return;
+        lastDeepLinkKey.current = key;
+
+        const targetId = articleParam || tocParam;
+        if (!targetId) return;
+        const path = findTocPath(tocData, targetId);
+        if (!path) return;
+
+        setExpandedNodes((prev) => {
+            const next = { ...prev };
+            // Expand all ancestors; if target is a branch, expand it too
+            for (const id of path) next[id] = true;
+            return next;
+        });
+        pendingScrollId.current = targetId;
+
+        if (articleParam) {
+            fetchArticle(articleParam);
+        }
+    }, [tocData, loadingToc, searchParams, fetchArticle]);
+
+    // Scroll the TOC to the deep-linked row once it is visible
+    useEffect(() => {
+        const targetId = pendingScrollId.current;
+        if (!targetId || flatRows.length === 0) return;
+        const index = flatRows.findIndex((r) => r.id === targetId);
+        if (index < 0) return;
+        pendingScrollId.current = null;
+        // Wait a tick for the virtualizer to measure new rows
+        const t = setTimeout(() => {
+            try {
+                virtualizer.scrollToIndex(index, { align: "center" });
+            } catch {
+                scrollContainerRef.current?.querySelector(`[data-index="${index}"]`)?.scrollIntoView({ block: "center" });
+            }
+        }, 50);
+        return () => clearTimeout(t);
+    }, [flatRows, virtualizer]);
 
     return (
         <div className="flex h-[calc(100dvh-6rem)] md:h-[calc(100dvh-7rem)] gap-6 animate-fade-in bg-background/50">
@@ -580,5 +630,13 @@ export default function CivilCodePage() {
                 caseData={selectedCase}
             />
         </div>
+    );
+}
+
+export default function CivilCodePage() {
+    return (
+        <Suspense fallback={<div className="p-8 text-sm text-muted-foreground">Loading Civil Code...</div>}>
+            <CivilCodeContent />
+        </Suspense>
     );
 }

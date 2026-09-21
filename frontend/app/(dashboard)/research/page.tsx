@@ -120,9 +120,9 @@ const DOC_STARTER_PROMPTS: DocPromptStarter[] = [
   },
 ];
 
-// ---------------------------------------------------------------------------
+
 // Markdown renderer for assistant messages
-// ---------------------------------------------------------------------------
+
 function AssistantMarkdown({ content }: { content: string }) {
   return (
     <div className="prose prose-sm dark:prose-invert max-w-none
@@ -149,9 +149,9 @@ function AssistantMarkdown({ content }: { content: string }) {
   );
 }
 
-// ---------------------------------------------------------------------------
+
 // Typewriter effect for the starting welcome message
-// ---------------------------------------------------------------------------
+
 function StartingTypewriterMessage({ content }: { content: string }) {
   const [displayedText, setDisplayedText] = useState("");
   const [isDone, setIsDone] = useState(false);
@@ -193,9 +193,9 @@ function StartingTypewriterMessage({ content }: { content: string }) {
   );
 }
 
-// ---------------------------------------------------------------------------
+
 // RAG Live Pipeline Stepper
-// ---------------------------------------------------------------------------
+
 function RagPipelineStepper({ status, isLive }: { status: RagStatus | null; isLive: boolean }) {
   const [isExpanded, setIsExpanded] = useState(false);
 
@@ -355,9 +355,9 @@ function RagPipelineStepper({ status, isLive }: { status: RagStatus | null; isLi
   );
 }
 
-// ---------------------------------------------------------------------------
+
 // DOCX Viewer Component
-// ---------------------------------------------------------------------------
+
 const DocxViewer = ({ fileUrl }: { fileUrl: string }) => {
   const [html, setHtml] = useState<string>('');
   const [loading, setLoading] = useState(true);
@@ -861,16 +861,6 @@ export default function ResearchPage() {
             </SheetTitle>
           </SheetHeader>
           <div className="flex flex-col h-full overflow-hidden">
-            <div className="p-3 border-b border-border">
-              <Button
-                className="w-full bg-primary hover:bg-primary/90 gap-2 shadow-sm cursor-pointer"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={isUploading}
-              >
-                {isUploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
-                {isUploading ? "Uploading..." : "Upload Document"}
-              </Button>
-            </div>
             <ScrollArea className="flex-1 p-2">
               {isLoadingDocs ? (
                 <div className="flex justify-center p-8">
@@ -891,11 +881,10 @@ export default function ResearchPage() {
                         await ensureDocSession(doc.id, doc.filename);
                         setIsDocSheetOpen(false);
                       }}
-                      className={`p-3 rounded-xl cursor-pointer transition-all border ${
-                        activeDocument?.id === doc.id
-                          ? 'bg-primary/10 border-primary/20 shadow-sm'
-                          : 'bg-transparent border-transparent hover:bg-accent'
-                      }`}
+                      className={`p-3 rounded-xl cursor-pointer transition-all border ${activeDocument?.id === doc.id
+                        ? 'bg-primary/10 border-primary/20 shadow-sm'
+                        : 'bg-transparent border-transparent hover:bg-accent'
+                        }`}
                     >
                       <p className={`text-sm font-medium line-clamp-2 ${activeDocument?.id === doc.id ? 'text-primary' : 'text-foreground'}`}>
                         {doc.filename}
@@ -941,14 +930,6 @@ export default function ResearchPage() {
             </div>
             <div className="flex flex-col gap-2">
               <Button
-                className="w-full bg-primary hover:bg-primary/90 gap-2 shadow-sm cursor-pointer"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={isUploading}
-              >
-                {isUploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
-                {isUploading ? "Uploading..." : "Upload Document"}
-              </Button>
-              <Button
                 type="button"
                 variant={!activeDocument ? "secondary" : "outline"}
                 size="sm"
@@ -959,11 +940,11 @@ export default function ResearchPage() {
                   }
                 }}
                 className={`w-full gap-2 text-xs font-medium cursor-pointer transition-all ${!activeDocument
-                    ? 'bg-primary/15 text-primary border-primary/30 shadow-2xs font-semibold'
-                    : 'border-border/80 text-muted-foreground hover:text-foreground hover:bg-accent'
+                  ? 'bg-primary text-primary-foreground hover:bg-primary/90 shadow-2xs font-semibold'
+                  : 'border-border/80 text-foreground bg-accent/50 hover:bg-accent'
                   }`}
               >
-                <Plus className="w-3.5 h-3.5 text-primary" />
+                <Plus className={`w-3.5 h-3.5 ${!activeDocument ? 'text-primary-foreground' : 'text-primary'}`} />
                 <span>+ New Blank Analysis</span>
               </Button>
             </div>
@@ -1090,7 +1071,7 @@ export default function ResearchPage() {
                 >
                   {isDocListCollapsed ? (
                     <>
-                    <PanelLeftOpen className="w-3.5 h-3.5 text-primary shrink-0" />
+                      <PanelLeftOpen className="w-3.5 h-3.5 text-primary shrink-0" />
                       <span className="hidden sm:inline">Documents</span>
                       <span className="text-[10px] font-mono px-1.5 py-0.2 rounded-full bg-primary/10 text-primary">
                         {documents.length}
@@ -1225,8 +1206,8 @@ export default function ResearchPage() {
                   }}
                   onClick={() => fileInputRef.current?.click()}
                   className={`w-full p-8 md:p-10 rounded-2xl border-2 border-dashed transition-all duration-200 cursor-pointer flex flex-col items-center justify-center group ${isDraggingFile
-                      ? 'border-primary bg-primary/10 shadow-lg scale-[1.01]'
-                      : 'border-border/80 hover:border-primary/50 bg-card/60 hover:bg-accent/40 shadow-xs'
+                    ? 'border-primary bg-primary/10 shadow-lg scale-[1.01]'
+                    : 'border-border/80 hover:border-primary/50 bg-card/60 hover:bg-accent/40 shadow-xs'
                     }`}
                 >
                   <div className={`w-16 h-16 rounded-2xl flex items-center justify-center mb-4 transition-transform group-hover:scale-110 duration-200 ${isDraggingFile ? 'bg-primary text-primary-foreground' : 'bg-primary/10 text-primary border border-primary/20'
@@ -1406,17 +1387,16 @@ export default function ResearchPage() {
           >
             <div className="flex items-start justify-between gap-2">
               <div className="flex items-center gap-2.5 min-w-0">
-                <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 border transition-transform group-hover:scale-105 ${
-                  legalAnalytics.is_out_of_domain || legalAnalytics.nli_score == null
-                    ? "bg-muted/80 border-border text-muted-foreground"
-                    : legalAnalytics.is_document_legal === false || (legalAnalytics.nli_score !== null && legalAnalytics.nli_score < 40)
-                      ? "bg-rose-500/10 border-rose-500/20 text-rose-600 dark:text-rose-400"
-                      : legalAnalytics.nli_score >= 85
-                        ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-600 dark:text-emerald-400"
-                        : legalAnalytics.nli_score >= 70
-                          ? "bg-blue-500/10 border-blue-500/20 text-blue-600 dark:text-blue-400"
-                          : "bg-amber-500/10 border-amber-500/20 text-amber-600 dark:text-amber-400"
-                }`}>
+                <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 border transition-transform group-hover:scale-105 ${legalAnalytics.is_out_of_domain || legalAnalytics.nli_score == null
+                  ? "bg-muted/80 border-border text-muted-foreground"
+                  : legalAnalytics.is_document_legal === false || (legalAnalytics.nli_score !== null && legalAnalytics.nli_score < 40)
+                    ? "bg-rose-500/10 border-rose-500/20 text-rose-600 dark:text-rose-400"
+                    : legalAnalytics.nli_score >= 85
+                      ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-600 dark:text-emerald-400"
+                      : legalAnalytics.nli_score >= 70
+                        ? "bg-blue-500/10 border-blue-500/20 text-blue-600 dark:text-blue-400"
+                        : "bg-amber-500/10 border-amber-500/20 text-amber-600 dark:text-amber-400"
+                  }`}>
                   {legalAnalytics.is_out_of_domain || legalAnalytics.nli_score == null ? (
                     <Compass className="w-4 h-4 text-muted-foreground" />
                   ) : (
@@ -1450,17 +1430,16 @@ export default function ResearchPage() {
 
               <div className="flex items-center gap-1 shrink-0">
                 <span
-                  className={`text-xs font-bold px-2 py-0.5 rounded-md border tabular-nums ${
-                    legalAnalytics.is_out_of_domain || legalAnalytics.nli_score == null
-                      ? "text-muted-foreground bg-muted/60 border-border"
-                      : legalAnalytics.is_document_legal === false || (legalAnalytics.nli_score !== null && legalAnalytics.nli_score < 40)
-                        ? "text-rose-700 dark:text-rose-400 bg-rose-50 dark:bg-rose-950/50 border-rose-200 dark:border-rose-800/60"
-                        : legalAnalytics.nli_score >= 85
-                          ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
-                          : legalAnalytics.nli_score >= 70
-                            ? "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60"
-                            : "text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/50 border-amber-200 dark:border-amber-800/60"
-                  }`}
+                  className={`text-xs font-bold px-2 py-0.5 rounded-md border tabular-nums ${legalAnalytics.is_out_of_domain || legalAnalytics.nli_score == null
+                    ? "text-muted-foreground bg-muted/60 border-border"
+                    : legalAnalytics.is_document_legal === false || (legalAnalytics.nli_score !== null && legalAnalytics.nli_score < 40)
+                      ? "text-rose-700 dark:text-rose-400 bg-rose-50 dark:bg-rose-950/50 border-rose-200 dark:border-rose-800/60"
+                      : legalAnalytics.nli_score >= 85
+                        ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
+                        : legalAnalytics.nli_score >= 70
+                          ? "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60"
+                          : "text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/50 border-amber-200 dark:border-amber-800/60"
+                    }`}
                 >
                   {legalAnalytics.is_out_of_domain || legalAnalytics.is_document_legal === false || legalAnalytics.nli_score == null
                     ? "N/A"
@@ -1473,25 +1452,23 @@ export default function ResearchPage() {
             {/* Dynamic Visual Progress Meter */}
             <div className="w-full bg-muted/70 dark:bg-muted/40 rounded-full h-1.5 overflow-hidden mt-2.5">
               <div
-                className={`h-full rounded-full transition-all duration-700 ease-out ${
-                  legalAnalytics.is_out_of_domain || legalAnalytics.nli_score == null
-                    ? "bg-muted-foreground/30"
-                    : legalAnalytics.is_document_legal === false || (legalAnalytics.nli_score !== null && legalAnalytics.nli_score < 40)
-                      ? "bg-rose-500"
-                      : legalAnalytics.nli_score >= 85
-                        ? "bg-emerald-500"
-                        : legalAnalytics.nli_score >= 70
-                          ? "bg-blue-500"
-                          : "bg-amber-500"
-                }`}
+                className={`h-full rounded-full transition-all duration-700 ease-out ${legalAnalytics.is_out_of_domain || legalAnalytics.nli_score == null
+                  ? "bg-muted-foreground/30"
+                  : legalAnalytics.is_document_legal === false || (legalAnalytics.nli_score !== null && legalAnalytics.nli_score < 40)
+                    ? "bg-rose-500"
+                    : legalAnalytics.nli_score >= 85
+                      ? "bg-emerald-500"
+                      : legalAnalytics.nli_score >= 70
+                        ? "bg-blue-500"
+                        : "bg-amber-500"
+                  }`}
                 style={{
-                  width: `${
-                    legalAnalytics.is_out_of_domain || legalAnalytics.nli_score == null
-                      ? 0
-                      : legalAnalytics.is_document_legal === false
-                        ? 12
-                        : Math.min(100, Math.max(0, legalAnalytics.nli_score))
-                  }%`,
+                  width: `${legalAnalytics.is_out_of_domain || legalAnalytics.nli_score == null
+                    ? 0
+                    : legalAnalytics.is_document_legal === false
+                      ? 12
+                      : Math.min(100, Math.max(0, legalAnalytics.nli_score))
+                    }%`,
                 }}
               />
             </div>
@@ -1500,17 +1477,16 @@ export default function ResearchPage() {
             <div className="flex items-center justify-between mt-2 text-[10px]">
               <span className="flex items-center gap-1.5 text-muted-foreground">
                 <span
-                  className={`w-1.5 h-1.5 rounded-full ${
-                    legalAnalytics.is_out_of_domain || legalAnalytics.nli_score == null
-                      ? "bg-muted-foreground/50"
-                      : legalAnalytics.is_document_legal === false || (legalAnalytics.nli_score !== null && legalAnalytics.nli_score < 40)
-                        ? "bg-rose-500"
-                        : legalAnalytics.nli_score >= 85
-                          ? "bg-emerald-500 animate-pulse"
-                          : legalAnalytics.nli_score >= 70
-                            ? "bg-blue-500"
-                            : "bg-amber-500"
-                  }`}
+                  className={`w-1.5 h-1.5 rounded-full ${legalAnalytics.is_out_of_domain || legalAnalytics.nli_score == null
+                    ? "bg-muted-foreground/50"
+                    : legalAnalytics.is_document_legal === false || (legalAnalytics.nli_score !== null && legalAnalytics.nli_score < 40)
+                      ? "bg-rose-500"
+                      : legalAnalytics.nli_score >= 85
+                        ? "bg-emerald-500 animate-pulse"
+                        : legalAnalytics.nli_score >= 70
+                          ? "bg-blue-500"
+                          : "bg-amber-500"
+                    }`}
                 />
                 {legalAnalytics.is_out_of_domain || legalAnalytics.nli_score == null
                   ? legalAnalytics.domain_category === "other_legal"
@@ -1960,8 +1936,8 @@ export default function ResearchPage() {
                 isDocProcessing
                   ? `Please wait while ${activeDocument?.filename || 'document'} is being processed...`
                   : activeDocument
-                  ? `Ask about ${activeDocument.filename}...`
-                  : "Ask a general question..."
+                    ? `Ask about ${activeDocument.filename}...`
+                    : "Ask a general question..."
               }
               className="flex-1 bg-transparent dark:bg-transparent border-none shadow-none outline-none focus:outline-none focus:ring-0 text-foreground placeholder:text-muted-foreground px-4 h-11 text-sm disabled:cursor-not-allowed"
             />

@@ -11,9 +11,9 @@ import React, {
 } from "react";
 import { supabase } from "@/lib/supabase";
 
-// ---------------------------------------------------------------------------
+
 // Types & Interfaces
-// ---------------------------------------------------------------------------
+
 export type RagStage =
   | "idle"
   | "embedding"
@@ -58,9 +58,9 @@ export interface StarterPrompt {
   shortTag: string;
 }
 
-// ---------------------------------------------------------------------------
+
 // Rich Legal Prompt Repository (Philippine Civil Law)
-// ---------------------------------------------------------------------------
+
 export const ALL_STARTER_PROMPTS: StarterPrompt[] = [
   // Contracts & Obligations
   {
@@ -235,9 +235,9 @@ export function getRandomStarters(count: number = 3): StarterPrompt[] {
   return pool.slice(0, count);
 }
 
-// ---------------------------------------------------------------------------
+
 // Follow-up Generator
-// ---------------------------------------------------------------------------
+
 export function generateFollowUpPrompts(lastAnswer: string, citations: any[] = []): string[] {
   if (!lastAnswer || lastAnswer.trim().length < 20) return [];
 
@@ -304,9 +304,9 @@ export function generateFollowUpPrompts(lastAnswer: string, citations: any[] = [
   return suggestions.slice(0, 3);
 }
 
-// ---------------------------------------------------------------------------
+
 // Context Interface
-// ---------------------------------------------------------------------------
+
 interface ChatContextType {
   messages: Message[];
   setMessages: React.Dispatch<React.SetStateAction<Message[]>>;
@@ -405,9 +405,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     setStarterPrompts(getRandomStarters(3));
   }, []);
 
-  // ---------------------------------------------------------------------------
+
   // Character Stream Queue Management
-  // ---------------------------------------------------------------------------
+
   const flushCharQueueInstantly = useCallback(() => {
     const queue = charQueueRef.current;
     if (queue.length > 0 && activeAssistantIdRef.current !== null) {
@@ -475,9 +475,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  // ---------------------------------------------------------------------------
+
   // Background Tab Switching Handler (visibilitychange)
-  // ---------------------------------------------------------------------------
+
   useEffect(() => {
     if (typeof document === "undefined") return;
 
@@ -494,9 +494,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     };
   }, [flushCharQueueInstantly]);
 
-  // ---------------------------------------------------------------------------
+
   // Stop Generating
-  // ---------------------------------------------------------------------------
+
   const handleStop = useCallback(() => {
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
@@ -507,9 +507,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     setRagStatus((prev) => (prev ? { ...prev, stage: "completed" } : null));
   }, [stopCharStream]);
 
-  // ---------------------------------------------------------------------------
+
   // New Chat (Immediately stops any running request)
-  // ---------------------------------------------------------------------------
+
   const handleNewChat = useCallback(() => {
     // 1. Instantly abort any active fetch request
     if (abortControllerRef.current) {
@@ -541,9 +541,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     refreshStarters();
   }, [refreshStarters]);
 
-  // ---------------------------------------------------------------------------
+
   // Send Message
-  // ---------------------------------------------------------------------------
+
   const handleSend = async (overrideText?: string) => {
     const userText = (overrideText ?? inputValue).trim();
     if (!userText || isTyping) return;
@@ -699,10 +699,10 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                     prev.map((msg) =>
                       msg.id === assistantId
                         ? {
-                            ...msg,
-                            legalAnalytics: analytics,
-                            ...(analytics?.is_out_of_domain ? { citations: [] } : {}),
-                          }
+                          ...msg,
+                          legalAnalytics: analytics,
+                          ...(analytics?.is_out_of_domain ? { citations: [] } : {}),
+                        }
                         : msg
                     )
                   );

@@ -10,7 +10,6 @@ import {
   MessageSquare,
   Trash2,
   Pencil,
-  ArrowUpDown,
   X,
   AlertTriangle,
   Loader2,
@@ -45,11 +44,9 @@ interface Session {
   document_id?: string;
 }
 
-type SortOption = "newest" | "oldest" | "az" | "za";
 
-// ---------------------------------------------------------------------------
 // Time grouping & formatting helpers
-// ---------------------------------------------------------------------------
+
 function formatRelativeTime(dateString: string): string {
   const date = new Date(dateString);
   const now = new Date();
@@ -93,7 +90,6 @@ export default function HistoryPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<"all" | "legal" | "document">("all");
-  const [sortBy, setSortBy] = useState<SortOption>("newest");
 
   // Rename modal state
   const [renamingSession, setRenamingSession] = useState<Session | null>(null);
@@ -230,25 +226,13 @@ export default function HistoryPage() {
       list = list.filter((s) => s.title.toLowerCase().includes(q));
     }
 
-    // Sort
+    // Sort: always newest first
     list.sort((a, b) => {
-      if (sortBy === "newest") {
-        return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
-      }
-      if (sortBy === "oldest") {
-        return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
-      }
-      if (sortBy === "az") {
-        return a.title.localeCompare(b.title);
-      }
-      if (sortBy === "za") {
-        return b.title.localeCompare(a.title);
-      }
-      return 0;
+      return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
     });
 
     return list;
-  }, [sessions, activeTab, searchQuery, sortBy]);
+  }, [sessions, activeTab, searchQuery]);
 
   // Grouped by time period
   const groupedSessions = useMemo(() => {
@@ -293,35 +277,10 @@ export default function HistoryPage() {
               Review, organize, and resume your statutory inquiries, consultation drafts, and document verification audits.
             </p>
           </div>
-
-          <div className="flex items-center gap-2 shrink-0 self-start sm:self-center">
-            <Link
-              href="/research"
-              className={buttonVariants({
-                variant: "outline",
-                size: "sm",
-                className: "rounded-xl h-9 px-3 text-xs font-medium border-border/80 hover:bg-accent cursor-pointer",
-              })}
-            >
-              <FileText className="w-3.5 h-3.5 mr-1.5 text-emerald-600 dark:text-emerald-400" />
-              Upload Document
-            </Link>
-            <Link
-              href="/chat"
-              className={buttonVariants({
-                size: "sm",
-                className:
-                  "rounded-xl h-9 px-3.5 text-xs font-medium bg-primary text-primary-foreground hover:bg-primary/90 shadow-xs cursor-pointer",
-              })}
-            >
-              <Plus className="w-3.5 h-3.5 mr-1.5" />
-              New Chat
-            </Link>
-          </div>
         </div>
 
         {/* =============================================================== */}
-        {/* 2. CONTROLS BAR: SEARCH, TABS & SORT                           */}
+        {/* 2. CONTROLS BAR: SEARCH & TABS                               */}
         {/* =============================================================== */}
         <div className="space-y-4">
           <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
@@ -344,24 +303,6 @@ export default function HistoryPage() {
                 </button>
               )}
             </div>
-
-            {/* Sort Selector */}
-            <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
-              <span className="text-xs text-muted-foreground font-medium flex items-center gap-1">
-                <ArrowUpDown className="w-3.5 h-3.5 text-muted-foreground" />
-                Sort:
-              </span>
-              <select
-                value={sortBy}
-                onChange={(e) => setSortBy(e.target.value as SortOption)}
-                className="bg-card border border-border/80 text-foreground text-xs rounded-xl px-3 py-2 outline-none focus:border-primary/50 cursor-pointer font-medium"
-              >
-                <option value="newest">Newest First</option>
-                <option value="oldest">Oldest First</option>
-                <option value="az">Title (A to Z)</option>
-                <option value="za">Title (Z to A)</option>
-              </select>
-            </div>
           </div>
 
           {/* Three-Tier Filter Tabs */}
@@ -369,11 +310,10 @@ export default function HistoryPage() {
             <button
               type="button"
               onClick={() => setActiveTab("all")}
-              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors cursor-pointer ${
-                activeTab === "all"
-                  ? "bg-background text-foreground shadow-xs font-semibold"
-                  : "text-muted-foreground hover:text-foreground"
-              }`}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors cursor-pointer ${activeTab === "all"
+                ? "bg-background text-foreground shadow-xs font-semibold"
+                : "text-muted-foreground hover:text-foreground"
+                }`}
             >
               <Layers className="w-3.5 h-3.5" />
               <span>All History</span>
@@ -385,11 +325,10 @@ export default function HistoryPage() {
             <button
               type="button"
               onClick={() => setActiveTab("legal")}
-              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors cursor-pointer ${
-                activeTab === "legal"
-                  ? "bg-background text-foreground shadow-xs font-semibold"
-                  : "text-muted-foreground hover:text-foreground"
-              }`}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors cursor-pointer ${activeTab === "legal"
+                ? "bg-background text-foreground shadow-xs font-semibold"
+                : "text-muted-foreground hover:text-foreground"
+                }`}
             >
               <MessageSquare className="w-3.5 h-3.5 text-primary" />
               <span>Consultations</span>
@@ -401,11 +340,10 @@ export default function HistoryPage() {
             <button
               type="button"
               onClick={() => setActiveTab("document")}
-              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors cursor-pointer ${
-                activeTab === "document"
-                  ? "bg-background text-foreground shadow-xs font-semibold"
-                  : "text-muted-foreground hover:text-foreground"
-              }`}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors cursor-pointer ${activeTab === "document"
+                ? "bg-background text-foreground shadow-xs font-semibold"
+                : "text-muted-foreground hover:text-foreground"
+                }`}
             >
               <FileText className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
               <span>Document Audits</span>
@@ -451,7 +389,7 @@ export default function HistoryPage() {
                   : "Start an AI consultation on Philippine Civil Law or upload a contract/pleading to build your case archives."}
               </p>
             </div>
-            {searchQuery ? (
+            {searchQuery && (
               <Button
                 variant="outline"
                 size="sm"
@@ -460,15 +398,6 @@ export default function HistoryPage() {
               >
                 Clear Search
               </Button>
-            ) : (
-              <div className="flex items-center justify-center gap-2.5 pt-2">
-                <Link href="/chat" className={buttonVariants({ variant: "outline", size: "sm", className: "rounded-xl text-xs" })}>
-                  <MessageSquare className="w-3.5 h-3.5 mr-1.5 text-primary" /> Start Consultation
-                </Link>
-                <Link href="/research" className={buttonVariants({ variant: "outline", size: "sm", className: "rounded-xl text-xs" })}>
-                  <FileText className="w-3.5 h-3.5 mr-1.5 text-emerald-600 dark:text-emerald-400" /> Upload Document
-                </Link>
-              </div>
             )}
           </div>
         ) : (
@@ -509,11 +438,10 @@ export default function HistoryPage() {
                           <CardContent className="p-3.5 sm:p-4 flex items-center justify-between gap-3">
                             <Link href={linkHref} className="flex items-center gap-3.5 min-w-0 flex-1 cursor-pointer">
                               <div
-                                className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 transition-colors ${
-                                  isDoc
-                                    ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 group-hover:bg-emerald-500/20"
-                                    : "bg-primary/10 text-primary group-hover:bg-primary/20"
-                                }`}
+                                className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 transition-colors ${isDoc
+                                  ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 group-hover:bg-emerald-500/20"
+                                  : "bg-primary/10 text-primary group-hover:bg-primary/20"
+                                  }`}
                               >
                                 {isDoc ? <FileText className="w-5 h-5" /> : <MessageSquare className="w-5 h-5" />}
                               </div>
@@ -535,11 +463,10 @@ export default function HistoryPage() {
                                   <span>•</span>
                                   <Badge
                                     variant="outline"
-                                    className={`text-[10px] uppercase font-semibold py-0 px-1.5 h-4.5 ${
-                                      isDoc
-                                        ? "text-emerald-600 dark:text-emerald-400 border-emerald-500/20 bg-emerald-500/5"
-                                        : "text-primary border-primary/20 bg-primary/5"
-                                    }`}
+                                    className={`text-[10px] uppercase font-semibold py-0 px-1.5 h-4.5 ${isDoc
+                                      ? "text-emerald-600 dark:text-emerald-400 border-emerald-500/20 bg-emerald-500/5"
+                                      : "text-primary border-primary/20 bg-primary/5"
+                                      }`}
                                   >
                                     {isDoc ? "Document Audit" : "Consultation"}
                                   </Badge>

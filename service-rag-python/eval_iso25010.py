@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
 CIVIL-LEX: ISO/IEC 25010 Automated Evaluation Benchmark
-======================================================
 Evaluates the RAG framework against ISO 25010 Software Product Quality criteria:
 1. Performance Efficiency:
    - Query embedding latency

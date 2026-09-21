@@ -45,9 +45,9 @@ function cleanCaseSummary(text?: string): string {
   return text.replace(/^\[(?:Supporting Case Doctrine|Jurisprudence Doctrine)[^\]]*\]\s*/i, "").trim();
 }
 
-// ---------------------------------------------------------------------------
+
 // Markdown renderer for assistant messages
-// ---------------------------------------------------------------------------
+
 function AssistantMarkdown({ content }: { content: string }) {
   return (
     <div
@@ -74,9 +74,9 @@ function AssistantMarkdown({ content }: { content: string }) {
   );
 }
 
-// ---------------------------------------------------------------------------
+
 // Typewriter effect for the starting welcome message
-// ---------------------------------------------------------------------------
+
 function StartingTypewriterMessage({ content }: { content: string }) {
   const [displayedText, setDisplayedText] = useState("");
   const [isDone, setIsDone] = useState(false);
@@ -119,9 +119,9 @@ function StartingTypewriterMessage({ content }: { content: string }) {
   );
 }
 
-// ---------------------------------------------------------------------------
+
 // RAG Live Pipeline Stepper
-// ---------------------------------------------------------------------------
+
 function RagPipelineStepper({ status, isLive }: { status: RagStatus | null; isLive: boolean }) {
   const [isExpanded, setIsExpanded] = useState(false);
 
@@ -281,9 +281,9 @@ function RagPipelineStepper({ status, isLive }: { status: RagStatus | null; isLi
   );
 }
 
-// ---------------------------------------------------------------------------
+
 // Main Chat Page
-// ---------------------------------------------------------------------------
+
 export default function ChatPage() {
   const router = useRouter();
 
@@ -343,9 +343,9 @@ export default function ChatPage() {
     setIsAutoScrollEnabled(isNearBottom);
   }, []);
 
-  // ---------------------------------------------------------------------------
+
   // URL search params handling (Prompt from dashboard or past Session)
-  // ---------------------------------------------------------------------------
+
   useEffect(() => {
     if (typeof window === "undefined") return;
     const params = new URLSearchParams(window.location.search);
@@ -686,15 +686,14 @@ export default function ChatPage() {
             >
               <div className="flex items-start justify-between gap-2">
                 <div className="flex items-center gap-2.5 min-w-0">
-                  <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 border transition-transform group-hover:scale-105 ${
-                    legalAnalytics.is_out_of_domain || legalAnalytics.nli_score == null
+                  <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 border transition-transform group-hover:scale-105 ${legalAnalytics.is_out_of_domain || legalAnalytics.nli_score == null
                       ? "bg-muted/80 border-border text-muted-foreground"
                       : legalAnalytics.nli_score >= 85
                         ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-600 dark:text-emerald-400"
                         : legalAnalytics.nli_score >= 70
                           ? "bg-blue-500/10 border-blue-500/20 text-blue-600 dark:text-blue-400"
                           : "bg-amber-500/10 border-amber-500/20 text-amber-600 dark:text-amber-400"
-                  }`}>
+                    }`}>
                     {legalAnalytics.is_out_of_domain || legalAnalytics.nli_score == null ? (
                       <Compass className="w-4 h-4 text-muted-foreground" />
                     ) : (
@@ -726,15 +725,14 @@ export default function ChatPage() {
 
                 <div className="flex items-center gap-1 shrink-0">
                   <span
-                    className={`text-xs font-bold px-2 py-0.5 rounded-md border tabular-nums ${
-                      legalAnalytics.is_out_of_domain || legalAnalytics.nli_score == null
+                    className={`text-xs font-bold px-2 py-0.5 rounded-md border tabular-nums ${legalAnalytics.is_out_of_domain || legalAnalytics.nli_score == null
                         ? "text-muted-foreground bg-muted/60 border-border"
                         : legalAnalytics.nli_score >= 85
                           ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
                           : legalAnalytics.nli_score >= 70
                             ? "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60"
                             : "text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/50 border-amber-200 dark:border-amber-800/60"
-                    }`}
+                      }`}
                   >
                     {legalAnalytics.is_out_of_domain || legalAnalytics.nli_score == null ? "N/A" : `${legalAnalytics.nli_score}%`}
                   </span>
@@ -745,21 +743,19 @@ export default function ChatPage() {
               {/* Dynamic Visual Progress Meter */}
               <div className="w-full bg-muted/70 dark:bg-muted/40 rounded-full h-1.5 overflow-hidden mt-2.5">
                 <div
-                  className={`h-full rounded-full transition-all duration-700 ease-out ${
-                    legalAnalytics.is_out_of_domain || legalAnalytics.nli_score == null
+                  className={`h-full rounded-full transition-all duration-700 ease-out ${legalAnalytics.is_out_of_domain || legalAnalytics.nli_score == null
                       ? "bg-muted-foreground/30"
                       : legalAnalytics.nli_score >= 85
                         ? "bg-emerald-500"
                         : legalAnalytics.nli_score >= 70
                           ? "bg-blue-500"
                           : "bg-amber-500"
-                  }`}
+                    }`}
                   style={{
-                    width: `${
-                      legalAnalytics.is_out_of_domain || legalAnalytics.nli_score == null
+                    width: `${legalAnalytics.is_out_of_domain || legalAnalytics.nli_score == null
                         ? 0
                         : Math.min(100, Math.max(0, legalAnalytics.nli_score))
-                    }%`,
+                      }%`,
                   }}
                 />
               </div>
@@ -768,15 +764,14 @@ export default function ChatPage() {
               <div className="flex items-center justify-between mt-2 text-[10px]">
                 <span className="flex items-center gap-1.5 text-muted-foreground">
                   <span
-                    className={`w-1.5 h-1.5 rounded-full ${
-                      legalAnalytics.is_out_of_domain || legalAnalytics.nli_score == null
+                    className={`w-1.5 h-1.5 rounded-full ${legalAnalytics.is_out_of_domain || legalAnalytics.nli_score == null
                         ? "bg-muted-foreground/50"
                         : legalAnalytics.nli_score >= 85
                           ? "bg-emerald-500 animate-pulse"
                           : legalAnalytics.nli_score >= 70
                             ? "bg-blue-500"
                             : "bg-amber-500"
-                    }`}
+                      }`}
                   />
                   {legalAnalytics.is_out_of_domain || legalAnalytics.nli_score == null
                     ? legalAnalytics.domain_category === "other_legal"

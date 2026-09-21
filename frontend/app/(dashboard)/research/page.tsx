@@ -31,6 +31,7 @@ import {
   Plus,
   UploadCloud,
   FolderOpen,
+  HelpCircle,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -46,6 +47,7 @@ import {
   DialogDescription,
 } from "@/components/ui/dialog";
 import { JurisprudenceModal, JurisprudenceCase } from "@/components/jurisprudence-modal";
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { supabase } from "@/lib/supabase";
 import { useDocChat } from "@/context/doc-chat-context";
 import { RagStatus } from "@/context/chat-context";
@@ -462,6 +464,7 @@ export default function ResearchPage() {
   const [docListWidth, setDocListWidth] = useState<number>(260);
   const [chatPanelWidth, setChatPanelWidth] = useState<number>(480);
   const [isDocListCollapsed, setIsDocListCollapsed] = useState(false);
+  const [isDocSheetOpen, setIsDocSheetOpen] = useState(false);
   const [isDraggingDocList, setIsDraggingDocList] = useState(false);
   const [isDraggingChat, setIsDraggingChat] = useState(false);
   const [isNliModalOpen, setIsNliModalOpen] = useState(false);
@@ -848,7 +851,71 @@ export default function ResearchPage() {
       className={`flex h-full gap-0 animate-fade-in bg-background/50 min-h-0 relative select-auto ${isDraggingDocList || isDraggingChat ? "select-none" : ""
         }`}
     >
-      {/* Left Pane - Document List (Dynamically resizable, defaults to 260px, smoothly collapsible) */}
+      {/* Documents Panel - Mobile Sheet */}
+      <Sheet open={isDocSheetOpen} onOpenChange={setIsDocSheetOpen}>
+        <SheetContent side="left" className="w-80 p-0 flex flex-col">
+          <SheetHeader className="p-4 border-b border-border bg-card/50">
+            <SheetTitle className="flex items-center gap-2 text-base">
+              <FileText className="w-5 h-5 text-primary" />
+              My Documents
+            </SheetTitle>
+          </SheetHeader>
+          <div className="flex flex-col h-full overflow-hidden">
+            <div className="p-3 border-b border-border">
+              <Button
+                className="w-full bg-primary hover:bg-primary/90 gap-2 shadow-sm cursor-pointer"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={isUploading}
+              >
+                {isUploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
+                {isUploading ? "Uploading..." : "Upload Document"}
+              </Button>
+            </div>
+            <ScrollArea className="flex-1 p-2">
+              {isLoadingDocs ? (
+                <div className="flex justify-center p-8">
+                  <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+                </div>
+              ) : documents.length === 0 ? (
+                <div className="text-center p-6 text-muted-foreground text-sm flex flex-col items-center">
+                  <File className="w-8 h-8 mb-2 opacity-20" />
+                  <p>No documents uploaded yet.</p>
+                </div>
+              ) : (
+                <div className="flex flex-col gap-1 p-1">
+                  {documents.map(doc => (
+                    <div
+                      key={doc.id}
+                      onClick={async () => {
+                        setActiveDocument(doc);
+                        await ensureDocSession(doc.id, doc.filename);
+                        setIsDocSheetOpen(false);
+                      }}
+                      className={`p-3 rounded-xl cursor-pointer transition-all border ${
+                        activeDocument?.id === doc.id
+                          ? 'bg-primary/10 border-primary/20 shadow-sm'
+                          : 'bg-transparent border-transparent hover:bg-accent'
+                      }`}
+                    >
+                      <p className={`text-sm font-medium line-clamp-2 ${activeDocument?.id === doc.id ? 'text-primary' : 'text-foreground'}`}>
+                        {doc.filename}
+                      </p>
+                      <div className="flex items-center justify-between mt-2">
+                        {getStatusBadge(doc)}
+                        <span className="text-[10px] text-muted-foreground">
+                          {new Date(doc.created_at).toLocaleDateString()}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </ScrollArea>
+          </div>
+        </SheetContent>
+      </Sheet>
+
+      {/* Documents Panel - Desktop (hidden on mobile, resizable) */}
       <div
         style={{ width: isDocListCollapsed ? 0 : `${docListWidth}px` }}
         className={`hidden md:flex flex-col bg-card/80 backdrop-blur-xl rounded-2xl border border-border shadow-sm overflow-hidden flex-shrink-0 min-h-0 transition-[width,opacity,margin,border-color] duration-300 ease-in-out ${isDocListCollapsed ? "!w-0 !p-0 opacity-0 pointer-events-none -mr-1 border-transparent" : "opacity-100"
@@ -994,7 +1061,22 @@ export default function ResearchPage() {
             {/* Toolbar */}
             <div className="p-3 border-b border-border bg-muted/50 flex items-center justify-between shrink-0">
               <div className="flex items-center gap-2 min-w-0">
-                {/* Toggle button to expand/collapse documents list */}
+                {/* Mobile: open doc sheet */}
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setIsDocSheetOpen(true)}
+                  className="md:hidden h-8 gap-1.5 px-2 text-xs font-medium shrink-0"
+                  title="Browse documents"
+                >
+                  <FileText className="w-3.5 h-3.5 text-primary shrink-0" />
+                  <span>Documents</span>
+                  <span className="text-[10px] font-mono px-1.5 rounded-full bg-primary/10 text-primary">
+                    {documents.length}
+                  </span>
+                </Button>
+                {/* Desktop: Toggle button to expand/collapse documents list */}
                 <Button
                   type="button"
                   variant={isDocListCollapsed ? "outline" : "ghost"}
@@ -1008,7 +1090,7 @@ export default function ResearchPage() {
                 >
                   {isDocListCollapsed ? (
                     <>
-                      <PanelLeftOpen className="w-3.5 h-3.5 text-primary shrink-0" />
+                    <PanelLeftOpen className="w-3.5 h-3.5 text-primary shrink-0" />
                       <span className="hidden sm:inline">Documents</span>
                       <span className="text-[10px] font-mono px-1.5 py-0.2 rounded-full bg-primary/10 text-primary">
                         {documents.length}
@@ -1828,7 +1910,7 @@ export default function ResearchPage() {
         {!isTyping && followUpPrompts.length > 0 && messages.length > 1 && (
           <div className="px-3 py-2 border-t border-border/40 bg-card/40 space-y-1.5 animate-fade-in-up transition-all duration-300 ease-out shrink-0">
             <div className="flex items-center gap-1.5 text-[11px] font-semibold text-primary px-0.5">
-              <Sparkles className="w-3.5 h-3.5 text-primary animate-pulse" />
+              <HelpCircle className="w-3.5 h-3.5 text-primary" />
               <span>Suggested Next Inquiries:</span>
             </div>
             <div className="flex flex-row items-center gap-1.5 w-full">

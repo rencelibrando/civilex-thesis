@@ -27,10 +27,8 @@ from sentence_transformers import SentenceTransformer
 # Load environment variables
 load_dotenv()
 
-# ---------------------------------------------------------------------------
 # Custom JSON encoder: handles types that psycopg2 returns but stdlib json
 # cannot serialise out of the box (Decimal, RealDictRow, numpy scalars, etc.)
-# ---------------------------------------------------------------------------
 class LegalJSONEncoder(json.JSONEncoder):
     """Serialise psycopg2 / numpy types that the standard encoder rejects."""
     def default(self, obj):
@@ -358,9 +356,7 @@ PHILIPPINE_LEGAL_EXPANSIONS = [
      'actual moral exemplary nominal liquidated damages Art 2199 Art 2216 Art 2217 Art 2219 Art 2221 Art 2229 Art 2231')
 ]
 
-# ---------------------------------------------------------------------------
 # Query Intent Classification & Domain Boundary Gating
-# ---------------------------------------------------------------------------
 
 NON_LEGAL_PATTERNS = [
     # Programming, Software & Tech
@@ -603,9 +599,7 @@ def compute_embedding(query: str) -> list:
     return embedder.encode(query, normalize_embeddings=True).tolist()
 
 
-# ---------------------------------------------------------------------------
 # Statutory Companion Association Graph & Retrieval Noise Pruning (RAGAS)
-# ---------------------------------------------------------------------------
 
 STATUTORY_COMPANION_GRAPH: Dict[str, List[str]] = {
     # Obligations & Contracts (Rescission, Delay, Damages, Restitution)
@@ -685,7 +679,6 @@ def search_with_embedding(q_emb: list, query: str, document_id: Optional[str] = 
     conn = get_db_connection()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            # Helper function to perform Hybrid Search using RRF
             def hybrid_search(parent_type, limit=5, parent_id=None):
                 raw_words = [w for w in re.split(r'\W+', query) if w]
                 filtered_words = [w for w in raw_words if len(w) > 2 and w.lower() not in SEARCH_STOPWORDS]

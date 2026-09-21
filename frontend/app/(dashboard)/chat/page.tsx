@@ -27,6 +27,7 @@ import {
   Info,
   AlertCircle,
   ArrowRight,
+  HelpCircle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -531,7 +532,7 @@ export default function ChatPage() {
             {messages.length === 1 && (
               <div className="space-y-1.5 animate-fade-in">
                 <div className="flex items-center gap-1.5 px-1 text-[11px] font-medium text-muted-foreground">
-                  <Sparkles className="w-3.5 h-3.5 text-primary" />
+                  <HelpCircle className="w-3.5 h-3.5 text-primary" />
                   <span>Suggested Legal Topics:</span>
                 </div>
 
@@ -564,7 +565,7 @@ export default function ChatPage() {
             {!isTyping && followUpPrompts.length > 0 && messages.length > 1 && (
               <div className="space-y-1.5 animate-fade-in">
                 <div className="flex items-center gap-1.5 text-xs font-semibold text-primary px-1">
-                  <Sparkles className="w-3.5 h-3.5" />
+                  <HelpCircle className="w-3.5 h-3.5" />
                   <span>Suggested Follow-up Inquiries:</span>
                 </div>
                 <div className="flex flex-row items-center gap-2 w-full">

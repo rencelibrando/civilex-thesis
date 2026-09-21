@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
-import { BookOpen, ChevronRight, ChevronDown, Search, ArrowRight, Bookmark, Loader2, ChevronsUpDown, ChevronsDownUp, FileText, AlertCircle } from "lucide-react";
+import { BookOpen, ChevronRight, ChevronDown, Search, ArrowRight, Bookmark, Loader2, ChevronsUpDown, ChevronsDownUp, FileText, AlertCircle, List } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from "@/components/ui/tooltip";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { JurisprudenceModal, JurisprudenceCase, caseFullTextCache, parseJurisprudenceDocument } from "@/components/jurisprudence-modal";
 
 export type { JurisprudenceCase };
@@ -45,6 +46,7 @@ export default function CivilCodePage() {
     const [tocData, setTocData] = useState<TreeNode[]>([]);
     const [loadingToc, setLoadingToc] = useState(true);
     const [tocError, setTocError] = useState("");
+    const [isTocSheetOpen, setIsTocSheetOpen] = useState(false);
 
     const [expandedNodes, setExpandedNodes] = useState<Record<string, boolean>>({});
     const [selectedArticleId, setSelectedArticleId] = useState<string | null>(null);
@@ -239,8 +241,8 @@ export default function CivilCodePage() {
     });
 
     return (
-        <div className="flex h-[calc(100vh-6rem)] md:h-[calc(100vh-7rem)] gap-6 animate-fade-in bg-background/50">
-            {/* Table of Contents - Left Pane */}
+        <div className="flex h-[calc(100dvh-6rem)] md:h-[calc(100dvh-7rem)] gap-6 animate-fade-in bg-background/50">
+            {/* Table of Contents - Left Pane (desktop only) */}
             <div className="hidden md:flex flex-col w-80 bg-card/80 backdrop-blur-xl rounded-2xl border border-border shadow-sm overflow-hidden flex-shrink-0">
                 <div className="p-4 border-b border-border bg-card/50">
                     <div className="flex items-center justify-between mb-2">
@@ -388,8 +390,87 @@ export default function CivilCodePage() {
                 )}
             </div>
 
+            {/* Table of Contents - Mobile Sheet */}
+            <Sheet open={isTocSheetOpen} onOpenChange={setIsTocSheetOpen}>
+              <SheetContent side="left" className="w-80 p-0 flex flex-col">
+                <SheetHeader className="p-4 border-b border-border bg-card/50">
+                  <SheetTitle className="flex items-center gap-2 text-base">
+                    <BookOpen className="w-5 h-5 text-primary" />
+                    Table of Contents
+                  </SheetTitle>
+                </SheetHeader>
+                <div className="flex-1 overflow-hidden flex flex-col">
+                  {/* Reuse the same TOC panel content */}
+                  <div className="p-3 border-b border-border">
+                    <div className="relative">
+                      <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                      <Input
+                        placeholder="Search chapters, articles..."
+                        className="pl-9 bg-background/50 border-border focus-visible:ring-primary shadow-sm"
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                      />
+                    </div>
+                  </div>
+                  <div ref={scrollContainerRef} className="flex-1 overflow-y-auto p-2 min-h-0 custom-scrollbar">
+                    {loadingToc ? (
+                      <div className="space-y-4 p-2">
+                        <Skeleton className="h-6 w-3/4 rounded-md" />
+                        <Skeleton className="h-4 w-5/6 ml-4 rounded-md" />
+                        <Skeleton className="h-4 w-4/6 ml-4 rounded-md" />
+                      </div>
+                    ) : flatRows.map((row) => {
+                      const isSelected = selectedArticleId === row.id;
+                      return (
+                        <button
+                          key={row.id}
+                          className={`w-full flex items-center py-2 px-2 rounded-lg transition-colors duration-150 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ${isSelected ? "bg-primary/10 text-primary font-medium shadow-sm" : "hover:bg-accent"}`}
+                          style={{ paddingLeft: `${row.depth * 1.25 + 0.5}rem` }}
+                          onClick={() => {
+                            row.isLeaf ? fetchArticle(row.id) : toggleNode(row.id);
+                            if (row.isLeaf) setIsTocSheetOpen(false);
+                          }}
+                          aria-expanded={!row.isLeaf ? row.isExpanded : undefined}
+                        >
+                          {!row.isLeaf ? (
+                            row.isExpanded ? (
+                              <ChevronDown className="w-4 h-4 mr-2 text-muted-foreground flex-shrink-0" />
+                            ) : (
+                              <ChevronRight className="w-4 h-4 mr-2 text-muted-foreground flex-shrink-0" />
+                            )
+                          ) : (
+                            <FileText className={`w-3.5 h-3.5 mr-2 flex-shrink-0 ${isSelected ? "text-primary" : "text-muted-foreground/60"}`} />
+                          )}
+                          <span className={`text-sm leading-tight ${row.depth === 0 ? "font-semibold text-foreground" : isSelected ? "text-primary font-medium" : "text-muted-foreground"}`}>
+                            {row.title}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </SheetContent>
+            </Sheet>
+
             {/* Provision Viewer - Right Pane */}
             <div className="flex-1 flex flex-col bg-card/80 backdrop-blur-xl rounded-2xl border border-border shadow-sm overflow-hidden relative">
+                {/* Mobile TOC trigger - visible only below md */}
+                <div className="flex md:hidden items-center gap-2 px-4 py-2 border-b border-border bg-card/50">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="text-xs h-8 rounded-lg"
+                    onClick={() => setIsTocSheetOpen(true)}
+                  >
+                    <List className="w-4 h-4 mr-1.5" />
+                    Browse Articles
+                  </Button>
+                  {selectedArticleId && (
+                    <span className="text-xs text-muted-foreground truncate">
+                      {articleData?.hierarchy.title_name || "Article selected"}
+                    </span>
+                  )}
+                </div>
                 {loadingArticle && (
                     <div className="absolute inset-0 z-10 bg-background/50 backdrop-blur-sm flex items-center justify-center">
                         <Loader2 className="w-8 h-8 text-primary animate-spin" />

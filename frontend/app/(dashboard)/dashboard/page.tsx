@@ -15,7 +15,6 @@ import {
   Loader2,
   BookOpen,
   ShieldCheck,
-  Sparkles,
   ArrowUpRight,
   HelpCircle,
   Plus,
@@ -365,16 +364,9 @@ export default function DashboardPage() {
         {/* ================================================================= */}
         <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 pt-1">
           <div className="space-y-1.5">
-            <div className="flex items-center gap-2">
-              <Badge
-                variant="outline"
-                className="bg-primary/5 text-primary border-primary/20 text-xs font-semibold uppercase tracking-wider py-0.5 px-2.5"
-              >
-                Civil-Lex Legal Intelligence
-              </Badge>
+          <div className="flex items-center gap-2">
               <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground font-medium">
-                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-                R.A. 386 & Supreme Court Grounded
+                R.A. 386 &amp; Supreme Court Grounded
               </span>
             </div>
             <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-foreground">
@@ -552,7 +544,7 @@ export default function DashboardPage() {
           {/* Prompt Starters */}
           <div className="flex items-center gap-2 overflow-x-auto pb-1 no-scrollbar text-xs">
             <div className="flex items-center gap-1 text-muted-foreground font-medium shrink-0 pr-1">
-              <Sparkles className="w-3.5 h-3.5 text-primary" />
+              <HelpCircle className="w-3.5 h-3.5 text-primary" />
               <span>Suggested inquiries:</span>
             </div>
             {QUICK_PROMPTS.map((item, idx) => (

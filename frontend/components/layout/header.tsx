@@ -33,7 +33,7 @@ export function Header() {
               </div>
               <span className="font-bold text-lg tracking-wide">CIVIL-LEX</span>
             </div>
-            <SidebarNav className="h-[calc(100vh-5rem)]" />
+            <SidebarNav className="h-[calc(100dvh-5rem)]" />
           </SheetContent>
         </Sheet>
         <div className="w-8 h-8 rounded-lg bg-accent flex items-center justify-center hidden md:flex">
@@ -46,14 +46,15 @@ export function Header() {
 
       <div className="flex items-center gap-2 sm:gap-4">
         <ThemeToggle />
-        <Button variant="ghost" size="icon" className="text-muted-foreground hover:bg-accent hover:text-foreground rounded-full">
+        <Button variant="ghost" size="icon" aria-label="Language settings" className="text-muted-foreground hover:bg-accent hover:text-foreground rounded-full">
           <Globe className="w-5 h-5" />
         </Button>
         <div className="relative">
-          <Button variant="ghost" size="icon" className="text-muted-foreground hover:bg-accent hover:text-foreground rounded-full">
+          <Button variant="ghost" size="icon" aria-label="Notifications" className="text-muted-foreground hover:bg-accent hover:text-foreground rounded-full">
             <Bell className="w-5 h-5" />
           </Button>
-          <span className="absolute top-2 right-2 w-2 h-2 bg-destructive rounded-full border-2 border-background"></span>
+          <span className="absolute top-2 right-2 w-2 h-2 bg-destructive rounded-full border-2 border-background" aria-hidden="true"></span>
+          <span className="sr-only">Unread notifications</span>
         </div>
         
         <div className="w-px h-6 bg-border mx-2 hidden sm:block"></div>

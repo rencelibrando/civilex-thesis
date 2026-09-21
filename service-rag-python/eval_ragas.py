@@ -27,9 +27,7 @@ from services.llm_client import llm_generate_claim_verification
 
 load_dotenv(override=True)
 
-# ---------------------------------------------------------------------------
 # TEST DATASETS
-# ---------------------------------------------------------------------------
 
 GUARDRAIL_TEST_CASES = [
     {
@@ -100,9 +98,7 @@ IN_DOMAIN_BENCHMARK_CASES = [
     },
 ]
 
-# ---------------------------------------------------------------------------
 # PIPELINE GENERATION
-# ---------------------------------------------------------------------------
 
 def llm_generate_response(query: str, retrieved_chunks: list) -> str:
     """
@@ -152,9 +148,7 @@ CONTEXT:
     )
 
 
-# ---------------------------------------------------------------------------
 # METRIC EVALUATION FUNCTIONS
-# ---------------------------------------------------------------------------
 
 def match_article_id(expected: str, candidate: str) -> bool:
     """
@@ -278,9 +272,7 @@ def calculate_answer_relevancy(query: str, generated_response: str, embedder_mod
     return max(0.0, min(1.0, calibrated))
 
 
-# ---------------------------------------------------------------------------
 # MAIN RUNNER
-# ---------------------------------------------------------------------------
 
 def run_ragas_evaluation():
     print("=" * 80)

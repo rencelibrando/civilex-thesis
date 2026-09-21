@@ -87,7 +87,6 @@ export function SidebarNav({ className }: { className?: string }) {
                 {isChatRunning && (
                   <span className="flex items-center gap-1 text-[10px] font-medium text-primary bg-primary/10 px-2 py-0.5 rounded-full border border-primary/20">
                     <span className="relative flex h-1.5 w-1.5">
-                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-primary opacity-75"></span>
                       <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-primary"></span>
                     </span>
                     Active
@@ -129,7 +128,7 @@ export function SidebarNav({ className }: { className?: string }) {
 
 export function Sidebar() {
   return (
-    <aside className="w-64 flex-shrink-0 border-r border-border bg-sidebar h-[calc(100vh-4rem)] flex flex-col justify-between hidden md:flex">
+    <aside className="w-64 flex-shrink-0 border-r border-border bg-sidebar h-[calc(100dvh-4rem)] flex flex-col justify-between hidden md:flex">
       <SidebarNav />
     </aside>
   );

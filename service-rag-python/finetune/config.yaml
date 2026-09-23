@@ -1,12 +1,12 @@
 # ==============================================================================
-# Pure Hugging Face Fine-Tuning Configuration for NVIDIA H100 (80GB VRAM)
-# Target Model: Google Gemma 4 E4B (Multimodal, 128k context, native system role)
+# Pure Hugging Face Fine-Tuning Configuration for NVIDIA H100 SXM (80GB VRAM)
+# Target Model: Google Gemma 4 E4B (Pure BF16, 128k context, native system role)
 # ==============================================================================
 
 model:
   name_or_path: "google/gemma-4-E4B-it"
-  load_in_4bit: false # Pure 16-bit BF16 (No quantization noise; maximum Tensor Core throughput)
-  attn_implementation: "flash_attention_2"
+  load_in_4bit: false # Pure 16-bit BF16 (No quantization noise; maximum Hopper Tensor Core throughput)
+  attn_implementation: "sdpa" # Gemma uses large head dimensions unsupported by FlashAttention kernels; SDPA uses native PyTorch Hopper kernels
 
 lora:
   r: 32 # Higher rank captures nuanced legal reasoning and statutory exceptions
@@ -25,22 +25,23 @@ lora:
 training:
   output_dir: "./output/gemma-4-e4b-civil-code-lora"
   num_train_epochs: 3
-  per_device_train_batch_size: 8 # Optimized for H100 80GB (~24 GB VRAM used out of 80 GB)
+  per_device_train_batch_size: 8 # Optimized for H100 80GB (~24-32 GB VRAM used out of 80 GB)
   gradient_accumulation_steps: 2 # Effective batch size = 16
-  learning_rate: 1.0e-4 # Optimal learning rate for 16-bit LoRA on Gemma 4
+  learning_rate: 1.0e-4 # Optimal learning rate for 16-bit LoRA on Gemma
   lr_scheduler_type: "cosine"
   warmup_ratio: 0.05
   max_seq_length: 2048 # Accommodates 100% of dataset samples (0% truncation)
   bf16: true
   fp16: false
-  optim: "adamw_torch_fused" # Fast fused AdamW for NVIDIA Hopper Tensor Cores
+  optim: "adamw_torch_fused" # Fast fused AdamW for NVIDIA Hopper Tensor Cores (sm_90)
   logging_steps: 10
   save_strategy: "epoch"
   eval_strategy: "epoch"
   load_best_model_at_end: true
   metric_for_best_model: "eval_loss"
+  save_total_limit: 2 # Retain only the best and latest checkpoint to prevent filling RunPod disk
   seed: 3407
-  dataloader_num_workers: 4
+  dataloader_num_workers: 0 # Safe setting for RunPod container shared memory (/dev/shm)
 
 dataset:
   train_file: "train_clean.jsonl"

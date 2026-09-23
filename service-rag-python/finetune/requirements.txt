@@ -1,18 +1,27 @@
-# 1. Install FlashAttention-2 (Native Hopper Tensor Core acceleration):
-#    pip install packaging ninja
-#    pip install flash-attn --no-build-isolation
-#
-# 2. Install Fine-Tuning Dependencies:
-#    pip install -r requirements.txt
+# ==============================================================================
+# CIVIL-LEX: RunPod NVIDIA H100 Fine-Tuning Dependencies
+# ==============================================================================
+
+# Core Hugging Face Training Ecosystem
 transformers>=4.48.0
 trl>=0.12.0
 peft>=0.13.0
 accelerate>=1.0.0
 datasets>=3.0.0
-bitsandbytes>=0.44.0
+
+# Numerical & Serialization
 safetensors>=0.4.5
 pyyaml>=6.0.0
 sentencepiece>=0.2.0
 protobuf>=4.25.0
 huggingface_hub>=0.26.0
-scipy
+scipy>=1.11.0
+packaging>=23.0
+ninja>=1.11.0
+
+# Optional Quantization & Memory Tools
+bitsandbytes>=0.44.0
+
+# Note: FlashAttention-2 is optional. On NVIDIA H100, PyTorch native SDPA
+# provides identical Hopper Tensor Core throughput without build dependencies:
+# pip install flash-attn --no-build-isolation

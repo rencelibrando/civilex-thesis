@@ -8,6 +8,8 @@ def main():
     config_candidates = [
         Path(__file__).parent / "config.yaml",
         Path.cwd() / "config.yaml",
+        Path("/workspace/finetune/config.yaml"),
+        Path("/workspace/config.yaml"),
         Path.cwd() / "service-rag-python" / "finetune" / "config.yaml",
     ]
     config_path = next((p for p in config_candidates if p.exists()), None)

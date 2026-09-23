@@ -1,41 +1,75 @@
 # ==============================================================================
-# CIVIL-LEX: RunPod H100 Fine-Tuning Commands
+# CIVIL-LEX: RunPod NVIDIA H100 SXM Fine-Tuning & Environment Setup Commands
+# Full Guide: Refer to RUNPOD_JUPYTER_SETUP.md for complete documentation.
 # ==============================================================================
 
-# 1. Navigate to the fine-tuning directory
-cd /workspace/finetune   # or cd service-rag-python/finetune
+# IMPORTANT NOTE ON SYNTAX:
+# • In BASH / RUNPOD TERMINAL: Run commands WITHOUT "!" (e.g. `python finetune_gemma4.py`)
+# • In JUPYTER NOTEBOOK CELLS: Prepend "!" for shell execution (e.g. `!python finetune_gemma4.py`)
 
-# 2. Virtual Environment (IMPORTANT FOR RUNPOD):
-# In RunPod, the container is ALREADY an isolated Docker instance with PyTorch + CUDA pre-installed.
-# If you are in the failed empty venv, first remove it:
-deactivate
-rm -rf venv
 
-# OPTION A (Recommended on RunPod): Use the container directly (no venv needed)
-pip install setuptools wheel packaging ninja
+# ------------------------------------------------------------------------------
+# OPTION 1: TERMINAL WORKFLOW (RunPod Web Terminal or SSH)
+# ------------------------------------------------------------------------------
 
-# OPTION B (If you prefer using a venv): You MUST include --system-site-packages
-# python3 -m venv venv --system-site-packages
-# source venv/bin/activate
-# pip install setuptools wheel packaging ninja
+# 1. Navigate to directory in persistent storage:
+cd /workspace/finetune   # or cd /workspace/civilex-thesis/service-rag-python/finetune
 
-# 3. Dependencies
-# Note: flash-attn is optional; finetune_gemma4.py will automatically fall back to
-# native PyTorch SDPA (Scaled Dot-Product Attention) which is equally fast on H100!
+# 2. Configure Environment:
+export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
+export HF_HOME="/workspace/.cache/huggingface"
+export PYTHONUNBUFFERED=1
+
+# 3. Authenticate with Hugging Face (Required for gated Gemma models):
+export HF_TOKEN="hf_your_token_here"
+# Or run interactive login: huggingface-cli login
+
+# 4. Install Dependencies:
+pip install --no-cache-dir -r requirements.txt
 pip install flash-attn --no-build-isolation || echo "Proceeding with PyTorch native SDPA"
-pip install -r requirements.txt
 
-# 4. Log in to Hugging Face (Required for gated Gemma models)
-# Option A: Interactive CLI login (paste your token when prompted)
-huggingface-cli login
-# Option B (or export as env variable):
-# export HF_TOKEN="hf_your_token_here"
-
-# 5. Launch training (Google Gemma 4 E4B in pure BF16)
+# 5. Launch Training (Google Gemma in pure BF16 on H100 SXM):
 python finetune_gemma4.py
 
-# 6. Losslessly merge LoRA weights directly into BF16 base weights
+# 6. Merge LoRA weights into standalone BF16 model:
 python merge_lora.py
 
-# 7. (Optional) Export to GGUF for LM Studio / Ollama
+# 7. (Optional) Export to GGUF for local LM Studio:
 python export_gguf.py
+
+
+# ------------------------------------------------------------------------------
+# OPTION 2: JUPYTER NOTEBOOK WORKFLOW (RunPod JupyterLab)
+# Open JupyterLab from RunPod, create a new notebook (.ipynb), and run these cells:
+# ------------------------------------------------------------------------------
+
+# [Cell 1: Environment Variables & Disk Space Protection]
+import os
+from pathlib import Path
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+os.environ["PYTHONUNBUFFERED"] = "1"
+workspace_cache = Path("/workspace/.cache/huggingface")
+workspace_cache.mkdir(parents=True, exist_ok=True)
+os.environ["HF_HOME"] = str(workspace_cache)
+print("✅ Environment configured. HF_HOME redirected to persistent /workspace.")
+
+# [Cell 2: Dependencies Installation]
+!pip install --no-cache-dir -r requirements.txt
+!pip install flash-attn --no-build-isolation || echo "Proceeding with PyTorch native SDPA"
+
+# [Cell 3: Hugging Face Authentication (Programmatic - will NOT freeze Jupyter)]
+import os
+from huggingface_hub import login
+HF_TOKEN = "hf_your_token_here"  # Replace with your Hugging Face token
+os.environ["HF_TOKEN"] = HF_TOKEN
+login(token=HF_TOKEN, add_to_git_credential=False)
+print("✅ Hugging Face authenticated successfully.")
+
+# [Cell 4: Launch Training]
+!python finetune_gemma4.py
+
+# [Cell 5: Lossless LoRA Merge into BF16 Base Model]
+!python merge_lora.py
+
+# [Cell 6: (Optional) Export to GGUF for LM Studio]
+!python export_gguf.py

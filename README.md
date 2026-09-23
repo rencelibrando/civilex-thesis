@@ -60,5 +60,5 @@ CIVIL-LEX was benchmarked using the RAGAS framework across Guardrail Routing (St
 | **Stage 2: Context Precision** | $\ge$ **85.0%** | 39.6% | **93.8%** | **PASS** |
 | **Stage 2: Faithfulness (Grounding)** | $\ge$ **90.0%** | 0.0% | **100.0%** | **PASS** |
 | **Stage 2: Answer Relevancy** | $\ge$ **85.0%** | 60.0% | **91.2%** | **PASS** |
-
+  
 Detailed test suites, including ISO/IEC 25010 performance benchmarks, are available in the test execution scripts.

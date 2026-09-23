@@ -1,5 +1,16 @@
-import os
 import sys
+
+# 1. Guard against broken torchvision/torchaudio binary extensions
+# Setting these in sys.modules before any imports prevents Hugging Face transformers/peft
+# from attempting to load mismatched C++ shared libraries (.so files).
+sys.modules["torchvision"] = None
+sys.modules["torchvision.io"] = None
+sys.modules["torchvision.ops"] = None
+sys.modules["torchaudio"] = None
+sys.modules["torchaudio._extension"] = None
+
+import os
+import json
 import argparse
 from pathlib import Path
 import yaml
@@ -15,6 +26,28 @@ if Path("/workspace").exists():
         os.environ.setdefault("HF_HOME", str(workspace_cache))
     except Exception:
         pass
+
+
+def sanitize_tokenizer_config(model_dir: Path) -> None:
+    """Sanitizes tokenizer_config.json to prevent AttributeError on extra_special_tokens list.
+
+    In some transformers versions, if 'extra_special_tokens' is saved as a list,
+    AutoTokenizer._set_model_specific_special_tokens expects a dict and crashes with:
+        AttributeError: 'list' object has no attribute 'keys'
+    """
+    tok_cfg_path = model_dir / "tokenizer_config.json"
+    if not tok_cfg_path.exists():
+        return
+    try:
+        with open(tok_cfg_path, "r", encoding="utf-8") as f:
+            tok_cfg = json.load(f)
+        if "extra_special_tokens" in tok_cfg and isinstance(tok_cfg["extra_special_tokens"], list):
+            tok_cfg.pop("extra_special_tokens", None)
+            with open(tok_cfg_path, "w", encoding="utf-8") as f:
+                json.dump(tok_cfg, f, indent=2)
+            print("✓ Tokenizer config sanitized (removed incompatible 'extra_special_tokens' list).")
+    except Exception as e:
+        print(f"Warning: Could not check/sanitize tokenizer_config.json: {e}")
 
 
 def parse_args():
@@ -41,7 +74,7 @@ def main():
     ])
     config_path = next((p for p in config_candidates if p.exists()), None)
     if not config_path:
-        print("❌ Error: config.yaml not found!")
+        print("Error: config.yaml not found!")
         sys.exit(1)
 
     with open(config_path, "r", encoding="utf-8") as f:
@@ -59,8 +92,8 @@ def main():
     base_model_name = config["model"]["name_or_path"]
 
     if not os.path.exists(lora_dir):
-        print(f"❌ Error: LoRA adapter directory '{lora_dir}' does not exist.")
-        print("👉 Please run 'python finetune_gemma4.py' first to produce fine-tuned LoRA weights.")
+        print(f"Error: LoRA adapter directory '{lora_dir}' does not exist.")
+        print(" Please run 'python finetune_gemma4.py' first to produce fine-tuned LoRA weights.")
         sys.exit(1)
 
     print("==================================================================")
@@ -77,7 +110,7 @@ def main():
     )
 
     # 2. Load Base Model in Pure BF16
-    print("⏳ Loading base model weights in native BF16...")
+    print("Loading base model weights in native BF16...")
     device_map = {"": torch.cuda.current_device()} if torch.cuda.is_available() else "auto"
     target_dtype = torch.bfloat16 if config["training"].get("bf16", True) else torch.float32
     load_kwargs = {
@@ -98,7 +131,7 @@ def main():
             **load_kwargs,
         )
 
-    print("⏳ Loading tokenizer and chat template...")
+    print("Loading tokenizer and chat template...")
     tokenizer = AutoTokenizer.from_pretrained(
         lora_dir,
         token=hf_token,
@@ -106,19 +139,20 @@ def main():
     )
 
     # 3. Attach LoRA Adapter and Merge Losslessly
-    print("🔧 Attaching fine-tuned LoRA adapter...")
+    print("Attaching fine-tuned LoRA adapter...")
     peft_model = PeftModel.from_pretrained(base_model, lora_dir)
 
-    print("⚡ Merging LoRA deltas into base weights (lossless 16-bit operation)...")
+    print("Merging LoRA deltas into base weights (lossless 16-bit operation)...")
     merged_model = peft_model.merge_and_unload()
 
     # 4. Save Standalone Model & Tokenizer
     os.makedirs(merged_dir, exist_ok=True)
-    print(f"💾 Saving merged standalone model to '{merged_dir}'...")
+    print(f"Saving merged standalone model to '{merged_dir}'...")
     merged_model.save_pretrained(merged_dir, safe_serialization=True)
     tokenizer.save_pretrained(merged_dir)
+    sanitize_tokenizer_config(Path(merged_dir))
 
-    print(f"✅ Successfully exported merged model to {merged_dir}!")
+    print(f"Successfully exported merged model to {merged_dir}!")
     print("\nNext steps:")
     print("  • To serve via vLLM directly on RunPod/server (recommended for production):")
     print(f"      vllm serve {merged_dir} --dtype bfloat16 --port 1234")

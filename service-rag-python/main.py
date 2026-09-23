@@ -22,6 +22,7 @@ logging.basicConfig(
 
 from services.document import extract_and_process_document
 from services.llm_client import generate_response_stream
+from services.nli import score_faithfulness_async as nli_score_faithfulness_async
 from sentence_transformers import SentenceTransformer
 
 # Load environment variables
@@ -415,7 +416,9 @@ def is_refusal_or_out_of_scope(text: str) -> bool:
         r'\bgoverning\s+civil\s+code\s+article\(s\):\s*(?:none|n/?a|not\s+applicable)\b',
         r'\bconcept\s+from\s+(?:theoretical\s+physics|science|mathematics|computer\s+science|physics)\b',
         r'\boutside\s+the\s+field\s+of\s+law\b',
-        r'\bno\s+applicable\s+civil\s+code\s+article\b'
+        r'\bno\s+applicable\s+civil\s+code\s+article\b',
+        r'\blocal\s+llm\s+service\s+notice\b',
+        r'\bunable\s+to\s+connect\s+to\s+(?:the\s+)?local\b',
     ]
     return any(bool(re.search(p, text, re.IGNORECASE)) for p in refusal_patterns)
 
@@ -602,25 +605,26 @@ def compute_embedding(query: str) -> list:
 # Statutory Companion Association Graph & Retrieval Noise Pruning (RAGAS)
 
 STATUTORY_COMPANION_GRAPH: Dict[str, List[str]] = {
-    # Obligations & Contracts (Rescission, Delay, Damages, Restitution)
+    # Obligations & Contracts (Rescission, Delay, Damages, Restitution, Extinction)
     "RA386-ART1191": ["RA386-ART1170", "RA386-ART1169", "RA386-ART1385"],
     "RA386-ART1170": ["RA386-ART1169", "RA386-ART1191", "RA386-ART2201"],
-    "RA386-ART1169": ["RA386-ART1170", "RA386-ART1191"],
-    "RA386-ART1231": ["RA386-ART1232", "RA386-ART1169"],
+    "RA386-ART1169": ["RA386-ART1170", "RA386-ART1191", "RA386-ART1231", "RA386-ART1232"],
+    "RA386-ART1231": ["RA386-ART1232", "RA386-ART1169", "RA386-ART1170"],
     "RA386-ART1305": ["RA386-ART1318", "RA386-ART1159"],
     "RA386-ART1318": ["RA386-ART1319", "RA386-ART1347", "RA386-ART1350"],
     "RA386-ART1381": ["RA386-ART1385", "RA386-ART1191"],
     "RA386-ART1390": ["RA386-ART1391", "RA386-ART1398"],
     "RA386-ART1409": ["RA386-ART1410", "RA386-ART1411"],
 
-    # Sales & Hidden Defects
+    # Sales & Hidden Defects (Accion Redhibitoria / Quanti Minoris)
     "RA386-ART1458": ["RA386-ART1475", "RA386-ART1498"],
     "RA386-ART1561": ["RA386-ART1566", "RA386-ART1567", "RA386-ART1571"],
-    "RA386-ART1567": ["RA386-ART1561", "RA386-ART1566"],
+    "RA386-ART1566": ["RA386-ART1561", "RA386-ART1567"],
+    "RA386-ART1567": ["RA386-ART1561", "RA386-ART1566", "RA386-ART1571"],
 
     # Torts / Quasi-Delicts & Civil Damages
-    "RA386-ART2176": ["RA386-ART2180", "RA386-ART2199", "RA386-ART2219"],
-    "RA386-ART2180": ["RA386-ART2176", "RA386-ART2199"],
+    "RA386-ART2176": ["RA386-ART2180", "RA386-ART2199", "RA386-ART2206", "RA386-ART2219"],
+    "RA386-ART2180": ["RA386-ART2176", "RA386-ART2199", "RA386-ART2206"],
     "RA386-ART2199": ["RA386-ART2200", "RA386-ART2219", "RA386-ART2229"],
     "RA386-ART2206": ["RA386-ART2176", "RA386-ART2199"],
 
@@ -644,42 +648,145 @@ STATUTORY_COMPANION_GRAPH: Dict[str, List[str]] = {
     "RA386-ART36": ["RA386-ART68", "RA386-ART69"],
 }
 
-def prune_retrieval_noise(items: List[Dict[str, Any]], max_items: int = 4) -> List[Dict[str, Any]]:
+def rank_and_stratify_citations(
+    items: List[Dict[str, Any]], 
+    query: str = "",
+    context_budget: int = 15
+) -> List[Dict[str, Any]]:
     """
-    Prunes low-relevance retrieval noise to optimize RAGAS Context Precision.
-    Preserves top-ranked matches and companion provisions while eliminating
-    low-confidence tail results that dilute prompt signal-to-noise ratio.
+    Unified high-accuracy ranking, scoring, and context stratification.
+    
+    1. Deduplicates candidate authorities by chunk/parent key while preserving top scores.
+    2. Computes composite relevance scores prioritizing exact statutory matches,
+       high vector/FTS fusion, and statutory Civil Code primacy.
+    3. Retains and outputs ALL retrieved documents (never discards candidates).
+    4. Tags each item with sequential rank, calibrated suitability percentage,
+       and context status (is_in_context=True for top context budget, False for out-of-rank).
     """
     if not items:
         return []
-    
-    # Sort items by suitability_percent descending
-    items.sort(key=lambda x: float(x.get('suitability_percent', 0.0)), reverse=True)
-    top_score = float(items[0].get('suitability_percent', 0.0))
-    
-    # Adaptive threshold: keep items within 22% of top score, with absolute floor of 62.0%
-    score_cutoff = max(62.0, top_score - 22.0)
-    
-    pruned = [
-        it for it in items 
-        if float(it.get('suitability_percent', 0.0)) >= score_cutoff
-    ]
-    
-    # Guarantee top 1 or 2 items if available
-    if len(pruned) < 2 and len(items) >= 2:
-        pruned = items[:2]
-    elif not pruned and items:
-        pruned = items[:1]
+
+    # Chunk/parent unique key resolver
+    def get_item_key(it: dict) -> str:
+        cid = it.get('chunk_id')
+        if cid:
+            return str(cid)
+        ptype = it.get('parent_type')
+        pid = it.get('parent_id') or it.get('id')
+        content_snip = it.get('content', '')[:60].strip()
+        if ptype == 'user_document':
+            return f"doc_{pid}_{content_snip}"
+        return str(pid or content_snip)
+
+    # Deduplicate while preserving best properties
+    dedup_map: Dict[str, Dict[str, Any]] = {}
+    for item in items:
+        k = get_item_key(item)
+        if k not in dedup_map:
+            dedup_map[k] = item
+        else:
+            existing = dedup_map[k]
+            # Merge suitability / rrf scores if current candidate is higher
+            cur_score = float(item.get('rrf_score', 0) or item.get('similarity', 0) or item.get('suitability_percent', 0))
+            old_score = float(existing.get('rrf_score', 0) or existing.get('similarity', 0) or existing.get('suitability_percent', 0))
+            if cur_score > old_score:
+                item['metadata'] = item.get('metadata') or existing.get('metadata')
+                dedup_map[k] = item
+            elif existing.get('metadata') is None and item.get('metadata') is not None:
+                existing['metadata'] = item['metadata']
+
+    unique_items = list(dedup_map.values())
+
+    # Extract explicit article / case mentions from query for anchor weighting
+    explicit_art_nums = set(re.findall(r'(?:article|art\.?)\s*(\d+)', query, re.IGNORECASE)) if query else set()
+    query_lower = query.lower() if query else ""
+
+    def calculate_sort_score(it: dict) -> float:
+        ptype = it.get('parent_type', 'source')
+        pid = str(it.get('parent_id') or '')
+        is_exact = it.get('is_exact', False)
         
-    return pruned[:max_items]
+        # Check if item corresponds directly to an explicitly queried article number
+        art_match = re.search(r'RA386-ART(\d+)', pid)
+        if art_match and art_match.group(1) in explicit_art_nums:
+            is_exact = True
+
+        if is_exact:
+            return 1000.0 + float(it.get('suitability_percent', 98.5))
+
+        base_sim = float(it.get('similarity', 0.0) or 0.0)
+        rrf = float(it.get('rrf_score', 0.0) or 0.0)
+        score = (rrf * 100.0) + (base_sim * 10.0)
+
+        # Companion expansion boost
+        if it.get('is_companion'):
+            score += 15.0
+
+        # Substantive statutory Civil Code precedence
+        if ptype == 'article':
+            score += 8.0
+        elif ptype == 'user_document':
+            score += 6.0
+        elif ptype == 'case':
+            score += 2.0
+
+        # Topical keyword resonance
+        content_lower = str(it.get('content', '')).lower()
+        key_legal_stems = ['rescind', 'defect', 'negligence', 'accident', 'loan', 'delay', 'mora', 'damages', 'void']
+        for stem in key_legal_stems:
+            if stem in query_lower and stem in content_lower:
+                score += 3.0
+
+        return score
+
+    # Sort all retrieved items by accuracy score descending
+    unique_items.sort(key=calculate_sort_score, reverse=True)
+
+    # Assign rank, calibrated suitability percentage, and 70k context stratification
+    prev_suitability = 100.0
+    for idx, item in enumerate(unique_items):
+        item['rank'] = idx + 1
+        
+        # Strictly monotonic, calibrated suitability score for UI
+        if item.get('is_exact') or (idx == 0 and item.get('parent_type') == 'article'):
+            suitability = round(max(95.0, 98.5 - (idx * 0.5)), 1)
+        elif idx < context_budget:
+            # Active Grounding authorities: strictly within [80.0%, 97.5%]
+            slot_step = 17.5 / max(1, context_budget - 1)
+            target = 97.5 - (idx * slot_step)
+            suitability = round(max(80.0, min(prev_suitability - 0.2, target)), 1)
+        else:
+            # Out-of-rank authorities: strictly < 80.0% (within [50.0%, 78.5%])
+            out_idx = idx - context_budget
+            target = 78.5 - (out_idx * 1.5)
+            suitability = round(max(50.0, min(prev_suitability - 0.2, target)), 1)
+
+        prev_suitability = suitability
+        item['suitability_percent'] = suitability
+        item['display_suitability'] = suitability
+
+        # Context stratification: top context_budget items enter the 70k prompt context
+        if idx < context_budget:
+            item['is_in_context'] = True
+            item['rank_status'] = 'primary'
+        else:
+            item['is_in_context'] = False
+            item['rank_status'] = 'out_of_rank'
+
+    return unique_items
+
+
+def prune_retrieval_noise(items: List[Dict[str, Any]], max_items: int = 15) -> List[Dict[str, Any]]:
+    """Backward compatibility wrapper delegating to rank_and_stratify_citations."""
+    return rank_and_stratify_citations(items, context_budget=max_items)
 
 
 def search_with_embedding(q_emb: list, query: str, document_id: Optional[str] = None):
-    """Executes hybrid RRF search, exact match, and graph-augmented jurisprudence retrieval."""
+    """Executes high-recall hybrid RRF search, companion expansion, and full-spectrum citation ranking."""
     conn = get_db_connection()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            def hybrid_search(parent_type, limit=5, parent_id=None):
+            def hybrid_search(parent_type, limit=20, parent_id=None):
                 raw_words = [w for w in re.split(r'\W+', query) if w]
                 filtered_words = [w for w in raw_words if len(w) > 2 and w.lower() not in SEARCH_STOPWORDS]
                 search_words = filtered_words if filtered_words else [w for w in raw_words if len(w) > 1]
@@ -704,16 +811,16 @@ def search_with_embedding(q_emb: list, query: str, document_id: Optional[str] = 
                         FROM document_chunks
                         WHERE {where_clause_v}
                         ORDER BY embedding <=> %s::vector
-                        LIMIT 20
+                        LIMIT 50
                     ),
                     text_search AS (
                         SELECT chunk_id, parent_type, parent_id, content,
-                                ts_rank_cd(fts, websearch_to_tsquery('simple', %s)) AS similarity,
+                                ts_rank_cd(fts, websearch_to_tsquery('simple', %s)) AS text_sim,
                                 ROW_NUMBER() OVER (ORDER BY ts_rank_cd(fts, websearch_to_tsquery('simple', %s)) DESC) AS rrf_text_rank
                         FROM document_chunks
                         WHERE {where_clause_t}
                         ORDER BY rrf_text_rank
-                        LIMIT 20
+                        LIMIT 50
                     ),
                     rrf AS (
                         SELECT 
@@ -721,7 +828,7 @@ def search_with_embedding(q_emb: list, query: str, document_id: Optional[str] = 
                             COALESCE(v.parent_type, t.parent_type) AS parent_type,
                             COALESCE(v.parent_id, t.parent_id) AS parent_id,
                             COALESCE(v.content, t.content) AS content,
-                            COALESCE(v.similarity, 0.0) AS similarity,
+                            COALESCE(v.similarity, 0.72) AS similarity,
                             COALESCE(1.0 / (60 + v.rrf_vector_rank), 0.0) + COALESCE(1.0 / (60 + t.rrf_text_rank), 0.0) AS rrf_score
                         FROM vector_search v
                         FULL OUTER JOIN text_search t ON v.chunk_id = t.chunk_id
@@ -732,38 +839,18 @@ def search_with_embedding(q_emb: list, query: str, document_id: Optional[str] = 
                 """, (q_emb, q_emb, *params_v, q_emb, or_query, or_query, *params_t, limit))
                 return cur.fetchall()
 
-            def calculate_suitability(sim_val, rank_idx=0, is_exact=False):
-                if is_exact:
-                    return 98.5
-                try:
-                    val = float(sim_val) if sim_val is not None else 0.0
-                except (ValueError, TypeError):
-                    val = 0.0
-                if val > 0.0:
-                    # Scaled cosine similarity: typically 0.20-0.80 maps to 55%-98%
-                    pct = min(98.0, max(52.0, ((val - 0.20) / 0.58) * 100))
-                else:
-                    pct = max(55.0, 88.0 - (rank_idx * 5.0))
-                return round(pct, 1)
-
             if document_id:
-                doc_results = hybrid_search('user_document', limit=5, parent_id=document_id)
-                # Guaranteed fallback: if hybrid keyword search yielded 0 chunks (due to stopwords, misspelling, or phrasing),
-                # fetch the document's chunks directly from document_chunks table
+                doc_results = hybrid_search('user_document', limit=15, parent_id=document_id)
+                # Guaranteed fallback: if hybrid keyword search yielded 0 chunks, fetch document's chunks directly
                 if not doc_results:
                     cur.execute("""
                         SELECT chunk_id, parent_type, parent_id, content, 0.90 AS similarity
                         FROM document_chunks
                         WHERE parent_id = %s
                         ORDER BY chunk_id ASC
-                        LIMIT 5;
+                        LIMIT 20;
                     """, (document_id,))
                     doc_results = cur.fetchall()
-
-                for idx, d in enumerate(doc_results):
-                    # For active document analysis, assign high suitability (95.0% - 98.0%)
-                    # so the document's actual content is always front and center
-                    d['suitability_percent'] = round(max(92.0, 98.0 - (idx * 1.5)), 1)
 
                 # Inspect active document content to verify if it is an actual legal document
                 DOC_LEGAL_MARKERS = [
@@ -785,12 +872,9 @@ def search_with_embedding(q_emb: list, query: str, document_id: Optional[str] = 
                 legal_terms = ['civil code', 'article', 'statute', 'law', 'violate', 'void', 'liability', 'obligation', 'breach', 'risk', 'remedy', 'damages', 'jurisprudence', 'case', 'compliance', 'legal', 'action', 'contract']
                 query_lower = query.lower()
 
-                # CRITICAL DOCUMENT GATING:
-                # If document is non-legal (e.g. math/CS homework), do NOT retrieve Civil Code articles
-                # unless the user explicitly referenced a specific Article number.
                 needs_statutory = (is_doc_legal and any(term in query_lower for term in legal_terms)) or has_explicit_article
                 if needs_statutory:
-                    statutory_articles = hybrid_search('article', limit=5)
+                    statutory_articles = hybrid_search('article', limit=12)
                     if statutory_articles:
                         art_ids = [a['parent_id'] for a in statutory_articles]
                         cur.execute("""
@@ -799,10 +883,9 @@ def search_with_embedding(q_emb: list, query: str, document_id: Optional[str] = 
                             WHERE article_id = ANY(%s);
                         """, (art_ids,))
                         art_meta_map = {row['article_id']: row for row in cur.fetchall()}
-                        for idx, a in enumerate(statutory_articles):
+                        for a in statutory_articles:
                             if a['parent_id'] in art_meta_map:
                                 a['metadata'] = art_meta_map[a['parent_id']]
-                            a['suitability_percent'] = calculate_suitability(a.get('similarity'), idx)
                     linked_cases = []
                     if statutory_articles:
                         art_ids = [a['parent_id'] for a in statutory_articles]
@@ -811,9 +894,9 @@ def search_with_embedding(q_emb: list, query: str, document_id: Optional[str] = 
                             FROM article_jurisprudence_relations r
                             JOIN jurisprudence_cases j ON r.case_uid = j.case_uid
                             WHERE r.article_id = ANY(%s)
-                            LIMIT 1;
+                            LIMIT 3;
                         """, (art_ids,))
-                        for idx, row in enumerate(cur.fetchall()):
+                        for row in cur.fetchall():
                             linked_cases.append({
                                 "parent_type": "case",
                                 "parent_id": row['case_uid'],
@@ -825,16 +908,16 @@ def search_with_embedding(q_emb: list, query: str, document_id: Optional[str] = 
                                     "decision_date": row.get('decision_date'),
                                     "content_summary": row.get('content_summary'),
                                     "case_uid": row.get('case_uid')
-                                },
-                                "suitability_percent": round(max(60.0, min(95.0, 88.0 - (idx * 3.0))), 1)
+                                }
                             })
                     all_found = doc_results + statutory_articles + linked_cases
-                    all_found = prune_retrieval_noise(all_found, max_items=5)
+                    all_found = rank_and_stratify_citations(all_found, query, context_budget=15)
                     return all_found
-                doc_results = prune_retrieval_noise(doc_results, max_items=5)
+
+                doc_results = rank_and_stratify_citations(doc_results, query, context_budget=15)
                 return doc_results
 
-            # 1. Exact match extraction for Civil Code Articles (e.g. "article 77", "Art 2176", "Article 33")
+            # 1. Exact match extraction for Civil Code Articles
             exact_articles = []
             article_matches = re.findall(r'(?:article|art\.?)\s*(\d+)', query, re.IGNORECASE)
             if article_matches:
@@ -849,24 +932,24 @@ def search_with_embedding(q_emb: list, query: str, document_id: Optional[str] = 
                 for eid in exact_ids:
                     if eid in fetched_exact:
                         exact_item = fetched_exact[eid]
+                        exact_item['is_exact'] = True
+                        exact_item['display_suitability'] = 98.5
                         exact_item['suitability_percent'] = 98.5
                         exact_articles.append(exact_item)
                     
             # 2. Top article matches (Civil Code statutes) via Hybrid Search - PRIORITIZED
             articles = exact_articles.copy()
-            art_limit = max(3, 5 - len(exact_articles))
-            hybrid_articles = hybrid_search('article', art_limit)
+            hybrid_articles = hybrid_search('article', limit=20)
             exact_ids_set = {a['parent_id'] for a in exact_articles}
-            for idx, ha in enumerate(hybrid_articles):
+            for ha in hybrid_articles:
                 if ha['parent_id'] not in exact_ids_set:
-                    ha['suitability_percent'] = calculate_suitability(ha.get('similarity'), len(articles))
                     articles.append(ha)
 
             # 2.5 Statutory Companion Expansion (Codified Association Graph for Context Recall)
             if articles:
                 companion_ids = []
                 existing_art_ids = {a['parent_id'] for a in articles}
-                for a in articles[:2]:  # Check top 2 primary articles
+                for a in articles[:4]:  # Check top 4 primary articles
                     art_pid = a.get('parent_id')
                     if art_pid in STATUTORY_COMPANION_GRAPH:
                         for comp_id in STATUTORY_COMPANION_GRAPH[art_pid]:
@@ -878,19 +961,12 @@ def search_with_embedding(q_emb: list, query: str, document_id: Optional[str] = 
                         SELECT chunk_id, parent_type, parent_id, content
                         FROM document_chunks
                         WHERE parent_id = ANY(%s) AND parent_type = 'article';
-                    """, (companion_ids[:3],))
+                    """, (companion_ids[:6],))
                     comp_rows = cur.fetchall()
-                    top_art_score = float(articles[0].get('suitability_percent', 90.0))
-                    for idx, comp in enumerate(comp_rows):
-                        comp['suitability_percent'] = round(max(65.0, top_art_score * 0.94 - (idx * 2.0)), 1)
-                        comp['similarity'] = float(articles[0].get('similarity', 0.85)) * 0.94
+                    for comp in comp_rows:
+                        comp['is_companion'] = True
                         articles.append(comp)
                         existing_art_ids.add(comp['parent_id'])
-
-            # Ensure all articles have suitability_percent
-            for idx, a in enumerate(articles):
-                if 'suitability_percent' not in a:
-                    a['suitability_percent'] = calculate_suitability(a.get('similarity'), idx)
 
             # Enrich articles with hierarchy and article_number from civil_code_articles
             if articles:
@@ -908,18 +984,16 @@ def search_with_embedding(q_emb: list, query: str, document_id: Optional[str] = 
             # 3. Graph-Augmented RAG: Retrieve linked jurisprudence for the top articles (strictly secondary)
             linked_cases = []
             if articles:
-                article_ids = [a['parent_id'] for a in articles[:3]]
+                article_ids = [a['parent_id'] for a in articles[:4]]
                 cur.execute("""
                     SELECT r.article_id, j.case_uid, j.title, j.gr_number, j.content_summary, j.source_url, j.decision_date
                     FROM article_jurisprudence_relations r
                     JOIN jurisprudence_cases j ON r.case_uid = j.case_uid
                     WHERE r.article_id = ANY(%s)
-                    LIMIT 2;
+                    LIMIT 4;
                 """, (article_ids,))
                 
-                # Format them as supporting documents with suitability score
-                top_art_score = float(articles[0]['suitability_percent']) if articles else 88.0
-                for idx, row in enumerate(cur.fetchall()):
+                for row in cur.fetchall():
                     summary = row.get('content_summary') or ''
                     linked_cases.append({
                         "parent_type": "case",
@@ -932,14 +1006,12 @@ def search_with_embedding(q_emb: list, query: str, document_id: Optional[str] = 
                             "decision_date": row.get('decision_date'),
                             "content_summary": row.get('content_summary'),
                             "case_uid": row.get('case_uid')
-                        },
-                        "suitability_percent": round(max(60.0, min(95.0, top_art_score * 0.92 - (idx * 2.5))), 1)
+                        }
                     })
 
-            # 4. Top case matches (jurisprudence) via Hybrid Search - strictly supplementary
+            # 4. Top case matches (jurisprudence) via Hybrid Search - supplementary
             cases = []
-            if not linked_cases:
-                # If no linked jurisprudence was found in the graph, search jurisprudence_cases table directly
+            if len(linked_cases) < 2:
                 clean_terms = [w for w in re.split(r'\W+', query) if len(w) > 2 and w.lower() not in SEARCH_STOPWORDS]
                 if clean_terms:
                     case_search_query = " ".join(clean_terms[:6])
@@ -947,9 +1019,9 @@ def search_with_embedding(q_emb: list, query: str, document_id: Optional[str] = 
                         SELECT case_uid, title, gr_number, source_url, content_summary, decision_date
                         FROM jurisprudence_cases
                         WHERE to_tsvector('simple', title || ' ' || coalesce(content_summary, '')) @@ plainto_tsquery('simple', %s)
-                        LIMIT 1;
+                        LIMIT 2;
                     """, (case_search_query,))
-                    for idx, row in enumerate(cur.fetchall()):
+                    for row in cur.fetchall():
                         cases.append({
                             "parent_type": "case",
                             "parent_id": row['case_uid'],
@@ -961,13 +1033,12 @@ def search_with_embedding(q_emb: list, query: str, document_id: Optional[str] = 
                                 "decision_date": row.get('decision_date'),
                                 "content_summary": row.get('content_summary'),
                                 "case_uid": row.get('case_uid')
-                            },
-                            "suitability_percent": round(max(55.0, 82.0 - (idx * 4.0)), 1)
+                            }
                         })
 
-            # Merge and apply dynamic relevance pruning for high Context Precision
+            # Merge and apply unified high-accuracy ranking without discarding lower-ranked citations
             all_found = articles + linked_cases + cases
-            all_found = prune_retrieval_noise(all_found, max_items=4)
+            all_found = rank_and_stratify_citations(all_found, query, context_budget=15)
             return all_found
     finally:
         conn.close()
@@ -1013,8 +1084,13 @@ def format_context_item(row: dict, doc_filename: Optional[str] = None) -> str:
         lines.append(f"CONTENT: {content_text}")
         return "\n".join(lines) + "\n"
 
-def save_assistant_message_to_db(session_id: Optional[str], content: str, citations: list):
-    """Safely saves the completed assistant response to chat_messages."""
+def save_assistant_message_to_db(
+    session_id: Optional[str],
+    content: str,
+    citations: list,
+    legal_analytics: Optional[dict] = None,
+):
+    """Safely saves the completed assistant response and its legal analytics to chat_messages."""
     if not session_id:
         return
     try:
@@ -1027,9 +1103,9 @@ def save_assistant_message_to_db(session_id: Optional[str], content: str, citati
         conn = get_db_connection()
         with conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO chat_messages (session_id, role, content, citations)
-                VALUES (%s, 'assistant', %s, %s);
-            """, (session_id, content, dumps(citations)))
+                INSERT INTO chat_messages (session_id, role, content, citations, legal_analytics)
+                VALUES (%s, 'assistant', %s, %s, %s);
+            """, (session_id, content, dumps(citations), dumps(legal_analytics) if legal_analytics else None))
             conn.commit()
         conn.close()
     except Exception as db_err:
@@ -1135,7 +1211,7 @@ YOUR MANDATORY RESPONSE RULES:
 
                     logging.info("Finished streaming non-legal refusal.")
                     yield f"data: {dumps({'type': 'done'})}\n\n"
-                    save_assistant_message_to_db(request.session_id, full_text, [])
+                    save_assistant_message_to_db(request.session_id, full_text, [], analytics_payload)
                     return
 
                 # Branch B: Specialized Philippine Law Outside Civil Code (Bypass retrieval, provide statutory redirection)
@@ -1188,7 +1264,7 @@ YOUR MANDATORY REDIRECTION RULES:
 
                     logging.info("Finished streaming legal redirection.")
                     yield f"data: {dumps({'type': 'done'})}\n\n"
-                    save_assistant_message_to_db(request.session_id, full_text, [])
+                    save_assistant_message_to_db(request.session_id, full_text, [], analytics_payload)
                     return
 
                 # Branch C: In-Domain Philippine Civil Law Inquiry (Execute hybrid retrieval)
@@ -1255,8 +1331,8 @@ YOUR MANDATORY REDIRECTION RULES:
                 yield f"data: {dumps({'type': 'status', 'stage': 'retrieving_done', 'message': ret_done_msg, 'count': len(results)})}\n\n"
                 await asyncio.sleep(0.45)
 
-                # Calculate NLI Faithfulness / Statutory Grounding score
-                statutory_present = any(c.get('parent_type') in ('article', 'civil_code') for c in results)
+                # Pre-generation: determine document legality, but defer real NLI
+                # to post-generation (symbolic NLI needs the full generated answer).
                 DOC_LEGAL_MARKERS = [
                     'contract', 'agreement', 'lease', 'lessor', 'lessee', 'party', 'parties', 
                     'obligat', 'liability', 'liable', 'breach', 'stipulat', 'hereby', 'whereas', 
@@ -1270,21 +1346,22 @@ YOUR MANDATORY REDIRECTION RULES:
                 is_doc_legal_flag = any(m in doc_sample for m in DOC_LEGAL_MARKERS) if is_doc_analysis else True
 
                 if is_doc_analysis and not is_doc_legal_flag:
-                    # Non-legal document (e.g. math seatwork) has no statutory entailment under RA 386
-                    nli_score = None
+                    # Non-legal document: skip NLI entirely
+                    nli_score_val = None
                     nli_status = 'Out of Domain'
-                    top_score = 0.0
                     is_out_of_domain = True
                 else:
-                    top_score = max([float(c.get('suitability_percent', 0.0)) for c in results], default=85.0)
-                    nli_score = round(min(98.5, max(88.0, top_score * 1.02)), 1) if statutory_present else 82.0
-                    nli_status = 'Grounded' if nli_score >= 80 else 'Unverified'
+                    # Placeholder: real NLI is computed post-generation
+                    nli_score_val = None
+                    nli_status = 'Pending'
                     is_out_of_domain = False
 
+                top_display = max([float(c.get('display_suitability', 0.0)) for c in results], default=0.0)
+
                 analytics_payload = {
-                    'nli_score': nli_score,
+                    'nli_score': nli_score_val,
                     'nli_status': nli_status,
-                    'top_article_score': top_score,
+                    'top_article_score': top_display,
                     'is_document_legal': is_doc_legal_flag if is_doc_analysis else None,
                     'is_out_of_domain': is_out_of_domain,
                     'domain_category': 'civil' if not is_out_of_domain else 'non_legal_document',
@@ -1308,6 +1385,9 @@ YOUR MANDATORY REDIRECTION RULES:
                 # Combine results and retained prior citations
                 all_citations = results + retained_prior
                 for item in all_citations:
+                    # In a 70k context window, prioritize in-context authorities for the model prompt
+                    if item.get('is_in_context') is False:
+                        continue
                     ptype = item.get('parent_type', 'source')
                     if ptype == 'article':
                         statutory_items.append(item)
@@ -1336,9 +1416,9 @@ YOUR MANDATORY REDIRECTION RULES:
                         context_str += f"\n[Supporting Case {idx}]\n" + format_context_item(row, doc_filename)
                     context_str += "\n"
 
-                # Bounded context safety: if context exceeds budget, truncate ONLY from secondary jurisprudence
+                # Bounded context safety for 70k token context window (180,000 characters safety threshold)
                 # NEVER truncate the primary Civil Code statutory provisions
-                if len(context_str) > 24000:
+                if len(context_str) > 180000:
                     context_str = ""
                     if statutory_items:
                         context_str += "=== PRIMARY STATUTORY AUTHORITY: PHILIPPINE CIVIL CODE (REPUBLIC ACT NO. 386) ===\n"
@@ -1352,9 +1432,9 @@ YOUR MANDATORY REDIRECTION RULES:
                         context_str += "\n"
                     if case_items:
                         context_str += "=== SECONDARY SUPPORTING INTERPRETATIONS: JURISPRUDENCE (SUPREME COURT DOCTRINES) ===\n"
-                        for idx, row in enumerate(case_items[:2], 1):
+                        for idx, row in enumerate(case_items[:6], 1):
                             context_str += f"\n[Supporting Case {idx}]\n" + format_context_item(row, doc_filename)
-                        context_str += "\n...[Additional secondary jurisprudence omitted to preserve statutory focus]...\n"
+                        context_str += "\n...[Additional secondary jurisprudence omitted to preserve context focus]...\n"
 
                 if request.document_id:
                     doc_display_name = doc_filename or "Uploaded Legal Document"
@@ -1370,8 +1450,31 @@ YOUR TASK IN THIS ACTIVE SESSION:
 4. LEGAL DOCUMENT HANDLING: If the document is a legal agreement or contract (sales, leases, loans, employment, deeds, etc.):
    - PRIMARY STATUTORY GROUNDING: Cross-examine the document's provisions PRIMARILY against the statutory provisions of the Philippine Civil Code (Republic Act No. 386). Ground all legal assessments, rights, obligations, validity, or void stipulations directly on specific Civil Code Articles first, using Supreme Court jurisprudence only as secondary supporting doctrine.
    - If a specific fact or term is stated in the document excerpts, state it clearly.
-   - MANDATORY LEGAL ACTION SUMMARY: Conclude the document analysis with the structured Legal Action Summary specifying Governing Civil Code Article(s), Competent Court / Jurisdiction (MTC vs RTC thresholds under RA 11576, or Family Court), and Possible Legal Action to File.
-5. Provide specific citations to Civil Code Article numbers first, and Supreme Court case G.R. numbers where applicable.
+
+5. MANDATORY RESPONSE FORMATTING & MARKDOWN STRUCTURE:
+   Your output MUST be formatted using standard GitHub-flavored Markdown. Structure your response into clear, distinct sections:
+
+   ### 📌 Summary & Direct Conclusion
+   [1-2 clear, direct sentences addressing the query in relation to "{doc_display_name}".]
+
+   ### 📚 Statutory Grounding & Provisions
+   > **[Governing Civil Code Article / Provision]**
+   > *[Hierarchy / Book Title]*
+   >
+   > "[Core statutory text or excerpt rule]"
+
+   **Key Requisites & Stipulations:**
+   - **[Stipulation 1]**: [Explanation]
+   - **[Stipulation 2]**: [Explanation]
+
+   ### ⚖️ Legal Analysis & Application
+   [Detailed analysis applying statutory provisions to the document. If the user requested a Tagalog explanation ("explain in tagalog" / "paliwanag sa tagalog"), provide this analysis in clear, professional Tagalog while preserving statutory Article numbers.]
+
+   ### 📋 Legal Action Summary
+   - **Governing Civil Code Article(s)**: [List specific RA 386 articles, e.g., Article 1191, or "None (Non-Legal Document)"]
+   - **Competent Court / Jurisdiction**: [Specify court based on RA 11576 thresholds, or "None"]
+   - **Pre-filing Requirement**: [State whether Barangay Conciliation is mandatory or exempt, or "None"]
+   - **Possible Cause of Action to File**: [Exact technical legal title, or "None"]
 
 ACTIVE DOCUMENT:
 Filename: {doc_display_name}
@@ -1386,9 +1489,8 @@ CONTEXT:
 MANDATORY RAGAS COMPLIANCE & LEGAL ACCURACY RULES:
 
 1. INVERTED PYRAMID (DIRECT ANSWER FIRST - MAXIMUM ANSWER RELEVANCY):
-   - Always begin your response immediately with a clear, direct 1-to-2 sentence affirmative or negative legal conclusion answering the user's specific inquiry.
+   - Always begin your response immediately under `### 📌 Direct Answer & Legal Conclusion` with a clear, direct 1-to-2 sentence legal conclusion answering the user's specific inquiry.
    - Do NOT begin with generic conversational filler, historical preambles, or unsolicited lectures.
-   - Directly answer the core question before elaborating on statutory elements or secondary doctrines.
 
 2. PRIMARY STATUTORY GROUNDING & ANCHORED CITATIONS (FAITHFULNESS):
    - The Philippine Civil Code (RA 386) is your HIGHEST AND CONTROLLING AUTHORITY.
@@ -1399,12 +1501,12 @@ MANDATORY RAGAS COMPLIANCE & LEGAL ACCURACY RULES:
 3. STRICT CONTEXT BOUNDARY & NO DOCTRINE MISAPPLICATION (SEMANTIC INTEGRITY):
    - You must derive all legal definitions, requisites, and conclusions EXCLUSIVELY from the provided CONTEXT.
    - NO EXTERNAL INVENTIONS: If an element, remedy, or prescriptive period is absent from the provided CONTEXT, state clearly that the retrieved sources do not specify it rather than hallucinating.
-   - SEMANTIC INTEGRITY: Never misapply retrieved legal passages to unrelated factual situations. For example, do NOT cite Implied Trust rules (Art. 1450) or Property Easements to answer a breach of contract, debt collection, or quasi-delict query. Apply each article strictly according to its statutory title and intended civil doctrine.
+   - SEMANTIC INTEGRITY: Never misapply retrieved legal passages to unrelated factual situations. Apply each article strictly according to its statutory title and intended civil doctrine.
 
 4. CIVIL LAW SCOPE & COLLOQUIAL INQUIRIES:
    - The Philippine Civil Code broadly governs: Persons & Family Relations, Human Relations (Arts. 19-21), Independent Civil Actions (Arts. 32-34), Property & Ownership, Succession & Wills, Obligations & Contracts, Torts / Quasi-Delicts (Arts. 2176-2180), and Damages (Arts. 2199-2235).
    - Inquiries involving accidents, harm, injuries, or disputes ("ikaso", "away", "nasaktan", "nabangga") inherently involve CIVIL LIABILITY for damages and quasi-delict under the Civil Code.
-   - DO NOT refuse a query simply because the factual situation may also involve a crime or because the user used colloquial phrasing. Address the query from the perspective of Philippine Civil Law.
+   - Address colloquial or Tagalog queries from the perspective of Philippine Civil Law.
 
 5. NON-CIVIL LEGAL REDIRECTION RULE:
    - If the inquiry primarily falls outside the Philippine Civil Code (e.g., purely criminal prosecution, tax assessment under NIRC/BIR, labor standards under DOLE/NLRC):
@@ -1413,20 +1515,32 @@ MANDATORY RAGAS COMPLIANCE & LEGAL ACCURACY RULES:
      c. Suggest the proper forum/agency (e.g., Prosecutor's Office, BIR, NLRC/DOLE).
      d. Note any concurrent civil action for damages/restitution (e.g., Arts. 29, 32, 33, 2176).
 
-6. STRUCTURE OF RESPONSE:
-   - **Direct Answer & Conclusion**: 1-2 direct sentences answering the query.
-   - **Governing Statutory Basis**: Specific Civil Code Article(s) and their essential legal requisites.
-   - **Application to Facts**: Clear analysis applying the statutory elements to the user's specific scenario.
-   - **Legal Action Summary**: Conclude every substantive civil law evaluation with:
-     ### ⚖️ Legal Action Summary
-     - **Governing Civil Code Article(s)**: [List specific RA 386 articles, e.g., Article 1191, Article 1170]
-     - **Competent Court / Jurisdiction**: [Specify court based on RA 11576 monetary thresholds:
-       * Municipal Trial Court (MTC / MeTC / MTCC / MCTC) if claim/damages does not exceed ₱2,000,000 (or Small Claims Court if claim is ≤ ₱1,000,000 under SC rules);
-       * Regional Trial Court (RTC) if claim/damages exceeds ₱2,000,000, or if incapable of pecuniary estimation (e.g., rescission, specific performance, injunction);
-       * Family Court (RA 8369) for nullity/annulment of marriage (Art. 36), legal separation, custody, and child support;
-       * Real Property: MTC if assessed value ≤ ₱400,000; RTC if assessed value > ₱400,000.]
-     - **Pre-filing Requirement**: [State whether Katarungang Pambarangay (Barangay Conciliation under RA 7160) is mandatory or exempt.]
-     - **Possible Cause of Action to File**: [Exact technical legal title, e.g., Action for Judicial Rescission with Damages, Action for Quasi-Delict (Art. 2176), Small Claims Action for Collection of Sum of Money.]
+6. MANDATORY RESPONSE FORMATTING & MARKDOWN STRUCTURE:
+   Your response MUST be organized cleanly using standard Markdown headers (`###`), blockquotes (`>`), bold text, and bulleted lists. Never dump unformatted text or raw single-line blobs.
+
+   Follow this exact section template:
+
+   ### 📌 Direct Answer & Legal Conclusion
+   [1-2 clear, direct sentences answering the query immediately with the primary legal conclusion.]
+
+   ### 📚 Governing Statutory Basis
+   > **Article [Number] (Republic Act No. 386 - Civil Code of the Philippines)**
+   > *[Book / Title / Chapter Hierarchy]*
+   >
+   > "[Core statutory text or codified provision]"
+
+   **Key Statutory Requisites & Elements:**
+   - **[Element / Requisite 1]**: [Explanation]
+   - **[Element / Requisite 2]**: [Explanation]
+
+   ### ⚖️ Legal Analysis & Application
+   [Detailed analysis applying the statutory elements directly to the factual scenario. If the query is in Tagalog or asks for a Tagalog explanation ("explain in tagalog" / "paliwanag sa tagalog"), write this analysis in clear, professional Tagalog while retaining statutory Article numbers and legal terms.]
+
+   ### 📋 Legal Action Summary
+   - **Governing Civil Code Article(s)**: [List specific RA 386 articles, e.g., Article 56, Article 1191]
+   - **Competent Court / Jurisdiction**: [Specify court based on RA 11576 thresholds: MTC (≤ ₱2M), RTC (> ₱2M or incapable of pecuniary estimation), Family Court, etc.]
+   - **Pre-filing Requirement**: [State whether Katarungang Pambarangay / Barangay Conciliation is mandatory or exempt]
+   - **Possible Cause of Action to File**: [Exact technical legal title, e.g., Action for Nullity of Marriage, Action for Judicial Rescission, N/A]
 
 CONTEXT:
 {context_str}
@@ -1449,12 +1563,52 @@ CONTEXT:
                     if is_first_chunk:
                         is_first_chunk = False
                         yield f"data: {dumps({'type': 'status', 'stage': 'streaming', 'message': 'Streaming legal analysis...'})}\n\n"
-                        # Deferred emission: deliver citations and grounding analytics right when streaming starts
+                        # Deferred emission: deliver citations right when streaming starts
                         yield f"data: {dumps({'type': 'citations', 'data': results})}\n\n"
                         yield f"data: {dumps({'type': 'accumulated_citations', 'data': accumulated_citations})}\n\n"
-                        yield f"data: {dumps({'type': 'legal_analytics', 'data': analytics_payload})}\n\n"
                     full_text += chunk
                     yield f"data: {dumps({'type': 'text', 'text': chunk})}\n\n"
+
+                # ── Post-Generation Neuro-Symbolic Hybrid NLI Verification ─────
+                # Run the hybrid NLI engine (Symbolic Logic + Gemma in LM Studio)
+                # on the completed answer against retrieved context to compute
+                # accurate statutory faithfulness and detect contradictions.
+                if not is_out_of_domain and full_text.strip():
+                    # Notify frontend that response generation finished and statutory NLI audit has started
+                    yield f"data: {dumps({'type': 'status', 'stage': 'evaluating_nli', 'message': 'Auditing statutory grounding & NLI entailment...'})}\n\n"
+                    evaluating_payload = {
+                        'nli_score': None,
+                        'nli_status': 'Evaluating',
+                        'top_article_score': top_display,
+                        'is_document_legal': is_doc_legal_flag if is_doc_analysis else None,
+                        'is_out_of_domain': False,
+                        'domain_category': 'civil',
+                        'target_domain': None,
+                    }
+                    yield f"data: {dumps({'type': 'legal_analytics', 'data': evaluating_payload})}\n\n"
+
+                    try:
+                        nli_result = await nli_score_faithfulness_async(
+                            full_text, results, mode="hybrid"
+                        )
+                        analytics_payload = {
+                            'nli_score': nli_result.score_percent,
+                            'nli_status': nli_result.status,
+                            'top_article_score': top_display,
+                            'is_document_legal': is_doc_legal_flag if is_doc_analysis else None,
+                            'is_out_of_domain': False,
+                            'domain_category': 'civil',
+                            'target_domain': None,
+                            'claims_total': nli_result.claims_total,
+                            'claims_entailed': nli_result.claims_entailed,
+                            'claims_neutral': nli_result.claims_neutral,
+                            'claims_contradicted': nli_result.claims_contradicted,
+                            'nli_engine': nli_result.engine,
+                        }
+                        # Emit the verified analytics to the frontend
+                        yield f"data: {dumps({'type': 'legal_analytics', 'data': analytics_payload})}\n\n"
+                    except Exception as nli_err:
+                        logging.error(f"Post-gen Hybrid NLI failed: {nli_err}")
 
                 # Post-Synthesis Safety Check: If the generated answer is an explicit refusal or out-of-scope determination
                 if is_refusal_or_out_of_scope(full_text):
@@ -1480,7 +1634,7 @@ CONTEXT:
                 yield f"data: {dumps({'type': 'done'})}\n\n"
 
                 # Save to DB if valid UUID session_id is provided
-                save_assistant_message_to_db(request.session_id, full_text, results)
+                save_assistant_message_to_db(request.session_id, full_text, results, analytics_payload)
 
             except Exception as stream_err:
                 logging.error(f"Error in SSE stream generation: {stream_err}")

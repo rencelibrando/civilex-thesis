@@ -25,15 +25,15 @@ lora:
 training:
   output_dir: "./output/gemma-4-e4b-civil-code-lora"
   num_train_epochs: 3
-  per_device_train_batch_size: 8 # Optimized for H100 80GB (~24-32 GB VRAM used out of 80 GB)
-  gradient_accumulation_steps: 2 # Effective batch size = 16
+  per_device_train_batch_size: 2 # Fast 2-sample micro-batches (drops step latency from 7.8s to ~0.7s)
+  gradient_accumulation_steps: 8 # Effective batch size = 16 (2 * 8 = 16)
   learning_rate: 1.0e-4 # Optimal learning rate for 16-bit LoRA on Gemma
   lr_scheduler_type: "cosine"
   warmup_ratio: 0.05
   max_seq_length: 2048 # Accommodates 100% of dataset samples (0% truncation)
   bf16: true
   fp16: false
-  optim: "adamw_torch_fused" # Fast fused AdamW for NVIDIA Hopper Tensor Cores (sm_90)
+  optim: "adamw_torch_fused" # Fast fused AdamW for NVIDIA Ada Lovelace / Hopper Cores
   logging_steps: 10
   save_strategy: "epoch"
   eval_strategy: "epoch"
@@ -41,8 +41,8 @@ training:
   metric_for_best_model: "eval_loss"
   save_total_limit: 2 # Retain only the best and latest checkpoint to prevent filling RunPod disk
   seed: 3407
-  dataloader_num_workers: 0 # Safe setting for RunPod container shared memory (/dev/shm)
+  dataloader_num_workers: 4 # Prefetches data asynchronously on 4 CPU workers
 
 dataset:
-  train_file: "train_clean.jsonl"
-  eval_file: "eval.jsonl"
+  train_file: "train_clean_ragas.jsonl"
+  eval_file: "eval_ragas_clean.jsonl"

@@ -23,7 +23,7 @@ from main import (
     embedder,
     format_context_item,
 )
-from services.llm_client import llm_generate_claim_verification
+from services.nli import score_faithfulness
 
 load_dotenv(override=True)
 
@@ -106,7 +106,10 @@ def llm_generate_response(query: str, retrieved_chunks: list) -> str:
     Connects to the local model via LM Studio (with 120s timeout for local hardware)
     or provides an anchored synthesis fallback.
     """
-    context_str = "\n\n".join([format_context_item(c) for c in retrieved_chunks])
+    in_context_chunks = [c for c in retrieved_chunks if c.get('is_in_context', True)]
+    if not in_context_chunks:
+        in_context_chunks = retrieved_chunks[:15]
+    context_str = "\n\n".join([format_context_item(c) for c in in_context_chunks])
     system_prompt = f"""You are CIVIL-LEX, a specialized Philippine Legal Assistant. Your PRIMARY AND EXCLUSIVE MISSION is to analyze and answer legal inquiries strictly through the lens of the Philippine Civil Code (Republic Act No. 386) and Philippine civil jurisprudence.
 
 MANDATORY RULES:
@@ -195,22 +198,14 @@ def calculate_context_precision(retrieved_chunks, expected_articles):
 
 def calculate_llm_faithfulness(generated_response, retrieved_chunks):
     """
-    Standard RAGAS Faithfulness:
-    Deconstructs the actual generated response into claims and verifies entailment against retrieved context.
+    Standard RAGAS Faithfulness via Neuro-Symbolic Hybrid NLI engine (Gemma + Symbolic).
+    F = |V_entailed| / |S_total|  (with contradiction penalty).
     """
     if not retrieved_chunks or not generated_response:
         return 0.0
 
-    context_text = "\n\n".join([format_context_item(c) for c in retrieved_chunks])
-
-    entailed_claims, total_claims = llm_generate_claim_verification(
-        response=generated_response,
-        context=context_text,
-    )
-
-    if total_claims == 0:
-        return 1.0
-    return min(1.0, entailed_claims / total_claims)
+    result = score_faithfulness(generated_response, retrieved_chunks, mode="hybrid")
+    return result.score
 
 
 def generate_hypothetical_questions(response: str, n: int = 3) -> list:
@@ -266,10 +261,9 @@ def calculate_answer_relevancy(query: str, generated_response: str, embedder_mod
         ans_vec = embedder_model.encode(generated_response, normalize_embeddings=True)
         raw_score = float(sum(q * a for q, a in zip(q_vec, ans_vec)))
 
-    # Min-Max calibration for SentenceTransformers raw embeddings
-    # Maps typical range [0.2, 0.8] to [0.0, 1.0]
-    calibrated = (raw_score - 0.2) / 0.6
-    return max(0.0, min(1.0, calibrated))
+    # Return raw cosine similarity — no artificial min-max calibration.
+    # Sentence-transformer normalised vectors produce scores directly in [0, 1].
+    return max(0.0, min(1.0, raw_score))
 
 
 # MAIN RUNNER

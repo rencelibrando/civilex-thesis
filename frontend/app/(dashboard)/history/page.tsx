@@ -6,24 +6,19 @@ import {
   History as HistoryIcon,
   Search,
   FileText,
-  ChevronRight,
   MessageSquare,
   Trash2,
   Pencil,
   X,
   AlertTriangle,
   Loader2,
-  Plus,
   Calendar,
-  Sparkles,
-  Layers,
   ArrowRight,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Button, buttonVariants } from "@/components/ui/button";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
@@ -44,9 +39,7 @@ interface Session {
   document_id?: string;
 }
 
-
 // Time grouping & formatting helpers
-
 function formatRelativeTime(dateString: string): string {
   const date = new Date(dateString);
   const now = new Date();
@@ -89,7 +82,6 @@ export default function HistoryPage() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [isLoading, setIsLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<"all" | "legal" | "document">("all");
 
   // Rename modal state
   const [renamingSession, setRenamingSession] = useState<Session | null>(null);
@@ -200,25 +192,10 @@ export default function HistoryPage() {
 
   // Metric counts
   const totalCount = sessions.length;
-  const legalCount = useMemo(
-    () => sessions.filter((s) => s.session_type !== "document" && s.session_type !== "document_analysis" && !s.document_id).length,
-    [sessions]
-  );
-  const docCount = useMemo(
-    () => sessions.filter((s) => s.session_type === "document" || s.session_type === "document_analysis" || Boolean(s.document_id)).length,
-    [sessions]
-  );
 
-  // Filtered and Sorted Sessions
+  // Filtered and Sorted Sessions (Searchable, Chronological)
   const processedSessions = useMemo(() => {
     let list = [...sessions];
-
-    // Filter by Tab
-    if (activeTab === "legal") {
-      list = list.filter((s) => s.session_type !== "document" && s.session_type !== "document_analysis" && !s.document_id);
-    } else if (activeTab === "document") {
-      list = list.filter((s) => s.session_type === "document" || s.session_type === "document_analysis" || Boolean(s.document_id));
-    }
 
     // Filter by Search
     if (searchQuery.trim()) {
@@ -232,7 +209,7 @@ export default function HistoryPage() {
     });
 
     return list;
-  }, [sessions, activeTab, searchQuery]);
+  }, [sessions, searchQuery]);
 
   // Grouped by time period
   const groupedSessions = useMemo(() => {
@@ -280,82 +257,32 @@ export default function HistoryPage() {
         </div>
 
         {/* =============================================================== */}
-        {/* 2. CONTROLS BAR: SEARCH & TABS                               */}
+        {/* 2. CONTROLS BAR: SEARCH                                        */}
         {/* =============================================================== */}
-        <div className="space-y-4">
-          <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
-            {/* Search Input */}
-            <div className="relative flex-1 min-w-0">
-              <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
-              <Input
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search case title or inquiry keyword..."
-                className="pl-10 pr-9 bg-card border-border/80 rounded-xl text-foreground placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-primary/20 h-10 text-sm"
-              />
-              {searchQuery && (
-                <button
-                  type="button"
-                  onClick={() => setSearchQuery("")}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground cursor-pointer p-0.5 rounded-full hover:bg-muted"
-                >
-                  <X className="w-3.5 h-3.5" />
-                </button>
-              )}
-            </div>
-          </div>
-
-          {/* Three-Tier Filter Tabs */}
-          <div className="flex items-center gap-1.5 p-1 bg-muted/60 dark:bg-muted/40 border border-border/60 rounded-xl w-fit">
-            <button
-              type="button"
-              onClick={() => setActiveTab("all")}
-              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors cursor-pointer ${activeTab === "all"
-                ? "bg-background text-foreground shadow-xs font-semibold"
-                : "text-muted-foreground hover:text-foreground"
-                }`}
-            >
-              <Layers className="w-3.5 h-3.5" />
-              <span>All History</span>
-              <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4 ml-0.5">
-                {totalCount}
-              </Badge>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setActiveTab("legal")}
-              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors cursor-pointer ${activeTab === "legal"
-                ? "bg-background text-foreground shadow-xs font-semibold"
-                : "text-muted-foreground hover:text-foreground"
-                }`}
-            >
-              <MessageSquare className="w-3.5 h-3.5 text-primary" />
-              <span>Consultations</span>
-              <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4 ml-0.5">
-                {legalCount}
-              </Badge>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setActiveTab("document")}
-              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors cursor-pointer ${activeTab === "document"
-                ? "bg-background text-foreground shadow-xs font-semibold"
-                : "text-muted-foreground hover:text-foreground"
-                }`}
-            >
-              <FileText className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
-              <span>Document Audits</span>
-              <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4 ml-0.5">
-                {docCount}
-              </Badge>
-            </button>
+        <div className="flex items-center justify-between gap-3">
+          {/* Search Input */}
+          <div className="relative flex-1 min-w-0">
+            <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
+            <Input
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search case title or inquiry keyword..."
+              className="pl-10 pr-9 bg-card border-border/80 rounded-xl text-foreground placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-primary/20 h-10 text-sm"
+            />
+            {searchQuery && (
+              <button
+                type="button"
+                onClick={() => setSearchQuery("")}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground cursor-pointer p-0.5 rounded-full hover:bg-muted"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
           </div>
         </div>
 
         {/* =============================================================== */}
-        {/* 3. CASE LIST: CHRONOLOGICAL TIMELINE                           */}
+        {/* 3. CASE LIST: ALL RECORDED SESSIONS                             */}
         {/* =============================================================== */}
         {isLoading ? (
           <div className="space-y-3 pt-2">
@@ -408,7 +335,7 @@ export default function HistoryPage() {
 
               return (
                 <div key={groupTitle} className="space-y-2.5">
-                  {/* Group Header */}
+                  {/* Date Category Header */}
                   <div className="flex items-center justify-between px-1">
                     <div className="flex items-center gap-2">
                       <Calendar className="w-3.5 h-3.5 text-muted-foreground" />
@@ -438,10 +365,11 @@ export default function HistoryPage() {
                           <CardContent className="p-3.5 sm:p-4 flex items-center justify-between gap-3">
                             <Link href={linkHref} className="flex items-center gap-3.5 min-w-0 flex-1 cursor-pointer">
                               <div
-                                className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 transition-colors ${isDoc
-                                  ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 group-hover:bg-emerald-500/20"
-                                  : "bg-primary/10 text-primary group-hover:bg-primary/20"
-                                  }`}
+                                className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 transition-colors ${
+                                  isDoc
+                                    ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 group-hover:bg-emerald-500/20"
+                                    : "bg-primary/10 text-primary group-hover:bg-primary/20"
+                                }`}
                               >
                                 {isDoc ? <FileText className="w-5 h-5" /> : <MessageSquare className="w-5 h-5" />}
                               </div>
@@ -463,10 +391,11 @@ export default function HistoryPage() {
                                   <span>•</span>
                                   <Badge
                                     variant="outline"
-                                    className={`text-[10px] uppercase font-semibold py-0 px-1.5 h-4.5 ${isDoc
-                                      ? "text-emerald-600 dark:text-emerald-400 border-emerald-500/20 bg-emerald-500/5"
-                                      : "text-primary border-primary/20 bg-primary/5"
-                                      }`}
+                                    className={`text-[10px] uppercase font-semibold py-0 px-1.5 h-4.5 ${
+                                      isDoc
+                                        ? "text-emerald-600 dark:text-emerald-400 border-emerald-500/20 bg-emerald-500/5"
+                                        : "text-primary border-primary/20 bg-primary/5"
+                                    }`}
                                   >
                                     {isDoc ? "Document Audit" : "Consultation"}
                                   </Badge>
@@ -503,6 +432,7 @@ export default function HistoryPage() {
                               <Link
                                 href={linkHref}
                                 className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:bg-primary hover:text-primary-foreground transition-all rounded-lg px-2.5 py-1.5 ml-1"
+                                title="Resume consultation"
                               >
                                 <span className="hidden sm:inline">Resume</span>
                                 <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-0.5 transition-transform" />

@@ -22,6 +22,7 @@ export type RagStage =
   | "prompting"
   | "thinking"
   | "streaming"
+  | "evaluating_nli"
   | "completed"
   | "error";
 
@@ -33,12 +34,16 @@ export interface RagStatus {
 
 export interface LegalAnalytics {
   nli_score?: number | null;
-  nli_status: "Grounded" | "Unverified" | "Out of Domain";
+  nli_status: "Grounded" | "Unverified" | "Out of Domain" | "Pending" | "Evaluating";
   top_article_score?: number;
   is_document_legal?: boolean | null;
   is_out_of_domain?: boolean;
   domain_category?: "civil" | "non_legal" | "other_legal" | "non_legal_document";
   target_domain?: string | null;
+  claims_total?: number;
+  claims_entailed?: number;
+  claims_neutral?: number;
+  claims_contradicted?: number;
 }
 
 export interface Message {
@@ -355,6 +360,11 @@ export function mergeCitations(existing: any[], incoming: any[]): any[] {
   }
   const merged = Array.from(map.values());
   return merged.sort((a, b) => {
+    const aOut = a.is_in_context === false || a.rank_status === "out_of_rank" ? 1 : 0;
+    const bOut = b.is_in_context === false || b.rank_status === "out_of_rank" ? 1 : 0;
+    if (aOut !== bOut) return aOut - bOut;
+    const rankDiff = (a?.rank || 999) - (b?.rank || 999);
+    if (rankDiff !== 0) return rankDiff;
     const scoreA = Number(a?.suitability_percent) || 0;
     const scoreB = Number(b?.suitability_percent) || 0;
     const scoreDiff = scoreB - scoreA;
@@ -678,9 +688,14 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                     )
                   );
                 } else if (data.type === "citations") {
-                  receivedCitations = (data.data || []).sort(
-                    (a: any, b: any) => (Number(b?.suitability_percent) || 0) - (Number(a?.suitability_percent) || 0)
-                  );
+                  receivedCitations = (data.data || []).sort((a: any, b: any) => {
+                    const aOut = a.is_in_context === false || a.rank_status === "out_of_rank" ? 1 : 0;
+                    const bOut = b.is_in_context === false || b.rank_status === "out_of_rank" ? 1 : 0;
+                    if (aOut !== bOut) return aOut - bOut;
+                    const rankDiff = (a?.rank || 999) - (b?.rank || 999);
+                    if (rankDiff !== 0) return rankDiff;
+                    return (Number(b?.suitability_percent) || 0) - (Number(a?.suitability_percent) || 0);
+                  });
                   setCurrentCitations(receivedCitations);
                   setRetainedCitations((prev) => mergeCitations(prev, receivedCitations));
                   setMessages((prev) =>

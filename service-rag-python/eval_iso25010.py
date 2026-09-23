@@ -16,11 +16,15 @@ import os
 import time
 import statistics
 import psycopg2
-from psycopg2.extras import RealDictCursor
 from sentence_transformers import SentenceTransformer
 from dotenv import load_dotenv
 
 load_dotenv(override=True)
+
+# Import the production RAG pipeline and symbolic NLI engine
+from main import embed_and_search
+from services.nli import score_faithfulness
+from eval_ragas import llm_generate_response
 
 POSTGRES_DB_URL = os.getenv("POSTGRES_DB_URL", "postgresql://postgres:postgres@localhost:54322/postgres")
 EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME", "sentence-transformers/stsb-xlm-r-multilingual")
@@ -94,6 +98,8 @@ def run_benchmark():
     retrieval_latencies = []
     statutory_recalls = []
     nli_entailment_scores = []
+    total_contradicted = 0
+    total_claims = 0
 
     print("\n[Stage 3] Executing Scenario Benchmarks...")
     print("-" * 70)
@@ -103,45 +109,41 @@ def run_benchmark():
         query = scenario["query"]
         expected = scenario["expected_articles"]
 
-        # Measure Embedding Time
+        # Measure Embedding + Retrieval via production hybrid pipeline
         t_start_emb = time.perf_counter()
-        q_emb = embedder.encode(query, normalize_embeddings=True).tolist()
+        _q_emb = embedder.encode(query, normalize_embeddings=True).tolist()
         t_emb = (time.perf_counter() - t_start_emb) * 1000  # in ms
         embedding_latencies.append(t_emb)
 
-        # Measure Retrieval Time (Vector)
         t_start_ret = time.perf_counter()
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("""
-                SELECT parent_id, 1 - (embedding <=> %s::vector) AS similarity
-                FROM document_chunks
-                WHERE parent_type = 'article'
-                ORDER BY embedding <=> %s::vector
-                LIMIT 5;
-            """, (q_emb, q_emb))
-            retrieved_rows = cur.fetchall()
+        retrieved_chunks = embed_and_search(query)
         t_ret = (time.perf_counter() - t_start_ret) * 1000  # in ms
         retrieval_latencies.append(t_ret)
 
-        retrieved_ids = [r['parent_id'] for r in retrieved_rows]
-        top_sim = retrieved_rows[0]['similarity'] if retrieved_rows else 0.0
-        suitability_pct = min(98.0, max(52.0, ((top_sim - 0.20) / 0.58) * 100))
+        retrieved_ids = [r.get('parent_id', '') for r in retrieved_chunks]
+        top_display = max([float(r.get('display_suitability', 0)) for r in retrieved_chunks], default=0.0)
 
-        # Check Recall
+        # Statutory Recall
         matched_hits = [e for e in expected if any(e in rid for rid in retrieved_ids)]
         recall = len(matched_hits) / len(expected) if expected else 1.0
         statutory_recalls.append(recall)
 
-        # Compute NLI Faithfulness Score
-        nli_score = round(min(98.5, max(85.0, suitability_pct * 1.02)), 1)
+        # Generate response via production pipeline, then run real hybrid NLI
+        actual_response = llm_generate_response(query, retrieved_chunks)
+        nli_result = score_faithfulness(actual_response, retrieved_chunks, mode="hybrid")
+        nli_score = nli_result.score_percent
         nli_entailment_scores.append(nli_score)
+        total_contradicted += nli_result.claims_contradicted
+        total_claims += nli_result.claims_total
 
         print(f"[{q_id}] {scenario['category']}")
         print(f"  • Embedding Time:   {t_emb:.2f} ms")
         print(f"  • Retrieval Time:   {t_ret:.2f} ms")
-        print(f"  • Top Statute Sim:  {top_sim:.4f} -> {suitability_pct:.1f}% Match")
+        print(f"  • Top Display Suit: {top_display:.1f}%")
         print(f"  • Statutory Recall: {recall * 100:.1f}% (Hits: {matched_hits})")
-        print(f"  • NLI Entailment:   {nli_score}% (Grounded)\n")
+        print(f"  • NLI Faithfulness: {nli_score:.1f}% ({nli_result.status}, Engine: {nli_result.engine})")
+        print(f"  • Claims: {nli_result.claims_entailed}/{nli_result.claims_total} entailed, "
+              f"{nli_result.claims_contradicted} contradicted\n")
 
     conn.close()
 
@@ -150,20 +152,22 @@ def run_benchmark():
     avg_ret = statistics.mean(retrieval_latencies)
     avg_recall = statistics.mean(statutory_recalls) * 100
     avg_nli = statistics.mean(nli_entailment_scores)
+    hallucination_rate = (total_contradicted / total_claims * 100) if total_claims > 0 else 0.0
 
     print("=" * 70)
     print("ISO/IEC 25010 SUMMARY REPORT FOR DEFENSE MANUSCRIPT")
     print("=" * 70)
     print("1. Performance Efficiency:")
     print(f"   - Average Query Embedding Latency:    {avg_emb:.2f} ms")
-    print(f"   - Average Vector Retrieval Latency:   {avg_ret:.2f} ms")
+    print(f"   - Average Hybrid Retrieval Latency:   {avg_ret:.2f} ms")
     print(f"   - Total Retrieval Pipeline Time:      {avg_emb + avg_ret:.2f} ms")
     print("2. Functional Suitability:")
     print(f"   - Statutory Provision Recall:         {avg_recall:.1f}%")
     print("3. Reliability & Explainability:")
     print(f"   - Average NLI Faithfulness Score:     {avg_nli:.1f}%")
-    print("   - Hallucination Rate:                 0.0% (Contextually Grounded)")
-    print("   - NLI Grounding Status:               100% Strictly Grounded")
+    print(f"   - Hallucination Rate:                 {hallucination_rate:.1f}% ({total_contradicted}/{total_claims} claims contradicted)")
+    grounded_pct = sum(1 for s in nli_entailment_scores if s >= 80.0) / len(nli_entailment_scores) * 100 if nli_entailment_scores else 0
+    print(f"   - NLI Grounding Rate:                 {grounded_pct:.1f}% of scenarios grounded")
     print("=" * 70)
 
 if __name__ == "__main__":

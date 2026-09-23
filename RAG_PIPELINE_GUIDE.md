@@ -752,19 +752,44 @@ $$S_i \ge \max\left(62.0\%,\; S_{\text{top}} - 22.0\right)$$
 
 Chunks failing this condition are pruned as retrieval noise.
 
-### 6.4 Natural Language Inference (NLI) Grounding Score
+### 6.4 Neuro-Symbolic Hybrid Natural Language Inference (NLI) Grounding Score
 
-The grounding confidence score $G \in [0, 100]$ displayed on the UI badge is computed as:
+CIVIL-LEX employs a two-tier **Neuro-Symbolic Hybrid NLI Engine** combining white-box deterministic symbolic logic with local neural inference (Gemma 4 E4B via LM Studio) to evaluate the faithfulness of generated responses against retrieved statutory premises.
 
-$$G = \begin{cases} 
-\text{None} & \text{if query is Out of Domain or Document is Non-Legal} \\
-\min\left(98.5,\; \max\left(88.0,\; S_{\text{top}} \times 1.02\right)\right) & \text{if primary statutory articles are retrieved} \\
-82.0 & \text{if only secondary jurisprudence is retrieved}
+#### 6.4.1 Claim-Level Hybrid Arbitration Truth Table
+
+Each decomposed atomic proposition $s_i \in S$ is evaluated through symbolic rules and local neural inference under the following strict arbitration protocol:
+
+| Symbolic Tier Verdict | Neural Tier (Gemma in LM Studio) | Final Arbitrated Verdict | Operational Rationale |
+| :--- | :--- | :--- | :--- |
+| **Contradicted** (Rule 2 Deontic/Polarity) | *Any / Bypassed* | **Contradicted** | **Absolute Symbolic Veto**: Deterministic normative inversion (e.g. *cannot rescind* vs. statutory *may rescind*) cannot be overridden by neural inference. |
+| **Neutral** (Rule 1 Unsupported Anchor) | *Any / Capped* | **Neutral** | **Citation Guardrail**: Gemma cannot ground a claim citing Article $X$ if Article $X$ was never retrieved into context. |
+| **Entailed** (Rule 4 High Lexical Containment) | *Bypassed* | **Entailed** | **Fast-Path**: High asymmetric lexical coverage ($\ge 50\%$ or $\ge 35\%$ with anchor) confirms entailment without LLM latency. |
+| **Neutral** (Borderline Lexical Coverage) | **Entailed** | **Entailed** | **Neural Upgrade**: Gemma recognizes valid semantic paraphrasing, statutory requisites, and deductive factual applications. |
+| **Neutral** (Borderline Lexical Coverage) | **Contradicted** | **Contradicted** | **Neural Hallucination Defense**: Gemma detects subtle semantic contradictions missed by lexical dictionaries. |
+| **Neutral** (Borderline Lexical Coverage) | **Neutral** | **Neutral** | Premise neither entails nor contradicts (e.g. outside facts or non-statutory procedural context). |
+| **Neutral** (Borderline Lexical Coverage) | *Offline / Timeout* | **Neutral** | **Graceful Degradation**: System falls back cleanly to deterministic symbolic rules if LM Studio is offline. |
+
+#### 6.4.2 Mathematical Scoring Formulations
+
+Given the set of arbitrated verdicts $V = \{v_1, v_2, \dots, v_n\}$ for total assertions $|S_{\text{total}}|$, with $|V_{\text{entailed}}| = N_E$, $|V_{\text{neutral}}| = N_N$, and $|V_{\text{contradicted}}| = N_C$:
+
+1. **Standard RAGAS Net Faithfulness ($F_{\text{net}}$)**:
+   $$F_{\text{net}} = \max\left(0.0,\; \frac{N_E - N_C}{|S_{\text{total}}|}\right) \times 100\%$$
+
+2. **Context-Aware Weighted Grounding Score ($F_{\text{hybrid}}$)**:
+   $$F_{\text{hybrid}} = \min\left(100.0,\; \max\left(0.0,\; \frac{N_E + 0.35 \cdot N_N - 2.0 \cdot N_C}{|S_{\text{total}}|} \times 100\%\right)\right)$$
+
+#### 6.4.3 Grounding Status Criteria
+
+The user-facing grounding status badge is determined under zero-tolerance hallucination constraints:
+
+$$\text{Status} = \begin{cases} 
+\text{Out of Domain} & \text{if query is Out of Domain or Document is Non-Legal} \\
+\text{Unverified} & \text{if } N_C > 0 \text{ (any legal contradiction detected)} \\
+\text{Grounded} & \text{if } F_{\text{net}} \ge 80.0\% \text{ and } N_C = 0 \\
+\text{Unverified} & \text{if } F_{\text{net}} < 80.0\%
 \end{cases}$$
-
-Status label:
-* $\text{Grounded}$ if $G \ge 80.0\%$
-* $\text{Unverified}$ if $G < 80.0\%$
 
 ---
 

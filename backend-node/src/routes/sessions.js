@@ -114,7 +114,7 @@ router.get('/:id/messages', requireAuth, async (req, res) => {
 router.post('/:id/messages', requireAuth, async (req, res) => {
   try {
     const sessionId = req.params.id;
-    const { role, content, citations } = req.body;
+    const { role, content, citations, legal_analytics } = req.body;
     
     // Check if the session exists and belongs to the user
     const { data: session, error: sessionError } = await req.supabase
@@ -133,7 +133,8 @@ router.post('/:id/messages', requireAuth, async (req, res) => {
         session_id: sessionId,
         role,
         content,
-        citations
+        citations,
+        legal_analytics: legal_analytics || null
       })
       .select()
       .single();

@@ -162,23 +162,33 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
               }
               parsedCits.sort((a: any, b: any) => (Number(b?.suitability_percent) || 0) - (Number(a?.suitability_percent) || 0));
             }
+            let parsedAnalytics = null;
+            if (m.legal_analytics) {
+              try {
+                parsedAnalytics = typeof m.legal_analytics === "string" ? JSON.parse(m.legal_analytics) : m.legal_analytics;
+              } catch (e) { }
+            } else if (m.legalAnalytics) {
+              parsedAnalytics = m.legalAnalytics;
+            }
+
             return {
               id: m.id ? Number(m.id) || idx + 2 : idx + 2,
               role: m.role as "user" | "assistant",
               content: m.content,
               citations: parsedCits,
+              legalAnalytics: parsedAnalytics,
             };
           });
 
           allCits.sort((a, b) => (Number(b?.suitability_percent) || 0) - (Number(a?.suitability_percent) || 0));
-          const topSuit = allCits[0]?.suitability_percent || 88;
-          const loadedAnalytics: LegalAnalytics = {
-            nli_score: Math.min(98, Math.max(72, Math.round(topSuit * 1.02))),
-            nli_status: topSuit >= 70 ? "Grounded" : "Unverified",
+          const topSuit = allCits[0]?.suitability_percent || 0;
+          const lastAssistant = formattedMessages.filter((m: any) => m.role === "assistant").pop();
+          const loadedAnalytics: LegalAnalytics = lastAssistant?.legalAnalytics || {
+            nli_score: null,
+            nli_status: "Pending",
             top_article_score: topSuit,
           };
 
-          const lastAssistant = formattedMessages.filter((m: any) => m.role === "assistant").pop();
           const loadedFollowUps = lastAssistant ? generateDocFollowUpPrompts(lastAssistant.content, allCits) : [];
 
           setDocChats((prev) => {
@@ -190,7 +200,7 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
                 sessionId,
                 legalAnalytics: loadedAnalytics,
                 retainedCitations: allCits,
-                currentCitations: allCits.slice(0, 5),
+                currentCitations: allCits,
                 followUpPrompts: loadedFollowUps,
                 messages: [
                   {
@@ -467,14 +477,17 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
                       .sort((a: any, b: any) => (Number(b?.suitability_percent) || 0) - (Number(a?.suitability_percent) || 0));
                     const isOutOfDomain = receivedCitations.length === 0;
                     const topScore = receivedCitations[0]?.suitability_percent || 0;
+                    // Trust the server's verified legal_analytics event instead of
+                    // fabricating NLI from display suitability. Set a pending placeholder
+                    // that will be overwritten when the server emits legal_analytics.
                     const calculatedNli: LegalAnalytics = isOutOfDomain ? {
                       nli_score: null,
                       nli_status: "Out of Domain",
                       is_out_of_domain: true,
                       top_article_score: 0,
                     } : {
-                      nli_score: Math.min(98, Math.max(72, Math.round(topScore * 1.02))),
-                      nli_status: "Grounded",
+                      nli_score: null,
+                      nli_status: "Pending",
                       top_article_score: topScore,
                     };
 
@@ -486,9 +499,26 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
                   } else if (data.type === "legal_analytics") {
                     const analytics: LegalAnalytics = data.data;
                     pendingLegalAnalytics = analytics;
-                    if (hasStartedStreaming) {
-                      commitDocCitations();
-                    }
+                    setDocChats((prev) => {
+                      const cur = prev[docId] || INITIAL_STATE;
+                      return {
+                        ...prev,
+                        [docId]: {
+                          ...cur,
+                          legalAnalytics: analytics,
+                          currentCitations: analytics?.is_out_of_domain ? [] : cur.currentCitations,
+                          messages: cur.messages.map((m) =>
+                            m.id === assistantId
+                              ? {
+                                  ...m,
+                                  legalAnalytics: analytics,
+                                  ...(analytics?.is_out_of_domain ? { citations: [] } : {}),
+                                }
+                              : m
+                          ),
+                        },
+                      };
+                    });
                   } else if (data.type === "accumulated_citations") {
                     const accumulated = (data.data || [])
                       .map((c: any) => {
@@ -537,32 +567,18 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
                     const followUps = generateDocFollowUpPrompts(fullResponseAccumulator, receivedCitations, filename);
                     setDocChats((prev) => {
                       const cur = prev[docId] || INITIAL_STATE;
-                      const topCit = cur.currentCitations[0] || cur.retainedCitations[0];
-                      const topPercent = topCit?.suitability_percent ?? 89;
-                      const finalAnalytics: LegalAnalytics = cur.legalAnalytics || (cur.currentCitations.length === 0 ? {
-                        nli_score: null,
-                        nli_status: "Out of Domain",
-                        is_out_of_domain: true,
-                        top_article_score: 0,
-                      } : {
-                        nli_score: Math.min(98, Math.max(74, Math.round(topPercent * 1.02))),
-                        nli_status: "Grounded",
-                        top_article_score: topPercent,
-                      });
                       return {
                         ...prev,
                         [docId]: {
                           ...cur,
-                          legalAnalytics: finalAnalytics,
                           followUpPrompts: followUps,
                           ragStatus: { stage: "completed", message: "Analysis complete" },
                           messages: cur.messages.map((m) =>
                             m.id === assistantId
                               ? {
-                                ...m,
-                                ragStatus: { stage: "completed", message: "Analysis complete" },
-                                legalAnalytics: m.legalAnalytics || finalAnalytics,
-                              }
+                                  ...m,
+                                  ragStatus: { stage: "completed", message: "Analysis complete" },
+                                }
                               : m
                           ),
                         },

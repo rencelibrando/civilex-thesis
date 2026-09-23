@@ -3,28 +3,6 @@
 > **Undergraduate Thesis Project — Group 7**  
 > An intelligent, grounded Retrieval-Augmented Generation (RAG) system specialized in the **Civil Code of the Philippines (Republic Act No. 386)** and the **Family Code of the Philippines (Executive Order No. 209)**.
 
----
-
-## Table of Contents
-1. [Overview & Objectives](#overview--objectives)
-2. [Key System Capabilities](#key-system-capabilities)
-3. [System Architecture](#system-architecture)
-4. [RAG Pipeline & Guardrail Innovations](#rag-pipeline--guardrail-innovations)
-5. [Evaluation & Empirical Benchmarks](#evaluation--empirical-benchmarks)
-   - [RAGAS Evaluation Framework](#ragas-evaluation-framework)
-   - [ISO/IEC 25010 Quality Model](#isoiec-25010-quality-model)
-6. [Repository Structure](#repository-structure)
-7. [Getting Started & Installation](#getting-started--installation)
-   - [Prerequisites](#prerequisites)
-   - [Database Setup (Supabase / pgvector)](#database-setup-supabase--pgvector)
-   - [Python RAG Service (`service-rag-python`)](#python-rag-service-service-rag-python)
-   - [Node.js Gateway (`backend-node`)](#nodejs-gateway-backend-node)
-   - [Frontend Web App (`frontend`)](#frontend-web-app-frontend)
-8. [Automated Verification & Testing](#automated-verification--testing)
-9. [Academic & Legal Disclaimer](#academic--legal-disclaimer)
-
----
-
 ## 1. Overview & Objectives
 
 **CIVIL-LEX** addresses the accessibility gap in Philippine civil law by providing conversational, legally grounded assistance for everyday citizens, students, and legal researchers. 

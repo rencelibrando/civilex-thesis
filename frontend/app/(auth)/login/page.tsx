@@ -130,10 +130,6 @@ function LoginFormContent() {
           <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-foreground">
             Welcome back
           </h1>
-          <span className="text-[10px] font-semibold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded-full flex items-center gap-1">
-            <ShieldCheck className="w-3 h-3" />
-            TLS / JWT Secured
-          </span>
         </div>
         <p className="text-sm text-muted-foreground">
           Sign in to access your Philippine Civil Law research sessions, citations, and case briefs.
@@ -291,11 +287,6 @@ function LoginFormContent() {
             Create an account
           </Link>
         </p>
-      </div>
-
-      <div className="pt-2 flex items-center justify-center gap-2 text-[11px] text-muted-foreground/80 border-t border-border/40">
-        <Info className="w-3.5 h-3.5 text-muted-foreground" />
-        <span>Persistent authentication key valid for {SESSION_MAX_AGE_DAYS} days on this browser.</span>
       </div>
     </div>
   );

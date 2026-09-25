@@ -28,9 +28,6 @@ export default function AuthLayout({
             <div>
               <div className="flex items-center gap-2">
                 <span className="font-bold text-xl tracking-tight text-white">CIVIL-LEX</span>
-                <span className="text-[10px] font-medium uppercase tracking-wider bg-indigo-500/10 text-indigo-300 border border-indigo-500/20 px-2 py-0.5 rounded-full">
-                  v2.4 Production
-                </span>
               </div>
               <p className="text-xs text-slate-400">Philippine Civil Law Intelligence Platform</p>
             </div>
@@ -42,7 +39,7 @@ export default function AuthLayout({
           <div>
             <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-indigo-950/60 border border-indigo-800/40 text-indigo-300 text-xs font-medium mb-4">
               <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
-              <span>Supreme Court Grounded AI Architecture</span>
+              <span>Supreme Court RAG Grounded Architecture</span>
             </div>
             <h1 className="text-3xl xl:text-4xl font-semibold text-white tracking-tight leading-tight">
               Verifiable statutory research for Philippine legal professionals.
@@ -83,25 +80,10 @@ export default function AuthLayout({
               </div>
             </div>
           </div>
-
-          {/* Testimonial / Credibility Quote */}
-          <div className="rounded-2xl bg-slate-900/60 border border-slate-800 p-5 backdrop-blur-xs">
-            <blockquote className="text-xs leading-relaxed text-slate-300 italic">
-              &ldquo;CIVIL-LEX transforms hours of manual statutory cross-referencing into seconds of pinpoint, verified legal synthesis. It has become an essential companion for our litigation briefs.&rdquo;
-            </blockquote>
-            <div className="mt-3 flex items-center justify-between text-[11px] text-slate-400">
-              <span className="font-semibold text-slate-200">— Senior Partner, Appellate Practice</span>
-              <span className="text-slate-500">Metro Manila, Philippines</span>
-            </div>
-          </div>
         </div>
 
         {/* Bottom Metadata & Privacy Assurance */}
         <div className="relative z-10 pt-6 border-t border-slate-900 flex items-center justify-between text-xs text-slate-500">
-          <div className="flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-            <span>All Systems Operational</span>
-          </div>
           <span>Confidentiality Guaranteed</span>
         </div>
       </div>
@@ -124,16 +106,6 @@ export default function AuthLayout({
         {/* Content Container */}
         <div className="w-full my-auto flex justify-center py-4">
           {children}
-        </div>
-
-        {/* Footer */}
-        <div className="pt-6 border-t border-border flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-muted-foreground">
-          <span>&copy; {new Date().getFullYear()} CIVIL-LEX Technologies Inc. All rights reserved.</span>
-          <div className="flex items-center gap-4">
-            <Link href="#" className="hover:text-foreground transition-colors">Privacy Notice</Link>
-            <Link href="#" className="hover:text-foreground transition-colors">Terms of Practice</Link>
-            <Link href="#" className="hover:text-foreground transition-colors">Support</Link>
-          </div>
         </div>
       </div>
     </div>

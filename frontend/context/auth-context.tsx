@@ -215,7 +215,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
         // Sync backend profile record
         try {
-          await fetch("http://localhost:4000/api/profiles/me", {
+          await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/profiles/me`, {
             method: "PATCH",
             headers: {
               "Content-Type": "application/json",

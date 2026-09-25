@@ -131,7 +131,7 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
       const token = session?.access_token || "";
       if (!token) return;
 
-      const res = await fetch(`http://localhost:4000/api/sessions/${sessionId}/messages`, {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/sessions/${sessionId}/messages`, {
         headers: { Authorization: `Bearer ${token}` },
       });
 
@@ -236,7 +236,7 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
 
         // Check if there is an existing session for this document in the database
         const listRes = await fetch(
-          `http://localhost:4000/api/sessions?document_id=${docId}&session_type=document_analysis`,
+          `${process.env.NEXT_PUBLIC_API_URL}/api/sessions?document_id=${docId}&session_type=document_analysis`,
           { headers: { Authorization: `Bearer ${token}` } }
         );
 
@@ -250,7 +250,7 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
         }
 
         // Otherwise, create a new session for this document
-        const createRes = await fetch("http://localhost:4000/api/sessions", {
+        const createRes = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/sessions`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -351,7 +351,7 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
         }
 
         if (activeSessionId) {
-          fetch(`http://localhost:4000/api/sessions/${activeSessionId}/messages`, {
+          fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/sessions/${activeSessionId}/messages`, {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
@@ -361,7 +361,7 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
           }).catch((err) => console.error("Failed to save user message:", err));
         }
 
-        const res = await fetch("http://localhost:4000/api/chat", {
+        const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/chat`, {
           method: "POST",
           signal: controller.signal,
           headers: {

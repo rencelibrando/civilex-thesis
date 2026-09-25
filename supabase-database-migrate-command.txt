@@ -1,0 +1,14 @@
+//get the data from current supabase database
+//Export the schema (tables, vectors setup, etc.)
+supabase db dump --local -f supabase_schema.sql
+
+//Export the data (with RAM protection)
+supabase db dump --local --data-only --use-copy -f supabase_data.sql
+
+
+//inject the schema to the new database
+supabase db query --local -f supabase_schema.sql
+
+
+//inject the data and vectors to the table 
+docker exec -i $(docker ps -qf "name=supabase_db") psql -U postgres -d postgres < supabase_data.sql

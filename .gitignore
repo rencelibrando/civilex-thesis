@@ -49,4 +49,7 @@ supabase/
 # agent configuration
 .agents/
 
+# logs
+.logs/
+
 

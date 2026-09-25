@@ -28,6 +28,7 @@ import {
   AlertCircle,
   ArrowRight,
   HelpCircle,
+  MessageCircleQuestion,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -38,7 +39,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import { JurisprudenceModal, JurisprudenceCase } from "@/components/jurisprudence-modal";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { useChat, RagStatus, getCitationKey } from "@/context/chat-context";
+import { useChat, RagStatus, getCitationKey, ClarificationData } from "@/context/chat-context";
 
 function cleanCaseSummary(text?: string): string {
   if (!text) return "No summary available for this case.";
@@ -185,7 +186,8 @@ function RagPipelineStepper({ status, isLive }: { status: RagStatus | null; isLi
     currentStage === "retrieving" ||
     currentStage === "retrieving_done" ||
     currentStage === "prompting" ||
-    currentStage === "thinking";
+    currentStage === "thinking" ||
+    currentStage === "clarification_needed";
 
   if (isLive && isPreStreamingStage) {
     return (
@@ -282,6 +284,182 @@ function RagPipelineStepper({ status, isLive }: { status: RagStatus | null; isLi
 }
 
 
+// Clarification Card: Interactive component for gathering context from user
+
+function ClarificationCard({
+  data,
+  onSubmit,
+  isSubmitted,
+}: {
+  data: ClarificationData;
+  onSubmit: (originalQuery: string, answers: Record<string, string>) => void;
+  isSubmitted: boolean;
+}) {
+  const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [freeTextValues, setFreeTextValues] = useState<Record<string, string>>({});
+  const [usingFreeText, setUsingFreeText] = useState<Record<string, boolean>>({});
+  const [submitted, setSubmitted] = useState(isSubmitted);
+
+  const handleOptionSelect = (questionId: string, option: string) => {
+    if (submitted) return;
+    setAnswers((prev) => ({ ...prev, [questionId]: option }));
+    setUsingFreeText((prev) => ({ ...prev, [questionId]: false }));
+  };
+
+  const handleFreeTextToggle = (questionId: string) => {
+    if (submitted) return;
+    setUsingFreeText((prev) => ({ ...prev, [questionId]: true }));
+    setAnswers((prev) => ({ ...prev, [questionId]: freeTextValues[questionId] || "" }));
+  };
+
+  const handleFreeTextChange = (questionId: string, value: string) => {
+    if (submitted) return;
+    setFreeTextValues((prev) => ({ ...prev, [questionId]: value }));
+    if (usingFreeText[questionId]) {
+      setAnswers((prev) => ({ ...prev, [questionId]: value }));
+    }
+  };
+
+  const allAnswered = data.questions.every(
+    (q) => answers[q.id] && answers[q.id].trim().length > 0
+  );
+
+  const handleSubmit = () => {
+    if (!allAnswered || submitted) return;
+    setSubmitted(true);
+    onSubmit(data.original_query, answers);
+  };
+
+  return (
+    <div className="w-full p-4 sm:p-5 rounded-2xl sm:rounded-3xl rounded-tl-xs sm:rounded-tl-xs bg-card dark:bg-[#131317] border border-primary/20 dark:border-primary/15 text-foreground shadow-xs animate-fade-in">
+      {/* Header */}
+      <div className="flex items-start gap-2.5 mb-3">
+        <div className="p-1.5 rounded-lg bg-primary/10 dark:bg-primary/20 shrink-0 mt-0.5">
+          <MessageCircleQuestion className="w-4 h-4 text-primary" />
+        </div>
+        <div className="min-w-0">
+          <h4 className="text-sm font-semibold text-foreground">
+            I need a bit more context for an accurate legal analysis
+          </h4>
+          <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">
+            {data.reasoning}
+          </p>
+        </div>
+      </div>
+
+      {/* Questions */}
+      <div className="space-y-4">
+        {data.questions.map((question) => (
+          <div key={question.id} className="space-y-2">
+            <div className="flex items-start gap-2">
+              <span className="text-sm font-medium text-foreground">{question.question}</span>
+            </div>
+            {question.context_hint && (
+              <p className="text-[11px] text-muted-foreground/80 italic pl-0.5">
+                {question.context_hint}
+              </p>
+            )}
+
+            {/* Option Radio Buttons */}
+            <div className="space-y-1.5 pl-0.5">
+              {question.options.map((option) => {
+                const isSelected = !usingFreeText[question.id] && answers[question.id] === option;
+                return (
+                  <button
+                    key={option}
+                    type="button"
+                    disabled={submitted}
+                    onClick={() => handleOptionSelect(question.id, option)}
+                    className={`w-full text-left flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs transition-all border ${
+                      isSelected
+                        ? "bg-primary/10 dark:bg-primary/15 border-primary/40 text-foreground font-medium"
+                        : submitted
+                          ? "bg-muted/30 border-border/40 text-muted-foreground opacity-60"
+                          : "bg-accent/30 dark:bg-accent/10 border-border/50 text-foreground hover:bg-accent/60 hover:border-border cursor-pointer"
+                    }`}
+                  >
+                    <span className={`w-3.5 h-3.5 rounded-full border-2 shrink-0 flex items-center justify-center transition-colors ${
+                      isSelected
+                        ? "border-primary bg-primary"
+                        : "border-muted-foreground/40"
+                    }`}>
+                      {isSelected && (
+                        <span className="w-1.5 h-1.5 rounded-full bg-white" />
+                      )}
+                    </span>
+                    <span>{option}</span>
+                  </button>
+                );
+              })}
+
+              {/* Free Text Option */}
+              {question.allows_free_text && (
+                <div className="mt-1">
+                  <button
+                    type="button"
+                    disabled={submitted}
+                    onClick={() => handleFreeTextToggle(question.id)}
+                    className={`w-full text-left flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs transition-all border ${
+                      usingFreeText[question.id]
+                        ? "bg-primary/10 dark:bg-primary/15 border-primary/40 text-foreground font-medium"
+                        : submitted
+                          ? "bg-muted/30 border-border/40 text-muted-foreground opacity-60"
+                          : "bg-accent/30 dark:bg-accent/10 border-border/50 text-foreground hover:bg-accent/60 hover:border-border cursor-pointer"
+                    }`}
+                  >
+                    <span className={`w-3.5 h-3.5 rounded-full border-2 shrink-0 flex items-center justify-center transition-colors ${
+                      usingFreeText[question.id]
+                        ? "border-primary bg-primary"
+                        : "border-muted-foreground/40"
+                    }`}>
+                      {usingFreeText[question.id] && (
+                        <span className="w-1.5 h-1.5 rounded-full bg-white" />
+                      )}
+                    </span>
+                    <span className="text-muted-foreground">Other (type your own answer)</span>
+                  </button>
+                  {usingFreeText[question.id] && (
+                    <input
+                      type="text"
+                      disabled={submitted}
+                      placeholder="Type your answer here..."
+                      value={freeTextValues[question.id] || ""}
+                      onChange={(e) => handleFreeTextChange(question.id, e.target.value)}
+                      className="mt-1.5 w-full px-3 py-2 rounded-xl text-xs bg-background border border-border/80 focus:border-primary focus:ring-1 focus:ring-primary/30 outline-none transition-all placeholder:text-muted-foreground/50"
+                      autoFocus
+                    />
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Action Buttons */}
+      {!submitted ? (
+        <div className="mt-4 pt-3 border-t border-border/40">
+          <Button
+            onClick={handleSubmit}
+            disabled={!allAnswered}
+            size="sm"
+            className="w-full gap-1.5 rounded-xl text-xs font-semibold h-9"
+          >
+            <ArrowRight className="w-3.5 h-3.5" />
+            Submit & Get Legal Analysis
+          </Button>
+        </div>
+      ) : (
+        <div className="flex items-center gap-1.5 mt-4 pt-3 border-t border-border/40 text-xs text-muted-foreground">
+          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
+          <span>Context submitted — generating tailored legal analysis...</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
 // Main Chat Page
 
 export default function ChatPage() {
@@ -312,6 +490,7 @@ export default function ChatPage() {
     handleSend,
     handleStop,
     handleNewChat,
+    handleClarificationSubmit,
   } = useChat();
 
   const [isAutoScrollEnabled, setIsAutoScrollEnabled] = useState(true);
@@ -538,16 +717,24 @@ export default function ChatPage() {
                       )}
 
                       {/* Message Bubble */}
-                      {(msg.content || !isAssistant) && (
+                      {(msg.content || msg.clarificationData || !isAssistant) && (
                         <div
                           className={`break-words ${
                             isUser
                               ? "w-fit inline-block px-4 py-2.5 sm:px-5 sm:py-3 rounded-2xl sm:rounded-3xl rounded-tr-xs sm:rounded-tr-xs text-sm sm:text-[15px] leading-relaxed bg-[#100771] text-white shadow-sm shadow-[#100771]/15 dark:bg-blue-600 dark:text-white dark:border-0 dark:shadow-md dark:shadow-blue-900/30 font-medium"
-                              : "w-full p-4 sm:p-5 md:p-6 rounded-2xl sm:rounded-3xl rounded-tl-xs sm:rounded-tl-xs bg-card dark:bg-[#131317] border border-border/80 dark:border-white/[0.08] text-foreground dark:text-zinc-100 shadow-xs text-sm sm:text-base"
+                              : msg.clarificationData
+                                ? "w-full" /* ClarificationCard has its own styling */
+                                : "w-full p-4 sm:p-5 md:p-6 rounded-2xl sm:rounded-3xl rounded-tl-xs sm:rounded-tl-xs bg-card dark:bg-[#131317] border border-border/80 dark:border-white/[0.08] text-foreground dark:text-zinc-100 shadow-xs text-sm sm:text-base"
                           }`}
                         >
                           {isAssistant ? (
-                            msg.id === 1 && msg.content.includes("Hello. I am CIVIL-LEX") ? (
+                            msg.clarificationData ? (
+                              <ClarificationCard
+                                data={msg.clarificationData}
+                                onSubmit={handleClarificationSubmit}
+                                isSubmitted={!isLatestAssistant || isTyping}
+                              />
+                            ) : msg.id === 1 && msg.content.includes("Hello. I am CIVIL-LEX") ? (
                               <StartingTypewriterMessage content={msg.content} />
                             ) : (
                               <AssistantMarkdown content={msg.content} />

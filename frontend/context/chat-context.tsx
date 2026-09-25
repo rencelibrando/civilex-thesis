@@ -23,6 +23,7 @@ export type RagStage =
   | "thinking"
   | "streaming"
   | "evaluating_nli"
+  | "clarification_needed"
   | "completed"
   | "error";
 
@@ -46,6 +47,22 @@ export interface LegalAnalytics {
   claims_contradicted?: number;
 }
 
+export interface ClarificationQuestion {
+  id: string;
+  question: string;
+  options: string[];
+  allows_free_text: boolean;
+  context_hint: string;
+}
+
+export interface ClarificationData {
+  category: string;
+  questions: ClarificationQuestion[];
+  reasoning: string;
+  original_query: string;
+  confidence: number;
+}
+
 export interface Message {
   id: number;
   role: "user" | "assistant";
@@ -54,6 +71,7 @@ export interface Message {
   citations?: any[];
   ragStatus?: RagStatus;
   legalAnalytics?: LegalAnalytics | null;
+  clarificationData?: ClarificationData;
 }
 
 export interface StarterPrompt {
@@ -336,6 +354,7 @@ interface ChatContextType {
   handleSend: (overrideText?: string) => Promise<void>;
   handleStop: () => void;
   handleNewChat: () => void;
+  handleClarificationSubmit: (originalQuery: string, answers: Record<string, string>) => Promise<void>;
 }
 
 export function getCitationKey(item: any): string {
@@ -735,6 +754,24 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                 } else if (data.type === "text") {
                   fullResponseAccumulator += data.text;
                   enqueueText(data.text);
+                } else if (data.type === "clarification_needed") {
+                  // Backend detected ambiguity — render clarification card
+                  const clarData = data.data as ClarificationData;
+                  const clarStatus: RagStatus = {
+                    stage: "clarification_needed",
+                    message: "Additional context needed for accurate analysis",
+                  };
+                  setRagStatus(clarStatus);
+                  setMessages((prev) =>
+                    prev.map((msg) =>
+                      msg.id === assistantId
+                        ? { ...msg, clarificationData: clarData, content: "", ragStatus: clarStatus }
+                        : msg
+                    )
+                  );
+                  // Stop typing state — user needs to interact
+                  stopCharStream();
+                  setIsTyping(false);
                 } else if (data.type === "done") {
                   setRagStatus({
                     stage: "completed",
@@ -809,6 +846,231 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  // Clarification Submit: re-sends the original query with user's clarification answers
+  const handleClarificationSubmit = async (
+    originalQuery: string,
+    answers: Record<string, string>
+  ) => {
+    if (isTyping) return;
+
+    // Add a user message showing the clarification answers
+    const answerSummary = Object.values(answers).join(", ");
+    const clarUserMsg: Message = {
+      id: Date.now(),
+      role: "user",
+      content: answerSummary,
+    };
+    setMessages((prev) => [...prev, clarUserMsg]);
+    setIsTyping(true);
+    setCurrentCitations([]);
+    setLegalAnalytics(null);
+    setFollowUpPrompts([]);
+
+    const initialStatus: RagStatus = {
+      stage: "embedding",
+      message: "Processing your clarified inquiry...",
+    };
+    setRagStatus(initialStatus);
+
+    const assistantId = Date.now() + 1;
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: assistantId,
+        role: "assistant",
+        content: "",
+        ragStatus: initialStatus,
+      },
+    ]);
+
+    startCharStream(assistantId);
+
+    let fullResponseAccumulator = "";
+    let receivedCitations: any[] = [];
+
+    try {
+      const controller = new AbortController();
+      abortControllerRef.current = controller;
+
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      const token = session?.access_token || "";
+
+      // Save clarification answer as user message
+      if (sessionId) {
+        fetch(`http://localhost:4000/api/sessions/${sessionId}/messages`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ role: "user", content: answerSummary }),
+        }).catch((err) => console.error("Failed to save clarification message:", err));
+      }
+
+      // Build conversation history from current messages (excluding the new user msg)
+      const currentHistory = messages.map((m) => ({ role: m.role, content: m.content }));
+
+      const res = await fetch("http://localhost:4000/api/chat", {
+        method: "POST",
+        signal: controller.signal,
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          query: originalQuery,
+          session_id: sessionId,
+          history: currentHistory,
+          prior_citations: retainedCitations,
+          clarification_context: { answers },
+        }),
+      });
+
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(`Failed to fetch: ${res.status} ${res.statusText} - ${errText}`);
+      }
+      if (!res.body) throw new Error("No response body");
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let done = false;
+      let buffer = "";
+
+      while (!done) {
+        const { value, done: readerDone } = await reader.read();
+        done = readerDone;
+        if (value) {
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n\n");
+          buffer = lines.pop() || "";
+
+          for (const line of lines) {
+            if (line.startsWith("data: ")) {
+              const dataStr = line.slice(6);
+              try {
+                const data = JSON.parse(dataStr);
+
+                if (data.type === "status") {
+                  const statusObj: RagStatus = {
+                    stage: data.stage as RagStage,
+                    message: data.message,
+                    count: data.count,
+                  };
+                  setRagStatus(statusObj);
+                  setMessages((prev) =>
+                    prev.map((msg) =>
+                      msg.id === assistantId ? { ...msg, ragStatus: statusObj } : msg
+                    )
+                  );
+                } else if (data.type === "citations") {
+                  receivedCitations = (data.data || []).sort((a: any, b: any) => {
+                    const aOut = a.is_in_context === false || a.rank_status === "out_of_rank" ? 1 : 0;
+                    const bOut = b.is_in_context === false || b.rank_status === "out_of_rank" ? 1 : 0;
+                    if (aOut !== bOut) return aOut - bOut;
+                    return (a?.rank || 999) - (b?.rank || 999);
+                  });
+                  setCurrentCitations(receivedCitations);
+                  setRetainedCitations((prev) => mergeCitations(prev, receivedCitations));
+                  setMessages((prev) =>
+                    prev.map((msg) =>
+                      msg.id === assistantId ? { ...msg, citations: receivedCitations } : msg
+                    )
+                  );
+                } else if (data.type === "legal_analytics") {
+                  const analytics = data.data as LegalAnalytics;
+                  setLegalAnalytics(analytics);
+                  if (analytics?.is_out_of_domain) {
+                    receivedCitations = [];
+                    setCurrentCitations([]);
+                  }
+                  setMessages((prev) =>
+                    prev.map((msg) =>
+                      msg.id === assistantId
+                        ? {
+                          ...msg,
+                          legalAnalytics: analytics,
+                          ...(analytics?.is_out_of_domain ? { citations: [] } : {}),
+                        }
+                        : msg
+                    )
+                  );
+                } else if (data.type === "accumulated_citations") {
+                  const accumulated = (data.data || []).sort((a: any, b: any) => {
+                    const scoreA = Number(a?.suitability_percent) || 0;
+                    const scoreB = Number(b?.suitability_percent) || 0;
+                    return scoreB - scoreA;
+                  });
+                  setRetainedCitations(accumulated);
+                } else if (data.type === "text") {
+                  fullResponseAccumulator += data.text;
+                  enqueueText(data.text);
+                } else if (data.type === "done") {
+                  setRagStatus({
+                    stage: "completed",
+                    message: "Analysis complete",
+                  });
+                }
+              } catch (e) {
+                console.error("Failed to parse SSE JSON", e, dataStr);
+              }
+            }
+          }
+        }
+      }
+
+      const waitForDrain = () =>
+        new Promise<void>((resolve) => {
+          const check = setInterval(() => {
+            if (charQueueRef.current.length === 0) {
+              clearInterval(check);
+              resolve();
+            }
+          }, 50);
+        });
+      await waitForDrain();
+      stopCharStream();
+
+      setIsTyping(false);
+      setRagStatus({
+        stage: "completed",
+        message: "Analysis complete",
+      });
+
+      const followUps = generateFollowUpPrompts(fullResponseAccumulator, receivedCitations);
+      setFollowUpPrompts(followUps);
+    } catch (error: any) {
+      console.error("Clarification re-submit error:", error);
+      stopCharStream();
+      setIsTyping(false);
+
+      if (error.name === "AbortError") {
+        setRagStatus(null);
+      } else {
+        setRagStatus({
+          stage: "error",
+          message: "Service connection error",
+        });
+        setMessages((prev) =>
+          prev.map((msg) =>
+            msg.id === assistantId
+              ? {
+                ...msg,
+                content:
+                  msg.content ||
+                  "> ⚠️ **Connection Notice**\n>\n> Unable to connect to the CIVIL-LEX legal service. Please check your network connection and try again.",
+              }
+              : msg
+          )
+        );
+      }
+    } finally {
+      abortControllerRef.current = null;
+    }
+  };
+
   return (
     <ChatContext.Provider
       value={{
@@ -835,6 +1097,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         handleSend,
         handleStop,
         handleNewChat,
+        handleClarificationSubmit,
       }}
     >
       {children}

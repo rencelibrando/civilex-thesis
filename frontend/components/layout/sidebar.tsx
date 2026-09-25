@@ -43,9 +43,11 @@ const sidebarNavItems = [
 ];
 
 import { useChat } from "@/context/chat-context";
+import { useAuth } from "@/context/auth-context";
 
 export function SidebarNav({ className }: { className?: string }) {
   const pathname = usePathname();
+  const { signOut } = useAuth();
   let isTyping = false;
   try {
     const chat = useChat();
@@ -53,6 +55,14 @@ export function SidebarNav({ className }: { className?: string }) {
   } catch {
     // If used outside ChatProvider (e.g. mobile sheet before provider), gracefully fallback
   }
+
+  const handleLogout = async () => {
+    try {
+      await signOut();
+    } finally {
+      window.location.href = "/login";
+    }
+  };
 
   return (
     <div className={cn("flex flex-col h-full", className)}>
@@ -114,13 +124,14 @@ export function SidebarNav({ className }: { className?: string }) {
           <Settings className={cn("w-5 h-5", pathname === "/settings" ? "text-primary" : "text-muted-foreground")} />
           <span>Settings</span>
         </Link>
-        <Link
-          href="/login"
-          className="flex items-center gap-3 px-4 py-3 mt-1 rounded-xl text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-all duration-200 focus-visible:ring-2 focus-visible:ring-destructive focus-visible:ring-offset-2 focus-visible:outline-none"
+        <button
+          type="button"
+          onClick={handleLogout}
+          className="w-full flex items-center gap-3 px-4 py-3 mt-1 rounded-xl text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-all duration-200 focus-visible:ring-2 focus-visible:ring-destructive focus-visible:ring-offset-2 focus-visible:outline-none cursor-pointer text-left"
         >
-          <LogOut className="w-5 h-5 text-muted-foreground" />
+          <LogOut className="w-5 h-5 text-muted-foreground group-hover:text-destructive" />
           <span>Sign Out</span>
-        </Link>
+        </button>
       </div>
     </div>
   );

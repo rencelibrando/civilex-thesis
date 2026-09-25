@@ -25,12 +25,16 @@ router.get('/me', requireAuth, async (req, res) => {
 
     if (error && error.code !== 'PGRST116') throw error;
     
-    // If profile doesn't exist yet, return a default skeleton
+    // If profile doesn't exist yet, return a default skeleton populated from user_metadata
     if (!data) {
        return res.json({
          id: userId,
-         full_name: '',
-         avatar_url: null,
+         full_name: req.user.user_metadata?.full_name || '',
+         role: req.user.user_metadata?.role || '',
+         organization: req.user.user_metadata?.organization || '',
+         practice_area: req.user.user_metadata?.practice_area || '',
+         phone_number: req.user.user_metadata?.phone_number || '',
+         avatar_url: req.user.user_metadata?.avatar_url || null,
          notification_preferences: { email: true, push: false },
          theme_preferences: 'system',
          created_at: new Date().toISOString()
@@ -48,10 +52,23 @@ router.get('/me', requireAuth, async (req, res) => {
 router.patch('/me', requireAuth, async (req, res) => {
   try {
     const userId = req.user.id;
-    const { full_name, avatar_url, notification_preferences, theme_preferences } = req.body;
+    const {
+      full_name,
+      role,
+      organization,
+      practice_area,
+      phone_number,
+      avatar_url,
+      notification_preferences,
+      theme_preferences
+    } = req.body;
     
     const updates = { id: userId };
     if (full_name !== undefined) updates.full_name = full_name;
+    if (role !== undefined) updates.role = role;
+    if (organization !== undefined) updates.organization = organization;
+    if (practice_area !== undefined) updates.practice_area = practice_area;
+    if (phone_number !== undefined) updates.phone_number = phone_number;
     if (avatar_url !== undefined) updates.avatar_url = avatar_url;
     if (notification_preferences !== undefined) updates.notification_preferences = notification_preferences;
     if (theme_preferences !== undefined) updates.theme_preferences = theme_preferences;

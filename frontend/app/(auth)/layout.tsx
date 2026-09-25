@@ -1,4 +1,4 @@
-import { Scale } from "lucide-react";
+import { Scale, CheckCircle2, ShieldCheck, BookOpen, Sparkles } from "lucide-react";
 import Link from "next/link";
 
 export default function AuthLayout({
@@ -7,52 +7,133 @@ export default function AuthLayout({
   children: React.ReactNode;
 }) {
   return (
-    <div className="min-h-screen w-full flex bg-slate-50">
-      {/* Left Branding Panel (Hidden on mobile) */}
-      <div className="hidden lg:flex flex-col justify-between w-1/2 bg-[#100771] p-12 text-slate-50 relative overflow-hidden">
-        {/* Abstract Background Elements */}
-        <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] rounded-full bg-[#170073] blur-3xl opacity-50"></div>
-        <div className="absolute bottom-[-10%] right-[-10%] w-[60%] h-[60%] rounded-full bg-[#F1F0FB] blur-3xl opacity-10"></div>
-        
+    <div className="min-h-screen w-full flex flex-col lg:flex-row bg-background">
+      {/* Left Branding Panel (Editorial & Authority) */}
+      <div className="hidden lg:flex flex-col justify-between w-5/12 xl:w-1/2 bg-[#0A0D14] p-12 xl:p-16 text-slate-100 border-r border-border/40 relative overflow-hidden">
+        {/* Subtle geometric grid background */}
+        <div 
+          className="absolute inset-0 opacity-[0.03] pointer-events-none"
+          style={{
+            backgroundImage: `radial-gradient(circle at 1px 1px, #ffffff 1px, transparent 0)`,
+            backgroundSize: "28px 28px"
+          }}
+        />
+
+        {/* Top Branding */}
         <div className="relative z-10">
-          <Link href="/" className="flex items-center gap-3 w-fit">
-            <div className="w-10 h-10 rounded-xl bg-slate-50/10 flex items-center justify-center backdrop-blur-sm border border-slate-50/20">
-              <Scale className="w-6 h-6 text-slate-50" />
+          <Link href="/" className="inline-flex items-center gap-3 group focus:outline-none">
+            <div className="w-10 h-10 rounded-xl bg-primary/20 border border-primary/40 flex items-center justify-center text-primary-foreground shadow-xs">
+              <Scale className="w-5 h-5 text-indigo-400" />
             </div>
-            <span className="font-bold text-2xl tracking-wide">CIVIL-LEX</span>
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="font-bold text-xl tracking-tight text-white">CIVIL-LEX</span>
+                <span className="text-[10px] font-medium uppercase tracking-wider bg-indigo-500/10 text-indigo-300 border border-indigo-500/20 px-2 py-0.5 rounded-full">
+                  v2.4 Production
+                </span>
+              </div>
+              <p className="text-xs text-slate-400">Philippine Civil Law Intelligence Platform</p>
+            </div>
           </Link>
         </div>
 
-        <div className="relative z-10 max-w-lg">
-          <h1 className="text-4xl font-bold mb-6 leading-tight">
-            Next-Generation Legal Intelligence
-          </h1>
-          <p className="text-slate-50/80 text-lg mb-8">
-            Empower your practice with AI-driven insights, rapid civil code retrieval, and advanced document analysis tailored for Philippine Civil Law.
-          </p>
-          
-          <div className="flex items-center gap-4 text-sm text-slate-50/60">
-            <div className="flex -space-x-3">
-              {[1,2,3].map((i) => (
-                <div key={i} className="w-8 h-8 rounded-full bg-slate-400 border-2 border-[#100771]" />
-              ))}
+        {/* Middle Core Capabilities */}
+        <div className="relative z-10 max-w-xl my-auto py-12 space-y-8">
+          <div>
+            <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-indigo-950/60 border border-indigo-800/40 text-indigo-300 text-xs font-medium mb-4">
+              <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
+              <span>Supreme Court Grounded AI Architecture</span>
             </div>
-            <p>Trusted by 500+ legal professionals</p>
+            <h1 className="text-3xl xl:text-4xl font-semibold text-white tracking-tight leading-tight">
+              Verifiable statutory research for Philippine legal professionals.
+            </h1>
+            <p className="text-slate-400 text-base mt-4 leading-relaxed">
+              Accelerate case synthesis, article concordance, and jurisprudence discovery across all 2,275 articles of Republic Act 386 with deterministic citation traceability.
+            </p>
           </div>
+
+          <div className="space-y-4 pt-2 border-t border-slate-800/80">
+            <div className="flex items-start gap-3">
+              <div className="w-5 h-5 rounded-full bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center shrink-0 mt-0.5">
+                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+              </div>
+              <div>
+                <h2 className="text-sm font-medium text-slate-200">Exhaustive Civil Code Embeddings</h2>
+                <p className="text-xs text-slate-400">Persons, Property, Succession, Obligations & Contracts, and Special Contracts.</p>
+              </div>
+            </div>
+
+            <div className="flex items-start gap-3">
+              <div className="w-5 h-5 rounded-full bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center shrink-0 mt-0.5">
+                <BookOpen className="w-3.5 h-3.5 text-indigo-400" />
+              </div>
+              <div>
+                <h2 className="text-sm font-medium text-slate-200">Reciprocal Rank Fusion Retrieval</h2>
+                <p className="text-xs text-slate-400">Hybrid semantic vector similarity merged with native full-text legal search.</p>
+              </div>
+            </div>
+
+            <div className="flex items-start gap-3">
+              <div className="w-5 h-5 rounded-full bg-blue-500/10 border border-blue-500/20 flex items-center justify-center shrink-0 mt-0.5">
+                <ShieldCheck className="w-3.5 h-3.5 text-blue-400" />
+              </div>
+              <div>
+                <h2 className="text-sm font-medium text-slate-200">Strict Pinpoint Verification</h2>
+                <p className="text-xs text-slate-400">Guaranteed citations linked directly to official gazette and Supreme Court rulings.</p>
+              </div>
+            </div>
+          </div>
+
+          {/* Testimonial / Credibility Quote */}
+          <div className="rounded-2xl bg-slate-900/60 border border-slate-800 p-5 backdrop-blur-xs">
+            <blockquote className="text-xs leading-relaxed text-slate-300 italic">
+              &ldquo;CIVIL-LEX transforms hours of manual statutory cross-referencing into seconds of pinpoint, verified legal synthesis. It has become an essential companion for our litigation briefs.&rdquo;
+            </blockquote>
+            <div className="mt-3 flex items-center justify-between text-[11px] text-slate-400">
+              <span className="font-semibold text-slate-200">— Senior Partner, Appellate Practice</span>
+              <span className="text-slate-500">Metro Manila, Philippines</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Bottom Metadata & Privacy Assurance */}
+        <div className="relative z-10 pt-6 border-t border-slate-900 flex items-center justify-between text-xs text-slate-500">
+          <div className="flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+            <span>All Systems Operational</span>
+          </div>
+          <span>Confidentiality Guaranteed</span>
         </div>
       </div>
 
       {/* Right Form Panel */}
-      <div className="w-full lg:w-1/2 flex flex-col justify-center items-center p-6 sm:p-12 relative">
-        <Link href="/" className="lg:hidden absolute top-6 left-6 flex items-center gap-2">
-           <div className="w-8 h-8 rounded-lg bg-[#100771] flex items-center justify-center">
-             <Scale className="w-5 h-5 text-slate-50" />
-           </div>
-           <span className="font-bold text-xl text-[#334155]">CIVIL-LEX</span>
-        </Link>
-        
-        <div className="w-full max-w-sm mx-auto">
+      <div className="w-full lg:w-7/12 xl:w-1/2 flex flex-col justify-between p-6 sm:p-10 lg:p-12 overflow-y-auto custom-scrollbar">
+        {/* Mobile Header */}
+        <div className="lg:hidden flex items-center justify-between pb-6 border-b border-border mb-6">
+          <Link href="/" className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-lg bg-primary/10 border border-primary/20 flex items-center justify-center text-primary">
+              <Scale className="w-4 h-4" />
+            </div>
+            <span className="font-bold text-lg text-foreground">CIVIL-LEX</span>
+          </Link>
+          <span className="text-[10px] font-medium text-muted-foreground bg-muted px-2 py-0.5 rounded-full">
+            Legal Intelligence
+          </span>
+        </div>
+
+        {/* Content Container */}
+        <div className="w-full my-auto flex justify-center py-4">
           {children}
+        </div>
+
+        {/* Footer */}
+        <div className="pt-6 border-t border-border flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-muted-foreground">
+          <span>&copy; {new Date().getFullYear()} CIVIL-LEX Technologies Inc. All rights reserved.</span>
+          <div className="flex items-center gap-4">
+            <Link href="#" className="hover:text-foreground transition-colors">Privacy Notice</Link>
+            <Link href="#" className="hover:text-foreground transition-colors">Terms of Practice</Link>
+            <Link href="#" className="hover:text-foreground transition-colors">Support</Link>
+          </div>
         </div>
       </div>
     </div>

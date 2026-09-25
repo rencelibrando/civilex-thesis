@@ -23,6 +23,7 @@ logging.basicConfig(
 from services.document import extract_and_process_document
 from services.llm_client import generate_response_stream
 from services.nli import score_faithfulness_async as nli_score_faithfulness_async
+from services.ambiguity import detect_ambiguity, enrich_query_with_clarification
 from sentence_transformers import SentenceTransformer
 
 # Load environment variables
@@ -284,6 +285,7 @@ class SearchRequest(BaseModel):
     document_id: Optional[str] = None
     document_name: Optional[str] = None
     prior_citations: List[Dict] = []
+    clarification_context: Optional[Dict] = None  # Carries user's answers to clarification questions
 
 # Stopwords for both English and conversational Filipino/Tagalog
 SEARCH_STOPWORDS = {
@@ -1267,9 +1269,32 @@ YOUR MANDATORY REDIRECTION RULES:
                     save_assistant_message_to_db(request.session_id, full_text, [], analytics_payload)
                     return
 
+                # ── Stage 0.5: Conversational Clarification (Ambiguity Detection) ─────
+                # Only runs for in-domain civil queries WITHOUT existing clarification context.
+                # Anti-loop guard: if clarification_context is present, skip detection entirely.
+                if intent_info['category'] == 'in_domain_civil' and not request.clarification_context:
+                    yield f"data: {dumps({'type': 'status', 'stage': 'embedding', 'message': 'Analyzing query context & completeness...'})}\n\n"
+                    ambiguity_result = await detect_ambiguity(
+                        request.query,
+                        history=request.history,
+                        document_id=request.document_id,
+                        use_llm=True,
+                    )
+                    if ambiguity_result.is_ambiguous and ambiguity_result.confidence >= 0.70:
+                        logging.info(f"Ambiguity detected [{ambiguity_result.category}] confidence={ambiguity_result.confidence:.2f}: {ambiguity_result.reasoning}")
+                        yield f"data: {dumps({'type': 'clarification_needed', 'data': ambiguity_result.to_dict()})}\n\n"
+                        yield f"data: {dumps({'type': 'done'})}\n\n"
+                        return
+
                 # Branch C: In-Domain Philippine Civil Law Inquiry (Execute hybrid retrieval)
+                # If user submitted clarification answers, enrich the query first
+                effective_query = request.query
+                if request.clarification_context:
+                    effective_query = enrich_query_with_clarification(request.query, request.clarification_context)
+                    logging.info(f"Query enriched with clarification context: {effective_query[:200]}")
+
                 # Context-aware query expansion for hybrid search
-                search_query = build_contextual_query(request.query, request.history, doc_filename)
+                search_query = build_contextual_query(effective_query, request.history, doc_filename)
                 logging.info(f"Contextualized search query: {search_query}")
 
                 # Stage 1: Embedding the prompt

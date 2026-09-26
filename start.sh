@@ -10,10 +10,13 @@ mkdir -p "${LOG_DIR}"
 FRONTEND_LOG="${LOG_DIR}/frontend.log"
 BACKEND_LOG="${LOG_DIR}/backend.log"
 PYTHON_LOG="${LOG_DIR}/python-rag.log"
+TUNNEL_LOG="${LOG_DIR}/tunnel.log"
 
 FRONTEND_PID_FILE="${LOG_DIR}/frontend.pid"
 BACKEND_PID_FILE="${LOG_DIR}/backend.pid"
 PYTHON_PID_FILE="${LOG_DIR}/python-rag.pid"
+TUNNEL_PID_FILE="${LOG_DIR}/tunnel.pid"
+
 
 SESSION="civilex"
 
@@ -171,7 +174,7 @@ kill_existing_processes() {
   echo -e "${CYAN}[+] Stopping any stray or existing service instances...${RESET}"
 
   # Terminate processes by recorded PID files first
-  for pid_file in "${FRONTEND_PID_FILE}" "${BACKEND_PID_FILE}" "${PYTHON_PID_FILE}"; do
+  for pid_file in "${FRONTEND_PID_FILE}" "${BACKEND_PID_FILE}" "${PYTHON_PID_FILE}" "${TUNNEL_PID_FILE}"; do
     local pid
     pid=$(read_service_pid "$pid_file")
     if [ -n "$pid" ] && is_pid_alive "$pid"; then
@@ -187,6 +190,8 @@ kill_existing_processes() {
   pkill -9 -f "nodemon index.js" 2>/dev/null || true
   pkill -9 -f "uvicorn.*8000" 2>/dev/null || true
   pkill -9 -f "uvicorn main:app" 2>/dev/null || true
+  pkill -9 -f "devtunnel host" 2>/dev/null || true
+  pkill -9 -f "start-azure-tunnel.sh" 2>/dev/null || true
 
   # Release ports cleanly
   free_port_if_needed 3000 "Frontend"
@@ -256,10 +261,21 @@ start_python() {
   echo "$pid" > "${PYTHON_PID_FILE}"
 }
 
+start_tunnel() {
+  echo -e "${YELLOW}[+] Starting Azure Dev Tunnel (civilex-tunnel)...${RESET}"
+  echo -e "\n=== [STARTED: $(date '+%Y-%m-%d %H:%M:%S')] ===" >> "${TUNNEL_LOG}"
+  (
+    exec "${ROOT_DIR}/scripts/start-azure-tunnel.sh" >> "${TUNNEL_LOG}" 2>&1
+  ) &
+  local pid=$!
+  echo "$pid" > "${TUNNEL_PID_FILE}"
+}
+
 start_all_services() {
   start_frontend
   start_backend
   start_python
+  start_tunnel
 }
 
 # Service Stoppers
@@ -303,10 +319,23 @@ stop_service() {
       free_port_if_needed 8000 "Python RAG"
       last_action_msg="${YELLOW}[!] Stopped Python RAG Service${RESET}"
       ;;
+    "tunnel")
+      local pid
+      pid=$(read_service_pid "${TUNNEL_PID_FILE}")
+      if [ -n "$pid" ] && is_pid_alive "$pid"; then
+        kill -TERM "$pid" 2>/dev/null || true
+        kill -- "-$pid" 2>/dev/null || true
+      fi
+      pkill -9 -f "devtunnel host" 2>/dev/null || true
+      pkill -9 -f "start-azure-tunnel.sh" 2>/dev/null || true
+      rm -f "${TUNNEL_PID_FILE}"
+      last_action_msg="${YELLOW}[!] Stopped Azure Dev Tunnel${RESET}"
+      ;;
     "all")
       stop_service "frontend"
       stop_service "backend"
       stop_service "python"
+      stop_service "tunnel"
       last_action_msg="${YELLOW}[!] Stopped all background services${RESET}"
       ;;
   esac
@@ -340,11 +369,26 @@ get_status_badge() {
   fi
 }
 
+get_tunnel_badge() {
+  local pid
+  pid=$(read_service_pid "${TUNNEL_PID_FILE}")
+  if [ -z "$pid" ]; then
+    pid=$(pgrep -f "devtunnel host" | head -n 1)
+  fi
+
+  if [ -n "$pid" ] && is_pid_alive "$pid"; then
+    echo -e "${GREEN}● ONLINE ${DIM}(civilex-tunnel, PID ${pid})${RESET}"
+  else
+    echo -e "${DIM}○ STOPPED${RESET}"
+  fi
+}
+
 # Utility Actions
 clear_logs() {
   > "${FRONTEND_LOG}"
   > "${BACKEND_LOG}"
   > "${PYTHON_LOG}"
+  > "${TUNNEL_LOG}"
   last_action_msg="${GREEN}[✔] All log files truncated successfully.${RESET}"
 }
 
@@ -354,6 +398,7 @@ copy_active_log_to_clipboard() {
     "frontend") target_log="${FRONTEND_LOG}" ;;
     "backend") target_log="${BACKEND_LOG}" ;;
     "python") target_log="${PYTHON_LOG}" ;;
+    "tunnel") target_log="${TUNNEL_LOG}" ;;
     *) target_log="${FRONTEND_LOG}" ;;
   esac
 
@@ -404,6 +449,7 @@ print_cli_status() {
   echo -e "  Frontend (Next.js)    : Port 3000 | PID: ${fe_pid:-OFF} | Status: $(get_status_badge "$fe_st" "${FRONTEND_PID_FILE}" "${FRONTEND_LOG}")"
   echo -e "  Backend (Node Express): Port 4000 | PID: ${be_pid:-OFF} | Status: $(get_status_badge "$be_st" "${BACKEND_PID_FILE}" "${BACKEND_LOG}")"
   echo -e "  Python RAG (FastAPI)  : Port 8000 | PID: ${py_pid:-OFF} | Status: $(get_status_badge "$py_st" "${PYTHON_PID_FILE}" "${PYTHON_LOG}")"
+  echo -e "  Azure Dev Tunnel      : Ports 4000, 8000, 54321 | Status: $(get_tunnel_badge)"
 }
 
 # CLI Help Usage
@@ -420,11 +466,12 @@ show_usage() {
   echo -e "  ${BOLD}-h, --help${RESET}        Show this help message"
   echo -e ""
   echo -e "Interactive Controller Keybindings:"
-  echo -e "  [1-3] Stream Service Logs   [4] Stream Combined Logs   [s] Status Screen"
+  echo -e "  [1-4] Stream Service Logs   [5] Stream Combined Logs   [s] Status Screen"
   echo -e "  [f] Restart Frontend        [b] Restart Backend        [p] Restart Python RAG"
-  echo -e "  [a] Restart All Services    [k] Stop All Services      [c] Clear Logs"
-  echo -e "  [t] Open Tmux Dashboard     [y] Copy Log to Clipboard  [o] Open Web App"
-  echo -e "  [d] Open FastAPI Docs       [h] Help Legend            [q] Quit & Shutdown"
+  echo -e "  [u] Restart Azure Tunnel    [a] Restart All Services   [k] Stop All Services"
+  echo -e "  [c] Clear Logs              [t] Open Tmux Dashboard    [y] Copy Log to Clipboard"
+  echo -e "  [o] Open Web App            [d] Open FastAPI Docs      [h] Help Legend"
+  echo -e "  [q] Quit & Shutdown"
 }
 
 # Tmux Mode (4-Pane Split with Live Interactive Controller)
@@ -437,17 +484,20 @@ launch_tmux() {
   fi
 
   # Start background services if any are stopped
-  touch "${FRONTEND_LOG}" "${BACKEND_LOG}" "${PYTHON_LOG}"
+  touch "${FRONTEND_LOG}" "${BACKEND_LOG}" "${PYTHON_LOG}" "${TUNNEL_LOG}"
   local fe_pid
   local be_pid
   local py_pid
+  local tu_pid
   fe_pid=$(read_service_pid "${FRONTEND_PID_FILE}")
   be_pid=$(read_service_pid "${BACKEND_PID_FILE}")
   py_pid=$(read_service_pid "${PYTHON_PID_FILE}")
+  tu_pid=$(read_service_pid "${TUNNEL_PID_FILE}")
 
   [ -z "$fe_pid" ] || ! is_pid_alive "$fe_pid" && start_frontend
   [ -z "$be_pid" ] || ! is_pid_alive "$be_pid" && start_backend
   [ -z "$py_pid" ] || ! is_pid_alive "$py_pid" && start_python
+  [ -z "$tu_pid" ] || ! is_pid_alive "$tu_pid" && start_tunnel
 
   # Check if tmux session already exists
   if tmux has-session -t "$SESSION" 2>/dev/null; then
@@ -597,11 +647,13 @@ show_header() {
   echo -e " ${BOLD}1. Frontend (Next.js)${RESET}     : http://localhost:3000 | Status: $(get_status_badge "$fe_st" "${FRONTEND_PID_FILE}" "${FRONTEND_LOG}")${CLEAR_LINE}"
   echo -e " ${BOLD}2. Backend (Node.js)${RESET}     : http://localhost:4000 | Status: $(get_status_badge "$be_st" "${BACKEND_PID_FILE}" "${BACKEND_LOG}")${CLEAR_LINE}"
   echo -e " ${BOLD}3. RAG Service (Python)${RESET}  : http://localhost:8000 | Status: $(get_status_badge "$py_st" "${PYTHON_PID_FILE}" "${PYTHON_LOG}")${CLEAR_LINE}"
+  echo -e " ${BOLD}4. Azure Dev Tunnel${RESET}      : w21xbn22 (Ports 4000, 8000, 54321) | Status: $(get_tunnel_badge)${CLEAR_LINE}"
   echo -e "${BLUE}----------------------------------------------------------------------${RESET}${CLEAR_LINE}"
   echo -e " ${BOLD}Controls & Hotkeys:${RESET}${CLEAR_LINE}"
-  echo -e "   [${BOLD}1-4${RESET}] View Logs   [${BOLD}s${RESET}] Status Screen   [${BOLD}t${RESET}] Tmux Mode     [${BOLD}c${RESET}] Clear Logs${CLEAR_LINE}"
-  echo -e "   [${BOLD}f/b/p/a${RESET}] Restart   [${BOLD}o${RESET}] Open App UI     [${BOLD}d${RESET}] Open API Docs [${BOLD}k${RESET}] Stop All${CLEAR_LINE}"
-  echo -e "   [${BOLD}h${RESET}] Help Legend    [${BOLD}q${RESET}] Shutdown & Quit All${CLEAR_LINE}"
+  echo -e "   [${BOLD}1-4${RESET}] View Logs   [${BOLD}5${RESET}] Combined Logs   [${BOLD}s${RESET}] Status Screen   [${BOLD}c${RESET}] Clear Logs${CLEAR_LINE}"
+  echo -e "   [${BOLD}f/b/p/u/a${RESET}] Restart Service (u: Tunnel)  [${BOLD}k${RESET}] Stop All${CLEAR_LINE}"
+  echo -e "   [${BOLD}o${RESET}] Open App UI     [${BOLD}d${RESET}] Open API Docs    [${BOLD}t${RESET}] Tmux Mode     [${BOLD}q${RESET}] Quit All${CLEAR_LINE}"
+  echo -e "   [${BOLD}h${RESET}] Help Legend${CLEAR_LINE}"
   echo -e "${BLUE}======================================================================${RESET}${CLEAR_LINE}"
   
   if [ -n "$last_action_msg" ]; then
@@ -631,9 +683,14 @@ render_view() {
       tail -n 25 -F "${PYTHON_LOG}" | colorize_logs &
       tail_pid=$!
       ;;
+    "tunnel")
+      echo -e "${BOLD}${YELLOW}--- LIVE LOGS: AZURE DEV TUNNEL (Press 's' for Status, 'q' to Quit) ---${RESET}${CLEAR_LINE}"
+      tail -n 25 -F "${TUNNEL_LOG}" | colorize_logs &
+      tail_pid=$!
+      ;;
     "combined")
       echo -e "${BOLD}${YELLOW}--- LIVE COMBINED LOGS (Press 's' for Status, 'q' to Quit) ---${RESET}${CLEAR_LINE}"
-      tail -n 15 -F "${FRONTEND_LOG}" "${BACKEND_LOG}" "${PYTHON_LOG}" | colorize_logs &
+      tail -n 15 -F "${FRONTEND_LOG}" "${BACKEND_LOG}" "${PYTHON_LOG}" "${TUNNEL_LOG}" | colorize_logs &
       tail_pid=$!
       ;;
     "help")
@@ -641,7 +698,8 @@ render_view() {
       echo -e "   ${BOLD}1${RESET} : Stream Frontend Logs        ${BOLD}f${RESET} : Restart Frontend${CLEAR_LINE}"
       echo -e "   ${BOLD}2${RESET} : Stream Backend Logs         ${BOLD}b${RESET} : Restart Backend${CLEAR_LINE}"
       echo -e "   ${BOLD}3${RESET} : Stream Python RAG Logs      ${BOLD}p${RESET} : Restart Python RAG${CLEAR_LINE}"
-      echo -e "   ${BOLD}4${RESET} : Stream Combined Logs        ${BOLD}a${RESET} : Restart All Services${CLEAR_LINE}"
+      echo -e "   ${BOLD}4${RESET} : Stream Azure Tunnel Logs    ${BOLD}u${RESET} : Restart Azure Tunnel${CLEAR_LINE}"
+      echo -e "   ${BOLD}5${RESET} : Stream Combined Logs        ${BOLD}a${RESET} : Restart All Services${CLEAR_LINE}"
       echo -e "   ${BOLD}s${RESET} : View Service Status         ${BOLD}k${RESET} : Stop All Services${CLEAR_LINE}"
       echo -e "   ${BOLD}t${RESET} : Open Tmux Split Dashboard   ${BOLD}c${RESET} : Truncate / Clear Logs${CLEAR_LINE}"
       echo -e "   ${BOLD}y${RESET} : Copy Active Log to Clipboard ${BOLD}o${RESET} : Open App (localhost:3000)${CLEAR_LINE}"
@@ -683,8 +741,9 @@ run_controller() {
         "1") active_view="frontend"; render_view ;;
         "2") active_view="backend"; render_view ;;
         "3") active_view="python"; render_view ;;
-        "4") active_view="combined"; render_view ;;
-        "s"|"S"|"5") active_view="status"; render_view ;;
+        "4") active_view="tunnel"; render_view ;;
+        "5") active_view="combined"; render_view ;;
+        "s"|"S") active_view="status"; render_view ;;
         "t"|"T") launch_tmux ;;
         "c"|"C") clear_logs; render_view ;;
         "y"|"Y") copy_active_log_to_clipboard; render_view ;;
@@ -716,11 +775,19 @@ run_controller() {
           sleep 1
           render_view
           ;;
+        "u"|"U")
+          stop_service "tunnel"
+          start_tunnel
+          last_action_msg="${GREEN}[✔] Restarted Azure Dev Tunnel${RESET}"
+          sleep 1
+          render_view
+          ;;
         "a"|"A")
           stop_service "all"
           start_frontend
           start_backend
           start_python
+          start_tunnel
           last_action_msg="${GREEN}[✔] Restarted All Services${RESET}"
           sleep 1
           render_view

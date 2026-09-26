@@ -22,6 +22,7 @@ import { buttonVariants, Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { supabase } from "@/lib/supabase";
+import { BACKEND_URL } from "@/lib/config";
 
 interface SessionItem {
   id: string;
@@ -93,7 +94,7 @@ export default function DashboardPage() {
     async function loadDashboardData() {
       try {
         // Fetch jurisprudence & article counts dynamically
-        fetch("http://localhost:4000/api/civil-code/stats")
+        fetch(`${BACKEND_URL}/api/civil-code/stats`)
           .then((res) => (res.ok ? res.json() : null))
           .then((stats) => {
             if (stats?.total_cases) setJurisprudenceCount(stats.total_cases);
@@ -112,7 +113,7 @@ export default function DashboardPage() {
         const token = session.access_token;
 
         // Fetch user profile
-        fetch("http://localhost:4000/api/profiles/me", {
+        fetch(`${BACKEND_URL}/api/profiles/me`, {
           headers: {
             Authorization: `Bearer ${token}`,
           },
@@ -126,7 +127,7 @@ export default function DashboardPage() {
           .catch((err) => console.error("Failed to load profile:", err));
 
         // Fetch real sessions
-        const sessionsRes = await fetch("http://localhost:4000/api/sessions", {
+        const sessionsRes = await fetch(`${BACKEND_URL}/api/sessions`, {
           headers: {
             Authorization: `Bearer ${token}`,
           },
@@ -140,7 +141,7 @@ export default function DashboardPage() {
         }
 
         // Fetch user documents count
-        const docsRes = await fetch("http://localhost:4000/api/documents", {
+        const docsRes = await fetch(`${BACKEND_URL}/api/documents`, {
           headers: {
             Authorization: `Bearer ${token}`,
           },

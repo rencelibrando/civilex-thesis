@@ -28,6 +28,7 @@ import {
   DialogFooter,
   DialogClose,
 } from "@/components/ui/dialog";
+import { BACKEND_URL } from "@/lib/config";
 import { Skeleton } from "@/components/ui/skeleton";
 import { supabase } from "@/lib/supabase";
 
@@ -103,7 +104,7 @@ export default function HistoryPage() {
           return;
         }
 
-        const res = await fetch("http://localhost:4000/api/sessions", {
+        const res = await fetch(`${BACKEND_URL}/api/sessions`, {
           headers: {
             Authorization: `Bearer ${session.access_token}`,
           },
@@ -134,7 +135,7 @@ export default function HistoryPage() {
       } = await supabase.auth.getSession();
       if (!session) return;
 
-      const res = await fetch(`http://localhost:4000/api/sessions/${renamingSession.id}`, {
+      const res = await fetch(`${BACKEND_URL}/api/sessions/${renamingSession.id}`, {
         method: "PATCH",
         headers: {
           Authorization: `Bearer ${session.access_token}`,
@@ -170,7 +171,7 @@ export default function HistoryPage() {
       } = await supabase.auth.getSession();
       if (!session) return;
 
-      const res = await fetch(`http://localhost:4000/api/sessions/${deletingSession.id}`, {
+      const res = await fetch(`${BACKEND_URL}/api/sessions/${deletingSession.id}`, {
         method: "DELETE",
         headers: {
           Authorization: `Bearer ${session.access_token}`,

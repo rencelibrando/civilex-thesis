@@ -115,7 +115,8 @@ router.post('/upload', requireAuth, upload.single('file'), async (req, res) => {
     if (error) throw error;
 
     // Fire-and-forget: notify the Python extraction service
-    globalFetch('http://localhost:8000/extract', {
+    const ragServiceUrl = process.env.RAG_SERVICE_URL || 'http://localhost:8000';
+    globalFetch(`${ragServiceUrl}/extract`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ file_url: fileUrl, document_id: docId, filename: req.file.originalname })

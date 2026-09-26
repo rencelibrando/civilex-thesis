@@ -16,6 +16,26 @@ const nextConfig: NextConfig = {
         source: "/api/gateway/:path*",
         destination: `${backendUrl}/api/:path*`,
       },
+      {
+        source: "/api/civil-code/:path*",
+        destination: `${backendUrl}/api/civil-code/:path*`,
+      },
+      {
+        source: "/api/sessions/:path*",
+        destination: `${backendUrl}/api/sessions/:path*`,
+      },
+      {
+        source: "/api/documents/:path*",
+        destination: `${backendUrl}/api/documents/:path*`,
+      },
+      {
+        source: "/api/profiles/:path*",
+        destination: `${backendUrl}/api/profiles/:path*`,
+      },
+      {
+        source: "/api/chat",
+        destination: `${backendUrl}/api/chat`,
+      },
     ];
   },
 };

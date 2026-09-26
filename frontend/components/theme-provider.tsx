@@ -14,11 +14,11 @@ interface ThemeContextType {
 }
 
 const ThemeContext = createContext<ThemeContextType>({
-  theme: "system",
+  theme: "light",
   setTheme: () => {},
-  resolvedTheme: "dark",
-  systemTheme: "dark",
-  themes: ["system", "dark", "light"],
+  resolvedTheme: "light",
+  systemTheme: "light",
+  themes: ["light", "dark", "system"],
 });
 
 export function useTheme() {
@@ -36,26 +36,24 @@ interface ThemeProviderProps {
 
 export function ThemeProvider({
   children,
-  defaultTheme = "system",
+  defaultTheme = "light",
   storageKey = "theme",
+  enableSystem = false,
 }: ThemeProviderProps) {
   const [theme, setThemeState] = useState<string>(() => {
     if (typeof window !== "undefined") {
       try {
-        return (localStorage.getItem(storageKey) as Theme) || defaultTheme;
+        const stored = localStorage.getItem(storageKey);
+        if (stored === "dark" || stored === "light") return stored;
       } catch (_) {}
     }
     return defaultTheme;
   });
 
-  const [systemTheme, setSystemTheme] = useState<ResolvedTheme>(() => {
-    if (typeof window !== "undefined") {
-      return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
-    }
-    return "dark";
-  });
+  const [systemTheme, setSystemTheme] = useState<ResolvedTheme>("light");
 
   const [mounted, setMounted] = useState(false);
+
 
   // Apply theme class and style to documentElement
   const applyThemeToDOM = useCallback((targetTheme: ResolvedTheme) => {
@@ -120,74 +118,66 @@ export function ThemeProvider({
   const resolvedTheme: ResolvedTheme = useMemo(() => {
     if (theme === "dark") return "dark";
     if (theme === "light") return "light";
-    return systemTheme;
-  }, [theme, systemTheme]);
+    if (enableSystem) return systemTheme;
+    return "light";
+  }, [theme, systemTheme, enableSystem]);
 
   // Initial sync & change listeners
   useEffect(() => {
     setMounted(true);
 
-    // Initial check of OS system theme
-    syncHostSystemTheme().then((activeSysTheme) => {
-      const currentStored = (localStorage.getItem(storageKey) as Theme) || theme;
-      if (currentStored === "system") {
+    const currentStored = (localStorage.getItem(storageKey) as Theme) || theme;
+    if (currentStored === "dark") {
+      applyThemeToDOM("dark");
+    } else if (currentStored === "light") {
+      applyThemeToDOM("light");
+    } else if (enableSystem) {
+      syncHostSystemTheme().then((activeSysTheme) => {
         applyThemeToDOM(activeSysTheme);
-      } else if (currentStored === "dark" || currentStored === "light") {
-        applyThemeToDOM(currentStored as ResolvedTheme);
-      }
-    });
-
-    // Listen to browser prefers-color-scheme changes
-    const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
-    const handleMediaChange = (e: MediaQueryListEvent) => {
-      const sys = e.matches ? "dark" : "light";
-      setSystemTheme(sys);
-      const current = localStorage.getItem(storageKey) || "system";
-      if (current === "system") {
-        applyThemeToDOM(sys);
-      }
-    };
-
-    if (mediaQuery.addEventListener) {
-      mediaQuery.addEventListener("change", handleMediaChange);
+      });
     } else {
-      mediaQuery.addListener(handleMediaChange);
+      applyThemeToDOM("light");
     }
 
-    // Sync when window regains focus in case OS theme switched while in another window
-    const handleFocus = () => {
-      syncHostSystemTheme().then((activeSysTheme) => {
-        const current = localStorage.getItem(storageKey) || "system";
+    if (enableSystem) {
+      // Listen to browser prefers-color-scheme changes
+      const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
+      const handleMediaChange = (e: MediaQueryListEvent) => {
+        const sys = e.matches ? "dark" : "light";
+        setSystemTheme(sys);
+        const current = localStorage.getItem(storageKey) || "light";
         if (current === "system") {
-          applyThemeToDOM(activeSysTheme);
+          applyThemeToDOM(sys);
         }
-      });
-    };
-    window.addEventListener("focus", handleFocus);
+      };
 
-    // Listen for storage changes across tabs
-    const handleStorage = (e: StorageEvent) => {
-      if (e.key === storageKey && e.newValue) {
-        setThemeState(e.newValue);
-        if (e.newValue === "system") {
-          syncHostSystemTheme().then(applyThemeToDOM);
-        } else if (e.newValue === "dark" || e.newValue === "light") {
-          applyThemeToDOM(e.newValue as ResolvedTheme);
-        }
-      }
-    };
-    window.addEventListener("storage", handleStorage);
-
-    return () => {
-      if (mediaQuery.removeEventListener) {
-        mediaQuery.removeEventListener("change", handleMediaChange);
+      if (mediaQuery.addEventListener) {
+        mediaQuery.addEventListener("change", handleMediaChange);
       } else {
-        mediaQuery.removeListener(handleMediaChange);
+        mediaQuery.addListener(handleMediaChange);
       }
-      window.removeEventListener("focus", handleFocus);
-      window.removeEventListener("storage", handleStorage);
-    };
-  }, [storageKey, syncHostSystemTheme, applyThemeToDOM, theme]);
+
+      // Sync when window regains focus in case OS theme switched while in another window
+      const handleFocus = () => {
+        syncHostSystemTheme().then((activeSysTheme) => {
+          const current = localStorage.getItem(storageKey) || "light";
+          if (current === "system") {
+            applyThemeToDOM(activeSysTheme);
+          }
+        });
+      };
+      window.addEventListener("focus", handleFocus);
+
+      return () => {
+        if (mediaQuery.removeEventListener) {
+          mediaQuery.removeEventListener("change", handleMediaChange);
+        } else {
+          mediaQuery.removeListener(handleMediaChange);
+        }
+        window.removeEventListener("focus", handleFocus);
+      };
+    }
+  }, [storageKey, theme, enableSystem, applyThemeToDOM, syncHostSystemTheme]);
 
   // Keep DOM in sync whenever resolvedTheme changes
   useEffect(() => {

@@ -449,7 +449,14 @@ print_cli_status() {
   echo -e "  Frontend (Next.js)    : Port 3000 | PID: ${fe_pid:-OFF} | Status: $(get_status_badge "$fe_st" "${FRONTEND_PID_FILE}" "${FRONTEND_LOG}")"
   echo -e "  Backend (Node Express): Port 4000 | PID: ${be_pid:-OFF} | Status: $(get_status_badge "$be_st" "${BACKEND_PID_FILE}" "${BACKEND_LOG}")"
   echo -e "  Python RAG (FastAPI)  : Port 8000 | PID: ${py_pid:-OFF} | Status: $(get_status_badge "$py_st" "${PYTHON_PID_FILE}" "${PYTHON_LOG}")"
-  echo -e "  Azure Dev Tunnel      : Ports 4000, 8000, 54321 | Status: $(get_tunnel_badge)"
+  local tu_badge
+  tu_badge=$(get_tunnel_badge)
+  echo -e "  Azure Dev Tunnel      : civilex-tunnel | Status: ${tu_badge}"
+  if [[ "$tu_badge" == *"ONLINE"* ]]; then
+    echo -e "    ↳ Backend API  (Port 4000) : https://w21xbn22-4000.asse.devtunnels.ms"
+    echo -e "    ↳ Python RAG   (Port 8000) : https://w21xbn22-8000.asse.devtunnels.ms"
+    echo -e "    ↳ Supabase API (Port 54321): https://w21xbn22-54321.asse.devtunnels.ms"
+  fi
 }
 
 # CLI Help Usage
@@ -652,7 +659,14 @@ show_header() {
   echo -e " ${BOLD}1. Frontend (Next.js)${RESET}     : http://localhost:3000 | Status: $(get_status_badge "$fe_st" "${FRONTEND_PID_FILE}" "${FRONTEND_LOG}")${CLEAR_LINE}"
   echo -e " ${BOLD}2. Backend (Node.js)${RESET}     : http://localhost:4000 | Status: $(get_status_badge "$be_st" "${BACKEND_PID_FILE}" "${BACKEND_LOG}")${CLEAR_LINE}"
   echo -e " ${BOLD}3. RAG Service (Python)${RESET}  : http://localhost:8000 | Status: $(get_status_badge "$py_st" "${PYTHON_PID_FILE}" "${PYTHON_LOG}")${CLEAR_LINE}"
-  echo -e " ${BOLD}4. Azure Dev Tunnel${RESET}      : w21xbn22 (Ports 4000, 8000, 54321) | Status: $(get_tunnel_badge)${CLEAR_LINE}"
+  local tu_badge
+  tu_badge=$(get_tunnel_badge)
+  echo -e " ${BOLD}4. Azure Dev Tunnel${RESET}      : civilex-tunnel | Status: ${tu_badge}${CLEAR_LINE}"
+  if [[ "$tu_badge" == *"ONLINE"* ]]; then
+    echo -e "    ${CYAN}↳ Backend API  (Port 4000) : https://w21xbn22-4000.asse.devtunnels.ms${RESET}${CLEAR_LINE}"
+    echo -e "    ${MAGENTA}↳ Python RAG   (Port 8000) : https://w21xbn22-8000.asse.devtunnels.ms${RESET}${CLEAR_LINE}"
+    echo -e "    ${GREEN}↳ Supabase API (Port 54321): https://w21xbn22-54321.asse.devtunnels.ms${RESET}${CLEAR_LINE}"
+  fi
   echo -e "${BLUE}----------------------------------------------------------------------${RESET}${CLEAR_LINE}"
   echo -e " ${BOLD}Controls & Hotkeys:${RESET}${CLEAR_LINE}"
   echo -e "   [${BOLD}1-4${RESET}] View Logs   [${BOLD}5${RESET}] Combined Logs   [${BOLD}s${RESET}] Status Screen   [${BOLD}c${RESET}] Clear Logs${CLEAR_LINE}"

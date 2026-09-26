@@ -23,9 +23,16 @@ const allowedOrigins = process.env.ALLOWED_ORIGINS
   : '*';
 
 app.use(cors({
-  origin: allowedOrigins === '*' ? '*' : allowedOrigins,
+  origin: (origin, callback) => {
+    // If wildcard or origin matches, allow and reflect origin header for credentials support
+    if (!origin || allowedOrigins === '*' || allowedOrigins.includes('*') || allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+    return callback(new Error('Not allowed by CORS'));
+  },
   credentials: true,
 }));
+
 
 // Apply proxies before express.json() to prevent body consumption issues
 setupProxies(app);

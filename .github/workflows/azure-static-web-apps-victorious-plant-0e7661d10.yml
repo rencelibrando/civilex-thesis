@@ -32,6 +32,11 @@ jobs:
           api_location: "" # Api source code path - optional
           output_location: "" # Leave empty for Next.js hybrid / App router apps
           ###### End of Repository/Build Configurations ######
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: "https://w21xbn22-54321.asse.devtunnels.ms"
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: "sb_publishable_ACJWlzQHlZjBrEguHvfOxg_3BJgxAaH"
+          NEXT_PUBLIC_API_URL: ${{ secrets.NEXT_PUBLIC_API_URL || 'https://civilex-api.azurewebsites.net' }}
+          NEXT_PUBLIC_BACKEND_URL: ${{ secrets.NEXT_PUBLIC_BACKEND_URL || 'https://civilex-api.azurewebsites.net' }}
 
   close_pull_request_job:
     if: github.event_name == 'pull_request' && github.event.action == 'closed'

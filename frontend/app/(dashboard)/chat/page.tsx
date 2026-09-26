@@ -29,6 +29,7 @@ import {
   ArrowRight,
   HelpCircle,
   MessageCircleQuestion,
+  Clock,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -183,6 +184,7 @@ function RagPipelineStepper({ status, isLive }: { status: RagStatus | null; isLi
 
   // If live and still before text streaming: show active prominent stepper
   const isPreStreamingStage =
+    currentStage === "queued" ||
     currentStage === "embedding" ||
     currentStage === "retrieving" ||
     currentStage === "retrieving_done" ||
@@ -195,17 +197,42 @@ function RagPipelineStepper({ status, isLive }: { status: RagStatus | null; isLi
       <div className="w-full max-w-md p-3.5 rounded-2xl bg-card border border-border/80 dark:border-white/10 shadow-xs animate-fade-in space-y-2.5">
         <div className="flex items-center justify-between text-xs font-semibold text-primary">
           <span className="flex items-center gap-1.5">
-            <Sparkles className="w-3.5 h-3.5 animate-pulse text-primary" />
+            {currentStage === "queued" ? (
+              <Clock className="w-3.5 h-3.5 animate-spin text-amber-500" />
+            ) : (
+              <Sparkles className="w-3.5 h-3.5 animate-pulse text-primary" />
+            )}
             CIVIL-LEX Legal Processing
           </span>
-          <span className="text-[10px] font-mono uppercase tracking-wider bg-primary/10 text-primary px-2 py-0.5 rounded-full border border-primary/20">
-            {currentStage === "retrieving_done"
-              ? "retrieved"
-              : currentStage === "thinking"
-                ? "reasoning"
-                : currentStage}
+          <span className={`text-[10px] font-mono uppercase tracking-wider px-2 py-0.5 rounded-full border ${
+            currentStage === "queued"
+              ? "bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/30 font-bold animate-pulse"
+              : "bg-primary/10 text-primary border-primary/20"
+          }`}>
+            {currentStage === "queued"
+              ? `Queue #${status?.queue_position || 1}`
+              : currentStage === "retrieving_done"
+                ? "retrieved"
+                : currentStage === "thinking"
+                  ? "reasoning"
+                  : currentStage}
           </span>
         </div>
+
+        {/* Queue Notice Banner when waiting */}
+        {currentStage === "queued" ? (
+          <div className="flex items-start gap-2.5 p-2.5 rounded-xl bg-amber-500/10 dark:bg-amber-500/15 border border-amber-500/30 text-amber-900 dark:text-amber-200">
+            <Clock className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5 animate-pulse" />
+            <div className="text-xs space-y-0.5">
+              <p className="font-semibold text-amber-700 dark:text-amber-300">
+                You are #{status?.queue_position || 1} in queue
+              </p>
+              <p className="text-[11px] leading-relaxed text-amber-800/90 dark:text-amber-200/90">
+                {status?.message || "Another user is currently querying the model. Your query will run automatically once resources are free."}
+              </p>
+            </div>
+          </div>
+        ) : null}
 
         {/* Step Progress Pills */}
         <div className="grid grid-cols-5 gap-1 pt-1">
@@ -236,11 +263,13 @@ function RagPipelineStepper({ status, isLive }: { status: RagStatus | null; isLi
           })}
         </div>
 
-        {/* Active Stage Message */}
-        <div className="flex items-center gap-2 pt-1 text-xs text-foreground bg-accent/30 dark:bg-accent/15 px-3 py-2 rounded-xl border border-border/40">
-          <Loader2 className="w-3.5 h-3.5 animate-spin text-primary shrink-0" />
-          <span className="line-clamp-1">{status?.message || "Analyzing query..."}</span>
-        </div>
+        {/* Active Stage Message (when not queued) */}
+        {currentStage !== "queued" && (
+          <div className="flex items-center gap-2 pt-1 text-xs text-foreground bg-accent/30 dark:bg-accent/15 px-3 py-2 rounded-xl border border-border/40">
+            <Loader2 className="w-3.5 h-3.5 animate-spin text-primary shrink-0" />
+            <span className="line-clamp-1">{status?.message || "Analyzing query..."}</span>
+          </div>
+        )}
       </div>
     );
   }

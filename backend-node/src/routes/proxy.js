@@ -2,7 +2,7 @@ import { createProxyMiddleware } from 'http-proxy-middleware';
 import { requireAuth } from '../middleware/auth.js';
 
 export const setupProxies = (app) => {
-  const ragServiceUrl = 'http://localhost:8000';
+  const ragServiceUrl = process.env.RAG_SERVICE_URL || 'http://localhost:8000';
 
   // Apply proxy middleware to chat endpoint
   app.post(

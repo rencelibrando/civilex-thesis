@@ -10,6 +10,7 @@ import React, {
   ReactNode,
 } from "react";
 import { supabase } from "@/lib/supabase";
+import { BACKEND_URL } from "@/lib/config";
 
 
 // Types & Interfaces
@@ -622,7 +623,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       let activeSessionId = sessionId;
       if (!activeSessionId) {
         try {
-          const createRes = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/sessions`, {
+          const createRes = await fetch(`${BACKEND_URL}/api/sessions`, {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
@@ -641,7 +642,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       }
 
       if (activeSessionId) {
-        fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/sessions/${activeSessionId}/messages`, {
+        fetch(`${BACKEND_URL}/api/sessions/${activeSessionId}/messages`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -651,7 +652,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         }).catch((err) => console.error("Failed to save user message:", err));
       }
 
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/chat`, {
+      const res = await fetch(`${BACKEND_URL}/api/chat`, {
         method: "POST",
         signal: controller.signal,
         headers: {
@@ -899,7 +900,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
       // Save clarification answer as user message
       if (sessionId) {
-        fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/sessions/${sessionId}/messages`, {
+        fetch(`${BACKEND_URL}/api/sessions/${sessionId}/messages`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -912,7 +913,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       // Build conversation history from current messages (excluding the new user msg)
       const currentHistory = messages.map((m) => ({ role: m.role, content: m.content }));
 
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/chat`, {
+      const res = await fetch(`${BACKEND_URL}/api/chat`, {
         method: "POST",
         signal: controller.signal,
         headers: {

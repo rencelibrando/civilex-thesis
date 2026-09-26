@@ -33,6 +33,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { supabase } from "@/lib/supabase";
+import { BACKEND_URL } from "@/lib/config";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
@@ -540,7 +541,7 @@ export default function ChatPage() {
         try {
           const { data: { session } } = await supabase.auth.getSession();
           if (!session) return;
-          const res = await fetch(`http://localhost:4000/api/sessions/${sessionParam}/messages`, {
+          const res = await fetch(`${BACKEND_URL}/api/sessions/${sessionParam}/messages`, {
             headers: { Authorization: `Bearer ${session.access_token}` },
           });
           if (res.ok) {

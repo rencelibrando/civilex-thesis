@@ -17,6 +17,7 @@ import {
 import { ThemeToggle } from "@/components/theme-toggle";
 import { useAuth } from "@/context/auth-context";
 import { useRouter } from "next/navigation";
+import { BACKEND_URL } from "@/lib/config";
 
 export function Header() {
   const router = useRouter();
@@ -48,7 +49,7 @@ export function Header() {
       const authToken = token || session.access_token;
       if (!authToken) return;
 
-      const res = await fetch("http://localhost:4000/api/profiles/me", {
+      const res = await fetch(`${BACKEND_URL}/api/profiles/me`, {
         headers: {
           Authorization: `Bearer ${authToken}`
         }

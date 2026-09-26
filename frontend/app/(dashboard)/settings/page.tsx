@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { supabase } from "@/lib/supabase";
+import { BACKEND_URL } from "@/lib/config";
 
 type SaveStatus = "idle" | "saving" | "saved" | "error";
 
@@ -60,7 +61,7 @@ export default function SettingsPage() {
         
         setEmail(session.user.email || "");
 
-        const res = await fetch("http://localhost:4000/api/profiles/me", {
+        const res = await fetch(`${BACKEND_URL}/api/profiles/me`, {
           headers: {
             "Authorization": `Bearer ${session.access_token}`
           }
@@ -123,7 +124,7 @@ export default function SettingsPage() {
 
       const newAvatarUrl = `${urlData.publicUrl}?t=${Date.now()}`;
 
-      const res = await fetch("http://localhost:4000/api/profiles/me", {
+      const res = await fetch(`${BACKEND_URL}/api/profiles/me`, {
         method: "PATCH",
         headers: {
           "Content-Type": "application/json",
@@ -152,7 +153,7 @@ export default function SettingsPage() {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) return;
 
-      const res = await fetch("http://localhost:4000/api/profiles/me", {
+      const res = await fetch(`${BACKEND_URL}/api/profiles/me`, {
         method: "PATCH",
         headers: {
           "Content-Type": "application/json",
@@ -179,7 +180,7 @@ export default function SettingsPage() {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) return;
 
-      const res = await fetch("http://localhost:4000/api/profiles/me", {
+      const res = await fetch(`${BACKEND_URL}/api/profiles/me`, {
         method: "PATCH",
         headers: {
           "Content-Type": "application/json",

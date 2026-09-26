@@ -22,6 +22,7 @@ import {
   Search,
   BookOpen,
 } from "lucide-react";
+import { BACKEND_URL } from "@/lib/config";
 
 export type JurisprudenceCase = {
   case_uid: string;
@@ -260,7 +261,7 @@ export function JurisprudenceModal({
     if (caseData.case_uid) {
       let isMounted = true;
       setLoadingFullCase(true);
-      fetch(`http://localhost:4000/api/civil-code/case/${caseData.case_uid}`)
+      fetch(`${BACKEND_URL}/api/civil-code/case/${caseData.case_uid}`)
         .then(async (res) => {
           if (!res.ok) throw new Error("Failed to load full jurisprudence document");
           return res.json();

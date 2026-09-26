@@ -7,8 +7,8 @@ dotenv.config();
 const router = express.Router();
 
 const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_ANON_KEY
+  process.env.SUPABASE_URL || 'http://localhost:54321',
+  process.env.SUPABASE_ANON_KEY || 'dummy'
 );
 
 router.get('/stats', async (req, res) => {

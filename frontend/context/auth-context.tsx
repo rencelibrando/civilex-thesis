@@ -21,6 +21,7 @@ import {
   getRemainingLockoutSeconds,
   consumeLogoutReason,
 } from "@/lib/auth-storage";
+import { BACKEND_URL } from "@/lib/config";
 
 interface AuthContextType {
   user: User | null;
@@ -215,7 +216,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
         // Sync backend profile record
         try {
-          await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/profiles/me`, {
+          await fetch(`${BACKEND_URL}/api/profiles/me`, {
             method: "PATCH",
             headers: {
               "Content-Type": "application/json",

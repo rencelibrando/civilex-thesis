@@ -427,7 +427,7 @@ copy_active_log_to_clipboard() {
 open_url() {
   local url=$1
   local name=$2
-  last_action_msg="${CYAN} Opening ${name} (${url}) in browser...${RESET}"
+  last_action_msg="${CYAN}[🌐] Opening ${name} (${url}) in browser...${RESET}"
   if command -v xdg-open >/dev/null 2>&1; then
     xdg-open "$url" >/dev/null 2>&1 &
   elif command -v python3 >/dev/null 2>&1; then
@@ -554,34 +554,31 @@ launch_tmux() {
     tmux bind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-pipe "xsel -i -b"
   fi
 
-  # Pane 1: Backend Logs (Top-Right)
-  local P_BE
-  P_BE=$(tmux split-window -P -F "#{pane_id}" -t "$P_FE" "tail -F '${BACKEND_LOG}'")
-
-  # Pane 2: Python RAG Logs (Mid-Left)
-  local P_PY
-  P_PY=$(tmux split-window -P -F "#{pane_id}" -t "$P_BE" "tail -F '${PYTHON_LOG}'")
-
-  # Pane 3: Azure Dev Tunnel Logs (Mid-Right)
-  local P_TU
-  P_TU=$(tmux split-window -P -F "#{pane_id}" -t "$P_PY" "tail -F '${TUNNEL_LOG}'")
-
-  # Pane 4: Interactive Controller (Bottom)
+  # Split session vertically to create the bottom Controller pane (takes 10 lines at bottom)
   local P_CTRL
-  P_CTRL=$(tmux split-window -P -F "#{pane_id}" -t "$P_TU" "bash '${ROOT_DIR}/start.sh' --controller")
+  P_CTRL=$(tmux split-window -v -l 10 -P -F "#{pane_id}" -t "$P_FE" "bash '${ROOT_DIR}/start.sh' --controller")
 
-  # Arrange in a clean, perfectly balanced tiled grid
-  tmux select-layout -t "$SESSION" tiled
+  # Split top area horizontally: Left side stays Frontend (P_FE), Right side is Backend (P_BE)
+  local P_BE
+  P_BE=$(tmux split-window -h -P -F "#{pane_id}" -t "$P_FE" "tail -F '${BACKEND_LOG}'")
+
+  # Split P_FE vertically: Top-Left is Frontend (P_FE), Bottom-Left is Python RAG (P_PY)
+  local P_PY
+  P_PY=$(tmux split-window -v -P -F "#{pane_id}" -t "$P_FE" "tail -F '${PYTHON_LOG}'")
+
+  # Split P_BE vertically: Top-Right is Backend (P_BE), Bottom-Right is Azure Tunnel (P_TU)
+  local P_TU
+  P_TU=$(tmux split-window -v -P -F "#{pane_id}" -t "$P_BE" "tail -F '${TUNNEL_LOG}'")
 
   # Tag each pane accurately by its immutable pane ID
-  tmux select-pane -t "$P_FE" -T "Frontend Logs (Port 3000)"
-  tmux select-pane -t "$P_BE" -T "Backend Logs (Port 4000)"
-  tmux select-pane -t "$P_PY" -T "Python RAG Logs (Port 8000)"
-  tmux select-pane -t "$P_TU" -T "Azure Dev Tunnel Logs (w21xbn22)"
-  tmux select-pane -t "$P_CTRL" -T "CIVIL-LEX Controller (Active Menu)"
+  [ -n "$P_FE" ] && tmux select-pane -t "$P_FE" -T "Frontend Logs (Port 3000)"
+  [ -n "$P_BE" ] && tmux select-pane -t "$P_BE" -T "Backend Logs (Port 4000)"
+  [ -n "$P_PY" ] && tmux select-pane -t "$P_PY" -T "Python RAG Logs (Port 8000)"
+  [ -n "$P_TU" ] && tmux select-pane -t "$P_TU" -T "Azure Dev Tunnel Logs (w21xbn22)"
+  [ -n "$P_CTRL" ] && tmux select-pane -t "$P_CTRL" -T "CIVIL-LEX Controller (Active Menu)"
 
   # Focus the interactive controller pane
-  tmux select-pane -t "$P_CTRL"
+  [ -n "$P_CTRL" ] && tmux select-pane -t "$P_CTRL"
 
   # Handle nesting vs standalone attach
   if [ -n "${TMUX:-}" ]; then
@@ -871,29 +868,28 @@ cleanup_and_exit() {
 
 
 case "${1:-}" in
-  -h|--help)
+  -h|--help|-help|help)
     show_usage
     exit 0
     ;;
-  -s|--status)
+  -s|--status|-status|status)
     print_cli_status
     exit 0
     ;;
-  -k|--stop)
+  -k|--stop|-stop|stop|kill)
     echo -e "${YELLOW}[!] Stopping all running services...${RESET}"
     stop_all_services
     echo -e "${GREEN}[✔] All services stopped cleanly.${RESET}"
     exit 0
     ;;
-  -t|--tmux)
+  -t|--tmux|-tmux|tmux)
     validate_environment
     launch_tmux
     exit 0
     ;;
-  -c|--controller|-i|--interactive)
+  -c|--controller|-controller|controller|-i|--interactive|-interactive|interactive)
     # Open interactive service controller & log streamer
     validate_environment
-    local fe_pid be_pid py_pid
     fe_pid=$(read_service_pid "${FRONTEND_PID_FILE}")
     be_pid=$(read_service_pid "${BACKEND_PID_FILE}")
     py_pid=$(read_service_pid "${PYTHON_PID_FILE}")
@@ -916,7 +912,7 @@ case "${1:-}" in
     echo -e "${DIM}  • View live status  : ./start.sh --status${RESET}"
     echo -e "${DIM}  • Stream logs       : tail -f ${LOG_DIR}/*.log${RESET}"
     echo -e "${DIM}  • Service manager   : ./start.sh --controller${RESET}"
-    echo -e "${DIM}  • System monitor    : ./monitor.sh  (or ./scripts/system_monitor.sh)${RESET}"
+    echo -e "${DIM}  • System monitor    : ./scripts/system_monitor.sh${RESET}"
     echo -e "${DIM}  • Stop all services : ./start.sh --stop${RESET}\n"
     exit 0
     ;;

@@ -151,35 +151,18 @@ launch_in_tmux() {
     return
   fi
 
-  # Check if target session exists
-  if ! tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
-    echo -e "${YELLOW}[i] Tmux session '${SESSION_NAME}' not found. Starting dedicated monitor session...${RESET}"
-    tmux new-session -d -s "$SESSION_NAME" -n "$MONITOR_WINDOW_NAME" "bash '${MONITOR_SCRIPT}'"
-    if [ -n "${TMUX:-}" ]; then
-      tmux switch-client -t "$SESSION_NAME"
-    else
-      tmux attach-session -t "$SESSION_NAME"
-    fi
-    exit 0
+  local MON_SESSION="civilex-monitor"
+
+  # Check if dedicated monitor session exists
+  if ! tmux has-session -t "$MON_SESSION" 2>/dev/null; then
+    echo -e "${GREEN}[✔] Launching dedicated system monitor session '${MON_SESSION}'...${RESET}"
+    tmux new-session -d -s "$MON_SESSION" -n "$MONITOR_WINDOW_NAME" "bash '${MONITOR_SCRIPT}'"
   fi
 
-  # Check if the monitor window already exists in the session
-  if tmux list-windows -t "$SESSION_NAME" -F "#{window_name}" | grep -q "^${MONITOR_WINDOW_NAME}$"; then
-    echo -e "${GREEN}[✔] Switching to existing tmux window '${MONITOR_WINDOW_NAME}'...${RESET}"
-    tmux select-window -t "${SESSION_NAME}:${MONITOR_WINDOW_NAME}"
-    if [ -z "${TMUX:-}" ]; then
-      tmux attach-session -t "$SESSION_NAME"
-    fi
-    exit 0
-  fi
-
-  # Create a new window in the existing session
-  echo -e "${GREEN}[✔] Creating new tmux window '${MONITOR_WINDOW_NAME}' in session '${SESSION_NAME}'...${RESET}"
-  tmux new-window -t "$SESSION_NAME" -n "$MONITOR_WINDOW_NAME" "bash '${MONITOR_SCRIPT}'"
-  tmux select-window -t "${SESSION_NAME}:${MONITOR_WINDOW_NAME}"
-
-  if [ -z "${TMUX:-}" ]; then
-    tmux attach-session -t "$SESSION_NAME"
+  if [ -n "${TMUX:-}" ]; then
+    tmux switch-client -t "$MON_SESSION" 2>/dev/null || true
+  else
+    tmux attach-session -t "$MON_SESSION"
   fi
   exit 0
 }
@@ -540,15 +523,15 @@ render_dashboard() {
 
 # Check command line flags
 case "${1:-}" in
-  --tmux|-t)
+  --tmux|-t|-tmux|tmux)
     launch_in_tmux
     ;;
-  --once|-1)
+  --once|-1|-once|once)
     # Print a single clean snapshot and exit without alternate buffer
     generate_frame "$(tput lines 2>/dev/null || echo 24)" "$(tput cols 2>/dev/null || echo 80)"
     exit 0
     ;;
-  --help|-h)
+  --help|-h|-help|help)
     echo -e "${BOLD}CIVIL-LEX System & Resource Monitor${RESET}"
     echo -e "Usage: ./scripts/system_monitor.sh [OPTION]"
     echo -e ""

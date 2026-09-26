@@ -1,6 +1,26 @@
 import express from 'express';
 import { execSync } from 'child_process';
 import os from 'os';
+import { createClient } from '@supabase/supabase-js';
+import { PresenceService } from '../services/presence.js';
+
+const supabaseUrl = process.env.SUPABASE_URL || 'http://localhost:54321';
+const supabaseAnonKey = process.env.SUPABASE_ANON_KEY || 'dummy';
+const authClient = createClient(supabaseUrl, supabaseAnonKey);
+
+const extractAuthUser = async (req) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) return null;
+    const token = authHeader.substring(7).trim();
+    if (!token) return null;
+    const { data: { user }, error } = await authClient.auth.getUser(token);
+    if (error || !user) return null;
+    return user;
+  } catch (_) {
+    return null;
+  }
+};
 
 const router = express.Router();
 
@@ -98,6 +118,42 @@ router.get('/queue', async (req, res) => {
   }
 });
 
+router.get('/online-users', async (req, res) => {
+  try {
+    const data = await PresenceService.getOnlineUsers();
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: err.message, onlineCount: 0, users: [] });
+  }
+});
+
+router.post('/heartbeat', async (req, res) => {
+  try {
+    const user = await extractAuthUser(req);
+    if (user) {
+      PresenceService.touch(user, req, req.body?.status || 'Active');
+    }
+    const data = await PresenceService.getOnlineUsers();
+    res.json({ status: 'ok', onlineCount: data.onlineCount });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/offline', async (req, res) => {
+  try {
+    const user = await extractAuthUser(req);
+    if (user) {
+      PresenceService.setOffline(user.id);
+    } else if (req.body?.userId) {
+      PresenceService.setOffline(req.body.userId);
+    }
+    res.json({ status: 'ok' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.get('/status', async (req, res) => {
   const totalMem = os.totalmem();
   const freeMem = os.freemem();
@@ -112,6 +168,11 @@ router.get('/status', async (req, res) => {
     if (qResp.ok) {
       ragQueue = await qResp.json();
     }
+  } catch (_) {}
+
+  let onlineUsers = { onlineCount: 0, users: [] };
+  try {
+    onlineUsers = await PresenceService.getOnlineUsers();
   } catch (_) {}
 
   res.json({
@@ -136,6 +197,7 @@ router.get('/status', async (req, res) => {
       queueTimeoutSeconds: parseInt(process.env.QUEUE_TIMEOUT_SECONDS || '180', 10),
     },
     queue: ragQueue,
+    onlineUsers,
   });
 });
 

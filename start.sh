@@ -427,7 +427,7 @@ copy_active_log_to_clipboard() {
 open_url() {
   local url=$1
   local name=$2
-  last_action_msg="${CYAN}[🌐] Opening ${name} (${url}) in browser...${RESET}"
+  last_action_msg="${CYAN} Opening ${name} (${url}) in browser...${RESET}"
   if command -v xdg-open >/dev/null 2>&1; then
     xdg-open "$url" >/dev/null 2>&1 &
   elif command -v python3 >/dev/null 2>&1; then
@@ -471,14 +471,14 @@ show_usage() {
   echo -e "Usage: ./start.sh [OPTION]"
   echo -e ""
   echo -e "Options:"
-  echo -e "  ${BOLD}(no args)${RESET}         Start services and open interactive terminal controller"
+  echo -e "  ${BOLD}(no args)${RESET}         Start all services in background and exit"
+  echo -e "  ${BOLD}-c, --controller${RESET}  Open interactive service controller & log streamer"
   echo -e "  ${BOLD}-t, --tmux${RESET}        Launch or attach to 4-pane tmux dashboard"
   echo -e "  ${BOLD}-s, --status${RESET}      Print current service statuses and exit"
   echo -e "  ${BOLD}-k, --stop${RESET}        Stop all running services and free ports"
-  echo -e "  ${BOLD}-c, --controller${RESET}  Open interactive controller without restarting services"
   echo -e "  ${BOLD}-h, --help${RESET}        Show this help message"
   echo -e ""
-  echo -e "Interactive Controller Keybindings:"
+  echo -e "Interactive Controller Keybindings (with -c):"
   echo -e "  [1-4] Stream Service Logs   [5] Stream Combined Logs   [s] Status Screen"
   echo -e "  [f] Restart Frontend        [b] Restart Backend        [p] Restart Python RAG"
   echo -e "  [u] Restart Azure Tunnel    [a] Restart All Services   [k] Stop All Services"
@@ -644,53 +644,66 @@ first_draw=true
 last_action_msg=""
 
 show_header() {
-  if [ "$first_draw" = true ]; then
-    printf "${CLEAR_SCREEN}${HIDE_CURSOR}"
-    first_draw=false
-  else
-    printf "${HOME_CURSOR}${HIDE_CURSOR}"
-  fi
+  render_status_buffer
+}
 
-  local fe_st
-  local be_st
-  local py_st
+render_status_buffer() {
+  local fe_st be_st py_st
   fe_st=$(check_port 3000)
   be_st=$(check_port 4000)
   py_st=$(check_port 8000)
 
-  echo -e "${BOLD}${BLUE}======================================================================${RESET}${CLEAR_LINE}"
-  echo -e "${BOLD}${CYAN}                CIVIL-LEX MULTI-SERVICE CONTROLLER                   ${RESET}${CLEAR_LINE}"
-  echo -e "${BOLD}${BLUE}======================================================================${RESET}${CLEAR_LINE}"
-  
-  echo -e " ${BOLD}1. Frontend (Next.js)${RESET}     : http://localhost:3000 | Status: $(get_status_badge "$fe_st" "${FRONTEND_PID_FILE}" "${FRONTEND_LOG}")${CLEAR_LINE}"
-  echo -e " ${BOLD}2. Backend (Node.js)${RESET}     : http://localhost:4000 | Status: $(get_status_badge "$be_st" "${BACKEND_PID_FILE}" "${BACKEND_LOG}")${CLEAR_LINE}"
-  echo -e " ${BOLD}3. RAG Service (Python)${RESET}  : http://localhost:8000 | Status: $(get_status_badge "$py_st" "${PYTHON_PID_FILE}" "${PYTHON_LOG}")${CLEAR_LINE}"
   local tu_badge
   tu_badge=$(get_tunnel_badge)
-  echo -e " ${BOLD}4. Azure Dev Tunnel${RESET}      : civilex-tunnel | Status: ${tu_badge}${CLEAR_LINE}"
+
+  local buf=""
+  buf+="${BOLD}${BLUE}======================================================================${RESET}${CLEAR_LINE}\n"
+  buf+="${BOLD}${CYAN}                CIVIL-LEX MULTI-SERVICE CONTROLLER                   ${RESET}${CLEAR_LINE}\n"
+  buf+="${BOLD}${BLUE}======================================================================${RESET}${CLEAR_LINE}\n"
+  buf+=" ${BOLD}1. Frontend (Next.js)${RESET}     : http://localhost:3000 | Status: $(get_status_badge "$fe_st" "${FRONTEND_PID_FILE}" "${FRONTEND_LOG}")${CLEAR_LINE}\n"
+  buf+=" ${BOLD}2. Backend (Node.js)${RESET}     : http://localhost:4000 | Status: $(get_status_badge "$be_st" "${BACKEND_PID_FILE}" "${BACKEND_LOG}")${CLEAR_LINE}\n"
+  buf+=" ${BOLD}3. RAG Service (Python)${RESET}  : http://localhost:8000 | Status: $(get_status_badge "$py_st" "${PYTHON_PID_FILE}" "${PYTHON_LOG}")${CLEAR_LINE}\n"
+  buf+=" ${BOLD}4. Azure Dev Tunnel${RESET}      : civilex-tunnel | Status: ${tu_badge}${CLEAR_LINE}\n"
   if [[ "$tu_badge" == *"ONLINE"* ]]; then
-    echo -e "    ${CYAN}↳ Backend API  (Port 4000) : https://w21xbn22-4000.asse.devtunnels.ms${RESET}${CLEAR_LINE}"
-    echo -e "    ${MAGENTA}↳ Python RAG   (Port 8000) : https://w21xbn22-8000.asse.devtunnels.ms${RESET}${CLEAR_LINE}"
-    echo -e "    ${GREEN}↳ Supabase API (Port 54321): https://w21xbn22-54321.asse.devtunnels.ms${RESET}${CLEAR_LINE}"
+    buf+="    ${CYAN}↳ Backend API  (Port 4000) : https://w21xbn22-4000.asse.devtunnels.ms${RESET}${CLEAR_LINE}\n"
+    buf+="    ${MAGENTA}↳ Python RAG   (Port 8000) : https://w21xbn22-8000.asse.devtunnels.ms${RESET}${CLEAR_LINE}\n"
+    buf+="    ${GREEN}↳ Supabase API (Port 54321): https://w21xbn22-54321.asse.devtunnels.ms${RESET}${CLEAR_LINE}\n"
   fi
-  echo -e "   ${DIM}↳ LLM Concurrency Limit :${RESET} ${YELLOW}${BOLD}${MAX_CONCURRENT_QUERIES:-1} Active Query per time${RESET} ${DIM}(Strict 6GB VRAM Queue Protection)${RESET}${CLEAR_LINE}"
-  echo -e "${BLUE}----------------------------------------------------------------------${RESET}${CLEAR_LINE}"
-  echo -e " ${BOLD}Controls & Hotkeys:${RESET}${CLEAR_LINE}"
-  echo -e "   [${BOLD}1-4${RESET}] View Logs   [${BOLD}5${RESET}] Combined Logs   [${BOLD}s${RESET}] Status Screen   [${BOLD}c${RESET}] Clear Logs${CLEAR_LINE}"
-  echo -e "   [${BOLD}f/b/p/u/a${RESET}] Restart Service (u: Tunnel)  [${BOLD}k${RESET}] Stop All${CLEAR_LINE}"
-  echo -e "   [${BOLD}o${RESET}] Open App UI     [${BOLD}d${RESET}] Open API Docs    [${BOLD}m${RESET}] Monitor Screen [${BOLD}t${RESET}] Tmux Mode     [${BOLD}q${RESET}] Quit All${CLEAR_LINE}"
-  echo -e "   [${BOLD}h${RESET}] Help Legend${CLEAR_LINE}"
-  echo -e "${BLUE}======================================================================${RESET}${CLEAR_LINE}"
-  
+  buf+="${BLUE}----------------------------------------------------------------------${RESET}${CLEAR_LINE}\n"
+  buf+=" ${BOLD}Controls & Hotkeys:${RESET}${CLEAR_LINE}\n"
+  buf+="   [${BOLD}1-4${RESET}] View Logs   [${BOLD}5${RESET}] Combined Logs   [${BOLD}s${RESET}] Status Screen   [${BOLD}c${RESET}] Clear Logs${CLEAR_LINE}\n"
+  buf+="   [${BOLD}f/b/p/u/a${RESET}] Restart Service (u: Tunnel)  [${BOLD}k${RESET}] Stop All${CLEAR_LINE}\n"
+  buf+="   [${BOLD}o${RESET}] Open App UI     [${BOLD}d${RESET}] Open API Docs    [${BOLD}t${RESET}] Tmux Mode     [${BOLD}q${RESET}] Quit All${CLEAR_LINE}\n"
+  buf+="   [${BOLD}h${RESET}] Help Legend${CLEAR_LINE}\n"
+  buf+="${BLUE}======================================================================${RESET}${CLEAR_LINE}\n"
+
   if [ -n "$last_action_msg" ]; then
-    echo -e " ${last_action_msg}${CLEAR_LINE}"
-    echo -e "${BLUE}----------------------------------------------------------------------${RESET}${CLEAR_LINE}"
+    buf+=" ${last_action_msg}${CLEAR_LINE}\n"
+    buf+="${BLUE}----------------------------------------------------------------------${RESET}${CLEAR_LINE}\n"
   fi
+
+  if [ "$active_view" == "status" ]; then
+    buf+="${BOLD}${GREEN}All services managed automatically in background.${RESET}${CLEAR_LINE}\n"
+    buf+="${DIM}Logs directory: ${LOG_DIR}${RESET}${CLEAR_LINE}\n"
+    buf+="\nPress control key [1-4, s, t, f, b, p, a, c, o, d, k, q, h]...${CLEAR_LINE}\n"
+  fi
+
+  printf "%b" "$buf"
 }
 
 render_view() {
   stop_tail
-  first_draw=true
+  if [ "$first_draw" = true ]; then
+    printf "${CLEAR_SCREEN}${HIDE_CURSOR}"
+    first_draw=false
+  fi
+
+  if [ "$active_view" == "status" ]; then
+    printf "\033[H%b\033[J" "$(render_status_buffer)"
+    return
+  fi
+
+  printf "${HOME_CURSOR}${HIDE_CURSOR}"
   show_header
 
   case "$active_view" in
@@ -771,7 +784,6 @@ run_controller() {
         "5") active_view="combined"; render_view ;;
         "s"|"S") active_view="status"; render_view ;;
         "t"|"T") launch_tmux ;;
-        "m"|"M") bash "${ROOT_DIR}/scripts/system_monitor.sh" --tmux; render_view ;;
         "c"|"C") clear_logs; render_view ;;
         "y"|"Y") copy_active_log_to_clipboard; render_view ;;
         "o"|"O") open_url "http://localhost:3000" "Frontend App"; render_view ;;
@@ -826,12 +838,9 @@ run_controller() {
           ;;
       esac
     else
-      # Periodic non-blocking refresh of status screen without buffer flicker
+      # Periodic non-blocking atomic refresh of status screen without buffer flicker or scroll
       if [ "$active_view" == "status" ]; then
-        show_header
-        echo -e "${BOLD}${GREEN}All services managed automatically in background.${RESET}${CLEAR_LINE}"
-        echo -e "${DIM}Logs directory: ${LOG_DIR}${RESET}${CLEAR_LINE}"
-        echo -e "\nPress control key [1-4, s, t, f, b, p, a, c, o, d, k, q, h]...${CLEAR_LINE}"
+        printf "\033[H%b\033[J" "$(render_status_buffer)"
       fi
     fi
   done
@@ -881,20 +890,34 @@ case "${1:-}" in
     launch_tmux
     exit 0
     ;;
-  -m|--monitor)
-    bash "${ROOT_DIR}/scripts/system_monitor.sh" --tmux
-    exit 0
-    ;;
-  -c|--controller|--monitor-only)
-    # Open controller directly without killing or restarting services
+  -c|--controller|-i|--interactive)
+    # Open interactive service controller & log streamer
+    validate_environment
+    local fe_pid be_pid py_pid
+    fe_pid=$(read_service_pid "${FRONTEND_PID_FILE}")
+    be_pid=$(read_service_pid "${BACKEND_PID_FILE}")
+    py_pid=$(read_service_pid "${PYTHON_PID_FILE}")
+    if [ -z "$fe_pid" ] || ! is_pid_alive "$fe_pid" || [ -z "$be_pid" ] || ! is_pid_alive "$be_pid" || [ -z "$py_pid" ] || ! is_pid_alive "$py_pid"; then
+      kill_existing_processes
+      start_all_services
+    fi
     run_controller
     exit 0
     ;;
   *)
-    # Default execution: check environment, clean stale processes, start services, launch controller
+    # Default execution: start all services cleanly in background and print status
     validate_environment
     kill_existing_processes
     start_all_services
-    run_controller
+    sleep 1
+    echo -e ""
+    print_cli_status
+    echo -e "\n${GREEN}[✔] All CIVIL-LEX services started successfully in background.${RESET}"
+    echo -e "${DIM}  • View live status  : ./start.sh --status${RESET}"
+    echo -e "${DIM}  • Stream logs       : tail -f ${LOG_DIR}/*.log${RESET}"
+    echo -e "${DIM}  • Service manager   : ./start.sh --controller${RESET}"
+    echo -e "${DIM}  • System monitor    : ./monitor.sh  (or ./scripts/system_monitor.sh)${RESET}"
+    echo -e "${DIM}  • Stop all services : ./start.sh --stop${RESET}\n"
+    exit 0
     ;;
 esac

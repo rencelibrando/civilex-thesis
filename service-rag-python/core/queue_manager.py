@@ -50,7 +50,14 @@ class QueryQueueManager:
     def queued_queries(self) -> int:
         return len(self._waiters)
 
-    async def enter_queue(self, user_id: str = "anon", session_id: str = "") -> Tuple[bool, int, str]:
+    async def enter_queue(
+        self,
+        user_id: str = "anon",
+        session_id: str = "",
+        user_name: str = "",
+        user_email: str = "",
+        user_role: str = ""
+    ) -> Tuple[bool, int, str]:
         """
         Request entry into the query processing pipeline.
         
@@ -75,10 +82,13 @@ class QueryQueueManager:
                 self._active_slots[ticket] = {
                     "ticket": ticket,
                     "user_id": user_id,
+                    "user_name": user_name,
+                    "user_email": user_email,
+                    "user_role": user_role,
                     "session_id": session_id,
                     "started_at": time.time(),
                 }
-                logger.info(f"[Queue] Ticket #{ticket} immediately granted slot ({len(self._active_slots)}/{self.max_concurrent} active).")
+                logger.info(f"[Queue] Ticket #{ticket} immediately granted slot ({len(self._active_slots)}/{self.max_concurrent} active) for user '{user_name or user_email or user_id}'.")
                 return True, ticket, ""
 
             # Concurrency limit reached -> Enqueue request in FIFO order
@@ -86,6 +96,9 @@ class QueryQueueManager:
             waiter_info = {
                 "ticket": ticket,
                 "user_id": user_id,
+                "user_name": user_name,
+                "user_email": user_email,
+                "user_role": user_role,
                 "session_id": session_id,
                 "event": event,
                 "entered_at": time.time(),
@@ -93,7 +106,7 @@ class QueryQueueManager:
             self._waiters.append(waiter_info)
             self.total_queued += 1
             pos = len(self._waiters)
-            logger.info(f"[Queue] Ticket #{ticket} enqueued at position #{pos} (Active: {len(self._active_slots)}/{self.max_concurrent}).")
+            logger.info(f"[Queue] Ticket #{ticket} enqueued at position #{pos} (Active: {len(self._active_slots)}/{self.max_concurrent}) for user '{user_name or user_email or user_id}'.")
             return False, ticket, ""
 
     async def get_queue_position(self, ticket: int) -> int:
@@ -134,6 +147,9 @@ class QueryQueueManager:
                 self._active_slots[next_ticket] = {
                     "ticket": next_ticket,
                     "user_id": next_waiter["user_id"],
+                    "user_name": next_waiter.get("user_name", ""),
+                    "user_email": next_waiter.get("user_email", ""),
+                    "user_role": next_waiter.get("user_role", ""),
                     "session_id": next_waiter["session_id"],
                     "started_at": time.time(),
                 }
@@ -149,6 +165,9 @@ class QueryQueueManager:
             active_list.append({
                 "ticket": ticket,
                 "user_id": slot.get("user_id"),
+                "user_name": slot.get("user_name", ""),
+                "user_email": slot.get("user_email", ""),
+                "user_role": slot.get("user_role", ""),
                 "session_id": slot.get("session_id"),
                 "running_time_sec": round(now - slot.get("started_at", now), 1)
             })
@@ -159,6 +178,9 @@ class QueryQueueManager:
                 "position": idx + 1,
                 "ticket": w["ticket"],
                 "user_id": w.get("user_id"),
+                "user_name": w.get("user_name", ""),
+                "user_email": w.get("user_email", ""),
+                "user_role": w.get("user_role", ""),
                 "session_id": w.get("session_id"),
                 "wait_time_sec": round(now - w.get("entered_at", now), 1)
             })

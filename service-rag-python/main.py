@@ -1166,16 +1166,33 @@ async def search_documents(request: SearchRequest, raw_req: Request = None):
     """
     try:
         import logging
+        import urllib.parse
         user_identifier = (
             (raw_req.headers.get("x-user-id") if raw_req else None)
             or request.session_id
             or "anon"
         )
-        logging.info(f"Received search request from user [{user_identifier}]: {request.query[:80]}")
+        user_email = (raw_req.headers.get("x-user-email") if raw_req else None) or ""
+        user_name_raw = (raw_req.headers.get("x-user-name") if raw_req else None) or ""
+        try:
+            user_name = urllib.parse.unquote(user_name_raw) if user_name_raw else ""
+        except Exception:
+            user_name = user_name_raw
+        user_role_raw = (raw_req.headers.get("x-user-role") if raw_req else None) or ""
+        try:
+            user_role = urllib.parse.unquote(user_role_raw) if user_role_raw else ""
+        except Exception:
+            user_role = user_role_raw
+
+        logging.info(f"Received search request from user [{user_name or user_email or user_identifier}]: {request.query[:80]}")
 
         async def sse_generator():
             acquired_immediately, ticket, err = await queue_manager.enter_queue(
-                user_id=user_identifier, session_id=request.session_id or ""
+                user_id=user_identifier,
+                session_id=request.session_id or "",
+                user_name=user_name,
+                user_email=user_email,
+                user_role=user_role,
             )
 
             if err == "QUEUE_FULL":

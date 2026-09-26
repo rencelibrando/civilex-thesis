@@ -52,6 +52,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [logoutReason, setLogoutReason] = useState<string | null>(null);
   const periodicCheckRef = useRef<NodeJS.Timeout | null>(null);
+  const heartbeatRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Send lightweight presence heartbeat to backend
+  const sendHeartbeat = useCallback(async (token?: string, statusText = "Active") => {
+    const activeToken = token || session?.access_token;
+    if (!activeToken) return;
+    try {
+      await fetch(`${BACKEND_URL}/api/system/heartbeat`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${activeToken}`,
+        },
+        body: JSON.stringify({ status: statusText }),
+      });
+    } catch (_) {
+      // Non-critical background telemetry
+    }
+  }, [session?.access_token]);
 
   // Initialize session state on mount
   const initAuth = useCallback(async () => {
@@ -71,6 +90,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (activeSession) {
         setSession(activeSession);
         setUser(activeSession.user);
+        sendHeartbeat(activeSession.access_token, "Active");
       } else {
         setSession(null);
         setUser(null);
@@ -82,7 +102,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [sendHeartbeat]);
 
   useEffect(() => {
     initAuth();
@@ -104,6 +124,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           setSession(newSession);
           setUser(newSession.user);
           updateSessionActivity();
+          sendHeartbeat(newSession.access_token, "Active");
         }
         setIsLoading(false);
       }
@@ -120,11 +141,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
     }, 5 * 60 * 1000);
 
+    // Live heartbeat every 30 seconds for active presence monitoring
+    heartbeatRef.current = setInterval(() => {
+      if (session?.access_token) {
+        sendHeartbeat(session.access_token, document.visibilityState === "visible" ? "Active" : "Background");
+      }
+    }, 30 * 1000);
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible" && session?.access_token) {
+        sendHeartbeat(session.access_token, "Active");
+      }
+    };
+    window.addEventListener("visibilitychange", handleVisibilityChange);
+
     return () => {
       subscription.unsubscribe();
+      window.removeEventListener("visibilitychange", handleVisibilityChange);
       if (periodicCheckRef.current) clearInterval(periodicCheckRef.current);
+      if (heartbeatRef.current) clearInterval(heartbeatRef.current);
     };
-  }, [initAuth]);
+  }, [initAuth, sendHeartbeat, session?.access_token]);
 
   const signIn = async (email: string, password: string, rememberMe = true) => {
     // Check brute-force lockout
@@ -249,6 +286,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signOut = async (reason?: string) => {
     setIsLoading(true);
+    try {
+      if (session?.access_token) {
+        fetch(`${BACKEND_URL}/api/system/offline`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${session.access_token}`,
+          },
+          keepalive: true,
+        }).catch(() => {});
+      }
+    } catch (_) {}
     await signOutUser(reason);
     setSession(null);
     setUser(null);

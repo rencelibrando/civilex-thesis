@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import dotenv from 'dotenv';
+import { PresenceService } from '../services/presence.js';
 dotenv.config();
 
 const supabaseUrl = process.env.SUPABASE_URL;
@@ -54,6 +55,9 @@ export const requireAuth = async (req, res, next) => {
     );
 
     req.user = user;
+    try {
+      PresenceService.touch(user, req);
+    } catch (_) {}
     next();
   } catch (err) {
     console.error('[AuthMiddleware] Verification exception:', err);

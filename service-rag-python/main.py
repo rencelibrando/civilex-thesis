@@ -3,7 +3,7 @@ import re
 import json
 import asyncio
 from decimal import Decimal
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
@@ -13,6 +13,10 @@ from pydantic import BaseModel
 from typing import List, Dict, Optional, Any
 import sys
 import logging
+import time
+
+from core.config import LM_STUDIO_URL, MAX_CONCURRENT_QUERIES
+from core.queue_manager import queue_manager
 
 logging.basicConfig(
     level=logging.INFO,
@@ -115,6 +119,41 @@ init_db()
 @app.get("/health")
 def health_check():
     return {"status": "ok", "service": "service-rag-python"}
+
+@app.get("/system/queue-status")
+@app.get("/system/status")
+async def get_system_queue_status():
+    """
+    Returns live concurrency metrics, queue depth, active queries, and LM Studio model health.
+    """
+    import httpx
+    status_data = queue_manager.get_status()
+
+    # Query LM Studio health and loaded models
+    lm_online = False
+    loaded_models = []
+    latency_ms = None
+    try:
+        t0 = time.time()
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            resp = await client.get(f"{LM_STUDIO_URL.rstrip('/')}/models")
+            latency_ms = round((time.time() - t0) * 1000, 1)
+            if resp.status_code == 200:
+                lm_online = True
+                data = resp.json()
+                loaded_models = [m.get("id") for m in data.get("data", [])]
+    except Exception:
+        lm_online = False
+
+    status_data["lm_studio"] = {
+        "url": LM_STUDIO_URL,
+        "online": lm_online,
+        "latency_ms": latency_ms,
+        "models": loaded_models,
+        "vram_profile": "6.0 GB VRAM Strict Concurrency Enforced"
+    }
+    return status_data
+
 
 @app.get("/api/civil-code/toc")
 def get_civil_code_toc():
@@ -1114,22 +1153,79 @@ def save_assistant_message_to_db(
         logging.error(f"Failed to save message to DB: {db_err}")
 
 @app.post("/search")
-async def search_documents(request: SearchRequest):
+async def search_documents(request: SearchRequest, raw_req: Request = None):
     """
     RAG Search Endpoint with granular stage progression streamed via SSE:
-    1. Contextualize query with active conversation memory
-    2. Intent classification & domain boundary guardrails
-    3. Conditional embedding and hybrid retrieval
-    4. Synthesizing context with retained active citations and passing prompt to model
-    5. Model thinking & reasoning
-    6. Streaming character response
+    1. Resource Queue check & concurrency limiting (strict 6GB VRAM protection)
+    2. Contextualize query with active conversation memory
+    3. Intent classification & domain boundary guardrails
+    4. Conditional embedding and hybrid retrieval
+    5. Synthesizing context with retained active citations and passing prompt to model
+    6. Model thinking & reasoning
+    7. Streaming character response
     """
     try:
         import logging
-        logging.info(f"Received search request: {request.query}")
+        user_identifier = (
+            (raw_req.headers.get("x-user-id") if raw_req else None)
+            or request.session_id
+            or "anon"
+        )
+        logging.info(f"Received search request from user [{user_identifier}]: {request.query[:80]}")
 
         async def sse_generator():
+            acquired_immediately, ticket, err = await queue_manager.enter_queue(
+                user_id=user_identifier, session_id=request.session_id or ""
+            )
+
+            if err == "QUEUE_FULL":
+                yield f"data: {dumps({'type': 'error', 'message': 'The system is experiencing peak volume and the queue is currently full. Please try again shortly.'})}\n\n"
+                yield f"data: {dumps({'type': 'done'})}\n\n"
+                return
+
             try:
+                # If not acquired immediately, user is placed in queue
+                if not acquired_immediately:
+                    queue_pos = await queue_manager.get_queue_position(ticket)
+                    yield f"data: {dumps({'type': 'status', 'stage': 'queued', 'message': f'Resource queue: You are #{queue_pos} in line. Another query is currently utilizing the legal model ({queue_manager.active_queries}/{queue_manager.max_concurrent} active)...', 'queue_position': queue_pos, 'active_queries': queue_manager.active_queries, 'max_concurrent': queue_manager.max_concurrent})}\n\n"
+
+                    start_wait = time.time()
+                    last_pos = queue_pos
+
+                    while True:
+                        waiter = None
+                        async with queue_manager._lock:
+                            for w in queue_manager._waiters:
+                                if w["ticket"] == ticket:
+                                    waiter = w
+                                    break
+
+                        if not waiter:
+                            # Promoted or removed
+                            if ticket in queue_manager._active_slots:
+                                break
+                            else:
+                                yield f"data: {dumps({'type': 'error', 'message': 'Queue registration cancelled.'})}\n\n"
+                                return
+
+                        try:
+                            await asyncio.wait_for(asyncio.shield(waiter["event"].wait()), timeout=1.5)
+                            break
+                        except asyncio.TimeoutError:
+                            if time.time() - start_wait > queue_manager.queue_timeout:
+                                queue_manager.total_timeouts += 1
+                                await queue_manager.cancel_waiter(ticket)
+                                yield f"data: {dumps({'type': 'error', 'message': 'Queue wait time exceeded limit. Please try submitting your query again.'})}\n\n"
+                                yield f"data: {dumps({'type': 'done'})}\n\n"
+                                return
+
+                            cur_pos = await queue_manager.get_queue_position(ticket)
+                            if cur_pos != last_pos or (int(time.time() - start_wait) % 4 == 0):
+                                last_pos = cur_pos
+                                yield f"data: {dumps({'type': 'status', 'stage': 'queued', 'message': f'Resource queue: You are #{cur_pos} in line. Waiting for model resources to become available...', 'queue_position': cur_pos, 'active_queries': queue_manager.active_queries, 'max_concurrent': queue_manager.max_concurrent})}\n\n"
+
+                    yield f"data: {dumps({'type': 'status', 'stage': 'embedding', 'message': 'Resource slot acquired. Initializing legal search...', 'queue_position': 0})}\n\n"
+
                 logging.info("Starting SSE stream with granular RAG stages and context memory...")
 
                 # Resolve document filename if analyzing an uploaded document
@@ -1664,6 +1760,11 @@ CONTEXT:
             except Exception as stream_err:
                 logging.error(f"Error in SSE stream generation: {stream_err}")
                 yield f"data: {dumps({'type': 'error', 'message': str(stream_err)})}\n\n"
+            finally:
+                if ticket in queue_manager._active_slots:
+                    await queue_manager.release_slot(ticket)
+                else:
+                    await queue_manager.cancel_waiter(ticket)
 
         return StreamingResponse(
             sse_generator(),

@@ -17,6 +17,7 @@ import { BACKEND_URL } from "@/lib/config";
 
 export type RagStage =
   | "idle"
+  | "queued"
   | "embedding"
   | "retrieving"
   | "retrieving_done"
@@ -32,6 +33,7 @@ export interface RagStatus {
   stage: RagStage;
   message: string;
   count?: number;
+  queue_position?: number;
 }
 
 export interface LegalAnalytics {
@@ -700,6 +702,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                     stage: data.stage as RagStage,
                     message: data.message,
                     count: data.count,
+                    queue_position: data.queue_position,
                   };
                   setRagStatus(statusObj);
                   setMessages((prev) =>
@@ -959,6 +962,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                     stage: data.stage as RagStage,
                     message: data.message,
                     count: data.count,
+                    queue_position: data.queue_position,
                   };
                   setRagStatus(statusObj);
                   setMessages((prev) =>

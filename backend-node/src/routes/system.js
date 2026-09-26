@@ -78,4 +78,65 @@ router.get('/theme', (req, res) => {
   res.json({ systemTheme });
 });
 
+router.get('/queue', async (req, res) => {
+  const ragUrl = process.env.RAG_SERVICE_URL || 'http://localhost:8000';
+  try {
+    const response = await fetch(`${ragUrl}/system/queue-status`);
+    if (!response.ok) {
+      return res.status(502).json({ error: 'RAG Service returned non-200' });
+    }
+    const data = await response.json();
+    return res.json(data);
+  } catch (err) {
+    return res.status(503).json({
+      error: 'RAG Service offline or unreachable',
+      max_concurrent: parseInt(process.env.MAX_CONCURRENT_QUERIES || '1', 10),
+      active_queries: 0,
+      queued_queries: 0,
+      offline: true,
+    });
+  }
+});
+
+router.get('/status', async (req, res) => {
+  const totalMem = os.totalmem();
+  const freeMem = os.freemem();
+  const usedMem = totalMem - freeMem;
+  const loadAvg = os.loadavg();
+  const cpus = os.cpus();
+
+  const ragUrl = process.env.RAG_SERVICE_URL || 'http://localhost:8000';
+  let ragQueue = null;
+  try {
+    const qResp = await fetch(`${ragUrl}/system/queue-status`);
+    if (qResp.ok) {
+      ragQueue = await qResp.json();
+    }
+  } catch (_) {}
+
+  res.json({
+    timestamp: new Date().toISOString(),
+    uptime: os.uptime(),
+    host: {
+      platform: os.platform(),
+      arch: os.arch(),
+      cpuModel: cpus[0]?.model || 'Unknown',
+      cpuCores: cpus.length,
+      loadAverage: loadAvg,
+      memory: {
+        totalBytes: totalMem,
+        usedBytes: usedMem,
+        freeBytes: freeMem,
+        usedPercent: ((usedMem / totalMem) * 100).toFixed(1),
+      },
+    },
+    concurrencyConfig: {
+      maxConcurrentQueries: parseInt(process.env.MAX_CONCURRENT_QUERIES || '1', 10),
+      maxQueueSize: parseInt(process.env.MAX_QUEUE_SIZE || '50', 10),
+      queueTimeoutSeconds: parseInt(process.env.QUEUE_TIMEOUT_SECONDS || '180', 10),
+    },
+    queue: ragQueue,
+  });
+});
+
 export default router;

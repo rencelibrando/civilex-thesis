@@ -449,6 +449,7 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
                       stage: data.stage as RagStage,
                       message: data.message,
                       count: data.count,
+                      queue_position: data.queue_position,
                     };
                     setDocChats((prev) => {
                       const cur = prev[docId] || INITIAL_STATE;

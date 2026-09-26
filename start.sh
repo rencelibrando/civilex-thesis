@@ -4,6 +4,12 @@
 # Manages Frontend (Next.js), Backend (Node.js), and Python RAG Service (FastAPI)
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "${ROOT_DIR}/.env" ]; then
+  set -a
+  # shellcheck source=/dev/null
+  source "${ROOT_DIR}/.env" 2>/dev/null || true
+  set +a
+fi
 LOG_DIR="${ROOT_DIR}/.logs"
 mkdir -p "${LOG_DIR}"
 
@@ -354,14 +360,14 @@ get_status_badge() {
   local recorded_pid
   recorded_pid=$(read_service_pid "$pid_file")
 
-  if [ -n "$recorded_pid" ] && ! is_pid_alive "$recorded_pid"; then
-    echo -e "${RED}● CRASHED (PID was ${recorded_pid}, check ${log_file})${RESET}"
-  elif [ "$status" == "ONLINE" ]; then
-    if [ -n "$recorded_pid" ]; then
+  if [ "$status" == "ONLINE" ]; then
+    if [ -n "$recorded_pid" ] && is_pid_alive "$recorded_pid"; then
       echo -e "${GREEN}● ONLINE ${DIM}(PID ${recorded_pid})${RESET}"
     else
-      echo -e "${GREEN}● ONLINE ${RESET}"
+      echo -e "${GREEN}● ONLINE${RESET}"
     fi
+  elif [ -n "$recorded_pid" ] && ! is_pid_alive "$recorded_pid"; then
+    echo -e "${RED}● CRASHED (check ${log_file})${RESET}"
   elif [ -n "$recorded_pid" ]; then
     echo -e "${YELLOW}○ STARTING / CONNECTING ${DIM}(PID ${recorded_pid})${RESET}"
   else
@@ -667,11 +673,12 @@ show_header() {
     echo -e "    ${MAGENTA}↳ Python RAG   (Port 8000) : https://w21xbn22-8000.asse.devtunnels.ms${RESET}${CLEAR_LINE}"
     echo -e "    ${GREEN}↳ Supabase API (Port 54321): https://w21xbn22-54321.asse.devtunnels.ms${RESET}${CLEAR_LINE}"
   fi
+  echo -e "   ${DIM}↳ LLM Concurrency Limit :${RESET} ${YELLOW}${BOLD}${MAX_CONCURRENT_QUERIES:-1} Active Query per time${RESET} ${DIM}(Strict 6GB VRAM Queue Protection)${RESET}${CLEAR_LINE}"
   echo -e "${BLUE}----------------------------------------------------------------------${RESET}${CLEAR_LINE}"
   echo -e " ${BOLD}Controls & Hotkeys:${RESET}${CLEAR_LINE}"
   echo -e "   [${BOLD}1-4${RESET}] View Logs   [${BOLD}5${RESET}] Combined Logs   [${BOLD}s${RESET}] Status Screen   [${BOLD}c${RESET}] Clear Logs${CLEAR_LINE}"
   echo -e "   [${BOLD}f/b/p/u/a${RESET}] Restart Service (u: Tunnel)  [${BOLD}k${RESET}] Stop All${CLEAR_LINE}"
-  echo -e "   [${BOLD}o${RESET}] Open App UI     [${BOLD}d${RESET}] Open API Docs    [${BOLD}t${RESET}] Tmux Mode     [${BOLD}q${RESET}] Quit All${CLEAR_LINE}"
+  echo -e "   [${BOLD}o${RESET}] Open App UI     [${BOLD}d${RESET}] Open API Docs    [${BOLD}m${RESET}] Monitor Screen [${BOLD}t${RESET}] Tmux Mode     [${BOLD}q${RESET}] Quit All${CLEAR_LINE}"
   echo -e "   [${BOLD}h${RESET}] Help Legend${CLEAR_LINE}"
   echo -e "${BLUE}======================================================================${RESET}${CLEAR_LINE}"
   
@@ -764,6 +771,7 @@ run_controller() {
         "5") active_view="combined"; render_view ;;
         "s"|"S") active_view="status"; render_view ;;
         "t"|"T") launch_tmux ;;
+        "m"|"M") bash "${ROOT_DIR}/scripts/system_monitor.sh" --tmux; render_view ;;
         "c"|"C") clear_logs; render_view ;;
         "y"|"Y") copy_active_log_to_clipboard; render_view ;;
         "o"|"O") open_url "http://localhost:3000" "Frontend App"; render_view ;;
@@ -871,6 +879,10 @@ case "${1:-}" in
   -t|--tmux)
     validate_environment
     launch_tmux
+    exit 0
+    ;;
+  -m|--monitor)
+    bash "${ROOT_DIR}/scripts/system_monitor.sh" --tmux
     exit 0
     ;;
   -c|--controller|--monitor-only)

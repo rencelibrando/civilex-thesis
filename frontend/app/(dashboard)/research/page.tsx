@@ -32,6 +32,7 @@ import {
   UploadCloud,
   FolderOpen,
   HelpCircle,
+  Clock,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -256,6 +257,7 @@ function RagPipelineStepper({ status, isLive }: { status: RagStatus | null; isLi
 
   // If live and still before text streaming: show active prominent stepper
   const isPreStreamingStage =
+    currentStage === "queued" ||
     currentStage === "embedding" ||
     currentStage === "retrieving" ||
     currentStage === "retrieving_done" ||
@@ -267,17 +269,42 @@ function RagPipelineStepper({ status, isLive }: { status: RagStatus | null; isLi
       <div className="w-full max-w-md p-3.5 rounded-2xl bg-card border border-border/80 dark:border-white/10 shadow-xs animate-fade-in space-y-2.5 mb-2">
         <div className="flex items-center justify-between text-xs font-semibold text-primary">
           <span className="flex items-center gap-1.5">
-            <Sparkles className="w-3.5 h-3.5 animate-pulse text-primary" />
+            {currentStage === "queued" ? (
+              <Clock className="w-3.5 h-3.5 animate-spin text-amber-500" />
+            ) : (
+              <Sparkles className="w-3.5 h-3.5 animate-pulse text-primary" />
+            )}
             CIVIL-LEX Legal Processing
           </span>
-          <span className="text-[10px] font-mono uppercase tracking-wider bg-primary/10 text-primary px-2 py-0.5 rounded-full border border-primary/20">
-            {currentStage === "retrieving_done"
-              ? "retrieved"
-              : currentStage === "thinking"
-                ? "reasoning"
-                : currentStage}
+          <span className={`text-[10px] font-mono uppercase tracking-wider px-2 py-0.5 rounded-full border ${
+            currentStage === "queued"
+              ? "bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/30 font-bold animate-pulse"
+              : "bg-primary/10 text-primary border-primary/20"
+          }`}>
+            {currentStage === "queued"
+              ? `Queue #${status?.queue_position || 1}`
+              : currentStage === "retrieving_done"
+                ? "retrieved"
+                : currentStage === "thinking"
+                  ? "reasoning"
+                  : currentStage}
           </span>
         </div>
+
+        {/* Queue Notice Banner when waiting */}
+        {currentStage === "queued" ? (
+          <div className="flex items-start gap-2.5 p-2.5 rounded-xl bg-amber-500/10 dark:bg-amber-500/15 border border-amber-500/30 text-amber-900 dark:text-amber-200">
+            <Clock className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5 animate-pulse" />
+            <div className="text-xs space-y-0.5">
+              <p className="font-semibold text-amber-700 dark:text-amber-300">
+                You are #{status?.queue_position || 1} in queue
+              </p>
+              <p className="text-[11px] leading-relaxed text-amber-800/90 dark:text-amber-200/90">
+                {status?.message || "Another user is currently querying the model. Your query will run automatically once resources are free."}
+              </p>
+            </div>
+          </div>
+        ) : null}
 
         {/* Step Progress Pills */}
         <div className="grid grid-cols-5 gap-1 pt-1">
@@ -308,11 +335,13 @@ function RagPipelineStepper({ status, isLive }: { status: RagStatus | null; isLi
           })}
         </div>
 
-        {/* Active Stage Message */}
-        <div className="flex items-center gap-2 pt-1 text-xs text-foreground bg-accent/30 dark:bg-accent/15 px-3 py-2 rounded-xl border border-border/40">
-          <Loader2 className="w-3.5 h-3.5 animate-spin text-primary shrink-0" />
-          <span className="line-clamp-1">{status?.message || "Analyzing query..."}</span>
-        </div>
+        {/* Active Stage Message (when not queued) */}
+        {currentStage !== "queued" && (
+          <div className="flex items-center gap-2 pt-1 text-xs text-foreground bg-accent/30 dark:bg-accent/15 px-3 py-2 rounded-xl border border-border/40">
+            <Loader2 className="w-3.5 h-3.5 animate-spin text-primary shrink-0" />
+            <span className="line-clamp-1">{status?.message || "Analyzing query..."}</span>
+          </div>
+        )}
       </div>
     );
   }
@@ -518,20 +547,36 @@ export default function ResearchPage() {
 
   // Global mousemove / mouseup handlers for smooth panel resizing
   useEffect(() => {
-    const handleMouseMove = (e: MouseEvent) => {
-      if (!containerRef.current) return;
-      const rect = containerRef.current.getBoundingClientRect();
+    let animationFrameId: number | null = null;
 
-      if (isDraggingDocListRef.current) {
-        const newWidth = Math.min(420, Math.max(180, e.clientX - rect.left));
-        setDocListWidth(newWidth);
-      } else if (isDraggingChatRef.current) {
-        const newWidth = Math.min(850, Math.max(360, rect.right - e.clientX));
-        setChatPanelWidth(newWidth);
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isDraggingDocListRef.current && !isDraggingChatRef.current) return;
+      if (!containerRef.current) return;
+
+      const clientX = e.clientX;
+      if (animationFrameId !== null) {
+        cancelAnimationFrame(animationFrameId);
       }
+
+      animationFrameId = requestAnimationFrame(() => {
+        if (!containerRef.current) return;
+        const rect = containerRef.current.getBoundingClientRect();
+
+        if (isDraggingDocListRef.current) {
+          const newWidth = Math.min(420, Math.max(180, clientX - rect.left));
+          setDocListWidth(newWidth);
+        } else if (isDraggingChatRef.current) {
+          const newWidth = Math.min(850, Math.max(360, rect.right - clientX));
+          setChatPanelWidth(newWidth);
+        }
+      });
     };
 
     const handleMouseUp = () => {
+      if (animationFrameId !== null) {
+        cancelAnimationFrame(animationFrameId);
+        animationFrameId = null;
+      }
       if (isDraggingDocListRef.current) {
         isDraggingDocListRef.current = false;
         setIsDraggingDocList(false);
@@ -559,6 +604,9 @@ export default function ResearchPage() {
     window.addEventListener("mousemove", handleMouseMove);
     window.addEventListener("mouseup", handleMouseUp);
     return () => {
+      if (animationFrameId !== null) {
+        cancelAnimationFrame(animationFrameId);
+      }
       window.removeEventListener("mousemove", handleMouseMove);
       window.removeEventListener("mouseup", handleMouseUp);
     };
@@ -882,7 +930,7 @@ export default function ResearchPage() {
                         await ensureDocSession(doc.id, doc.filename);
                         setIsDocSheetOpen(false);
                       }}
-                      className={`p-3 rounded-xl cursor-pointer transition-all border ${activeDocument?.id === doc.id
+                      className={`p-3 rounded-xl cursor-pointer transition-colors border ${activeDocument?.id === doc.id
                         ? 'bg-primary/10 border-primary/20 shadow-sm'
                         : 'bg-transparent border-transparent hover:bg-accent'
                         }`}
@@ -908,10 +956,18 @@ export default function ResearchPage() {
       {/* Documents Panel - Desktop (hidden on mobile, resizable) */}
       <div
         style={{ width: isDocListCollapsed ? 0 : `${docListWidth}px` }}
-        className={`hidden md:flex flex-col bg-card/80 backdrop-blur-xl rounded-2xl border border-border shadow-sm overflow-hidden flex-shrink-0 min-h-0 transition-[width,opacity,margin,border-color] duration-300 ease-in-out ${isDocListCollapsed ? "!w-0 !p-0 opacity-0 pointer-events-none -mr-1 border-transparent" : "opacity-100"
-          }`}
+        className={`hidden md:flex flex-col bg-card/80 backdrop-blur-xl rounded-2xl border border-border shadow-sm overflow-hidden flex-shrink-0 min-h-0 ${
+          isDraggingDocList || isDraggingChat
+            ? "transition-none"
+            : "transition-[width,opacity,margin,border-color] duration-300 ease-in-out"
+        } ${
+          isDocListCollapsed ? "!w-0 !p-0 opacity-0 pointer-events-none -mr-1 border-transparent" : "opacity-100"
+        }`}
       >
-        <div style={{ width: `${docListWidth}px` }} className="flex flex-col h-full shrink-0">
+        <div
+          style={{ width: isDocListCollapsed ? `${docListWidth}px` : "100%" }}
+          className="flex flex-col h-full w-full shrink-0"
+        >
           <div className="p-4 border-b border-border bg-card/50 shrink-0">
             <div className="flex items-center justify-between mb-4">
               <h2 className="font-bold text-foreground flex items-center gap-2">
@@ -940,7 +996,7 @@ export default function ResearchPage() {
                     window.history.replaceState({}, '', '/research');
                   }
                 }}
-                className={`w-full gap-2 text-xs font-medium cursor-pointer transition-all ${!activeDocument
+                className={`w-full gap-2 text-xs font-medium cursor-pointer transition-colors ${!activeDocument
                   ? 'bg-primary text-primary-foreground hover:bg-primary/90 shadow-2xs font-semibold'
                   : 'border-border/80 text-foreground bg-accent/50 hover:bg-accent'
                   }`}
@@ -980,13 +1036,13 @@ export default function ResearchPage() {
                       }
                       await ensureDocSession(doc.id, doc.filename);
                     }}
-                    className={`p-3 rounded-xl cursor-pointer transition-all border ${activeDocument?.id === doc.id
+                    className={`p-3 rounded-xl cursor-pointer transition-colors border ${activeDocument?.id === doc.id
                       ? 'bg-primary/10 border-primary/20 shadow-sm'
                       : 'bg-transparent border-transparent hover:bg-accent'
                       }`}
                   >
-                    <div className="flex items-start justify-between gap-2 mb-1">
-                      <p className={`text-sm font-medium line-clamp-1 pr-2 ${activeDocument?.id === doc.id ? 'text-primary' : 'text-foreground'}`}>
+                    <div className="flex items-start justify-between gap-2 mb-1 min-w-0">
+                      <p className={`text-sm font-medium line-clamp-1 pr-2 min-w-0 flex-1 ${activeDocument?.id === doc.id ? 'text-primary' : 'text-foreground'}`}>
                         {doc.filename}
                       </p>
                       <button
@@ -997,9 +1053,9 @@ export default function ResearchPage() {
                         <Trash2 className="w-4 h-4" />
                       </button>
                     </div>
-                    <div className="flex items-center justify-between mt-2">
-                      {getStatusBadge(doc)}
-                      <span className="text-[10px] text-muted-foreground">
+                    <div className="flex items-center justify-between mt-2 gap-2 min-w-0">
+                      <div className="shrink-0">{getStatusBadge(doc)}</div>
+                      <span className="text-[10px] text-muted-foreground shrink-0">
                         {new Date(doc.created_at).toLocaleDateString()}
                       </span>
                     </div>

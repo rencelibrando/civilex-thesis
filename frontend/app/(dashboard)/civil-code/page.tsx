@@ -13,6 +13,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { JurisprudenceModal, JurisprudenceCase, caseFullTextCache, parseJurisprudenceDocument } from "@/components/jurisprudence-modal";
+import { BACKEND_URL } from "@/lib/config";
 
 export type { JurisprudenceCase };
 
@@ -86,7 +87,7 @@ function CivilCodeContent() {
                 localStorage.removeItem("civilex_toc_cache");
                 localStorage.removeItem("civilex_toc_cache_v2");
 
-                const res = await fetch("http://localhost:4000/api/civil-code/toc");
+                const res = await fetch(`${BACKEND_URL}/api/civil-code/toc`);
                 if (!res.ok) throw new Error("Failed to fetch Table of Contents");
                 const data = await res.json();
 
@@ -149,7 +150,7 @@ function CivilCodeContent() {
         }
 
         try {
-            const res = await fetch(`http://localhost:4000/api/civil-code/article/${id}`);
+            const res = await fetch(`${BACKEND_URL}/api/civil-code/article/${id}`);
             if (!res.ok) throw new Error("Failed to fetch article details");
             const data: ArticleData = await res.json();
 

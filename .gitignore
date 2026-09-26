@@ -52,4 +52,8 @@ supabase/
 # logs
 .logs/
 
+# guides
+AZURE_DEPLOYMENT_GUIDE.md
+CLOUDFLARE_TUNNEL_HOSTING_GUIDE.md
+
 

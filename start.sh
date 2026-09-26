@@ -545,21 +545,26 @@ launch_tmux() {
   local P_BE
   P_BE=$(tmux split-window -P -F "#{pane_id}" -t "$P_FE" "tail -F '${BACKEND_LOG}'")
 
-  # Pane 2: Python RAG Logs (Bottom-Left)
+  # Pane 2: Python RAG Logs (Mid-Left)
   local P_PY
   P_PY=$(tmux split-window -P -F "#{pane_id}" -t "$P_BE" "tail -F '${PYTHON_LOG}'")
 
-  # Pane 3: Interactive Controller (Bottom-Right)
-  local P_CTRL
-  P_CTRL=$(tmux split-window -P -F "#{pane_id}" -t "$P_PY" "bash '${ROOT_DIR}/start.sh' --controller")
+  # Pane 3: Azure Dev Tunnel Logs (Mid-Right)
+  local P_TU
+  P_TU=$(tmux split-window -P -F "#{pane_id}" -t "$P_PY" "tail -F '${TUNNEL_LOG}'")
 
-  # Arrange in a clean, perfectly balanced 2x2 grid
+  # Pane 4: Interactive Controller (Bottom)
+  local P_CTRL
+  P_CTRL=$(tmux split-window -P -F "#{pane_id}" -t "$P_TU" "bash '${ROOT_DIR}/start.sh' --controller")
+
+  # Arrange in a clean, perfectly balanced tiled grid
   tmux select-layout -t "$SESSION" tiled
 
   # Tag each pane accurately by its immutable pane ID
   tmux select-pane -t "$P_FE" -T "Frontend Logs (Port 3000)"
   tmux select-pane -t "$P_BE" -T "Backend Logs (Port 4000)"
   tmux select-pane -t "$P_PY" -T "Python RAG Logs (Port 8000)"
+  tmux select-pane -t "$P_TU" -T "Azure Dev Tunnel Logs (w21xbn22)"
   tmux select-pane -t "$P_CTRL" -T "CIVIL-LEX Controller (Active Menu)"
 
   # Focus the interactive controller pane

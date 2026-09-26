@@ -18,7 +18,14 @@ dotenv.config();
 const app = express();
 const port = process.env.PORT || 4000;
 
-app.use(cors());
+const allowedOrigins = process.env.ALLOWED_ORIGINS
+  ? process.env.ALLOWED_ORIGINS.split(',').map((o) => o.trim())
+  : '*';
+
+app.use(cors({
+  origin: allowedOrigins === '*' ? '*' : allowedOrigins,
+  credentials: true,
+}));
 
 // Apply proxies before express.json() to prevent body consumption issues
 setupProxies(app);
@@ -35,8 +42,12 @@ app.use('/api/system', systemRoutes);
 // Serve uploads statically
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
+app.get('/', (req, res) => {
+  res.status(200).json({ status: 'ok', service: 'civilex-backend-gateway' });
+});
+
 app.get('/health', (req, res) => {
-  res.status(200).json({ status: 'ok', service: 'backend-node-gateway' });
+  res.status(200).json({ status: 'ok', service: 'civilex-backend-gateway' });
 });
 
 app.listen(port, () => {

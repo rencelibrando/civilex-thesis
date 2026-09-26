@@ -49,6 +49,7 @@ import {
 import { JurisprudenceModal, JurisprudenceCase } from "@/components/jurisprudence-modal";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { supabase } from "@/lib/supabase";
+import { BACKEND_URL } from "@/lib/config";
 import { useDocChat } from "@/context/doc-chat-context";
 import { RagStatus } from "@/context/chat-context";
 import ReactMarkdown from "react-markdown";
@@ -594,7 +595,7 @@ export default function ResearchPage() {
         const { data: { session } } = await supabase.auth.getSession();
         const token = session?.access_token || '';
 
-        const res = await fetch(`http://localhost:4000/api/sessions/${sessionId}`, {
+        const res = await fetch(`${BACKEND_URL}/api/sessions/${sessionId}`, {
           headers: { 'Authorization': `Bearer ${token}` }
         });
         if (res.ok) {
@@ -671,7 +672,7 @@ export default function ResearchPage() {
       const { data: { session } } = await supabase.auth.getSession();
       const token = session?.access_token || '';
 
-      const res = await fetch("http://localhost:4000/api/documents", {
+      const res = await fetch(`${BACKEND_URL}/api/documents`, {
         headers: {
           'Authorization': `Bearer ${token}`
         }
@@ -699,7 +700,7 @@ export default function ResearchPage() {
       const { data: { session } } = await supabase.auth.getSession();
       const token = session?.access_token || '';
 
-      const res = await fetch(`http://localhost:4000/api/documents/${docId}`, {
+      const res = await fetch(`${BACKEND_URL}/api/documents/${docId}`, {
         method: 'DELETE',
         headers: {
           'Authorization': `Bearer ${token}`
@@ -752,7 +753,7 @@ export default function ResearchPage() {
       const { data: { session } } = await supabase.auth.getSession();
       const token = session?.access_token || '';
 
-      const res = await fetch("http://localhost:4000/api/documents/upload", {
+      const res = await fetch(`${BACKEND_URL}/api/documents/upload`, {
         method: "POST",
         headers: {
           'Authorization': `Bearer ${token}`

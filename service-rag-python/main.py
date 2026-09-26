@@ -1280,7 +1280,7 @@ YOUR MANDATORY REDIRECTION RULES:
                         document_id=request.document_id,
                         use_llm=True,
                     )
-                    if ambiguity_result.is_ambiguous and ambiguity_result.confidence >= 0.70:
+                    if ambiguity_result.is_ambiguous and ambiguity_result.confidence >= 0.65:
                         logging.info(f"Ambiguity detected [{ambiguity_result.category}] confidence={ambiguity_result.confidence:.2f}: {ambiguity_result.reasoning}")
                         yield f"data: {dumps({'type': 'clarification_needed', 'data': ambiguity_result.to_dict()})}\n\n"
                         yield f"data: {dumps({'type': 'done'})}\n\n"

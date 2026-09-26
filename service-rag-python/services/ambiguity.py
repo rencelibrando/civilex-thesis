@@ -254,6 +254,34 @@ def _adverse_possession_questions() -> List[ClarificationQuestion]:
     ]
 
 
+def _neighbor_dispute_questions() -> List[ClarificationQuestion]:
+    return [
+        ClarificationQuestion(
+            id="dispute_nature",
+            question="Ano ang tiyak na dahilan ng problema o reklamo sa inyong kapitbahay?",
+            options=[
+                "Ingay, amoy, o perwisyo sa pandama (Nuisance - Art. 694)",
+                "Hangganan ng lupa, bakod, o encroached property (Boundary / Encroachment)",
+                "Sanga ng puno, ugat, baradong drainage, o paghuhukay (Easements - Art. 680-684)",
+                "Pinsala sa ari-arian o pisikal na pinsala dahil sa kapabayaan (Quasi-delict - Art. 2176)",
+            ],
+            allows_free_text=True,
+            context_hint="Ang tiyak na dahilan ang nagtatakda kung anong probisyon sa Civil Code (Nuisance, Easement, o Quasi-delict) ang tamang batayan ng kaso.",
+        ),
+        ClarificationQuestion(
+            id="barangay_conciliation",
+            question="Dumaan na ba kayo sa Katarungang Pambarangay (Barangay conciliation)?",
+            options=[
+                "Oo, may Certificate to File Action na kami mula sa Barangay",
+                "Hindi pa kami nag-uusap sa Barangay",
+                "Hindi sigurado kung kailangan dumaan sa Barangay",
+            ],
+            allows_free_text=True,
+            context_hint="Sa ilalim ng RA 7160 (Local Government Code), mandatory ang Barangay conciliation para sa magkakapitbahay bago magsampa ng kaso sa hukuman.",
+        ),
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Rule-Based Ambiguity Detection Patterns
 # ---------------------------------------------------------------------------
@@ -347,20 +375,32 @@ AMBIGUITY_RULES: List[tuple] = [
         0.78,
         lambda ql: _party_relationship_questions(ql),
     ),
+
+    # Category 6: Neighbor disputes without specifying actionable grievance
+    (
+        r'\b(kapitbahay|neighbor|kapit-bahay)\b.*\b(ikaso|idemanda|ihabla|demanda|kaso|reklamo|sue|file|action|complain)\b',
+        r'\b(artikulo|article\s+\d+|g\.?r\.?\s*no|torrens|easement|nuisance|quasi-delict)\b',
+        'unclear_legal_relationship',
+        0.90,
+        lambda ql: _neighbor_dispute_questions(),
+    ),
+    (
+        r'\b(ikaso|idemanda|ihabla|demanda|kaso|reklamo|sue|file|action|complain)\b.*\b(kapitbahay|neighbor|kapit-bahay)\b',
+        r'\b(artikulo|article\s+\d+|g\.?r\.?\s*no|torrens|easement|nuisance|quasi-delict)\b',
+        'unclear_legal_relationship',
+        0.90,
+        lambda ql: _neighbor_dispute_questions(),
+    ),
 ]
 
-# Patterns that indicate the query is inherently clear and should NOT trigger clarification
+# Patterns that indicate the query is strictly a legal citation/jurisprudence lookup and should NOT trigger clarification
 CLEAR_QUERY_PATTERNS = [
-    # Explicit article / provision queries
-    r'(?:article|art\.?)\s*\d+',
-    # GR number queries
-    r'g\.?\s*r\.?\s*(?:no\.?|nos\.?)\s*[\w\-]+',
-    # Definitional queries (what is X, explain X)
-    r'^(?:what\s+(?:is|are)|define|explain|describe|ano\s+(?:ang|yung)|ipaliwanag)\s+',
-    # Checklist / requisite queries
-    r'\b(?:requisites?|elements?|checklist|requirements?|grounds?|conditions?|exceptions?)\s+(?:of|for|under|ng)\b',
-    # Queries that already state specific facts clearly
-    r'\b(?:filipino\s+citizen|dual\s+citizen|foreign\s+national|i\s+am\s+married|i\s+am\s+single|oral\s+contract|written\s+contract|promissory\s+note|notarized)\b',
+    # Explicit article / provision queries (e.g., "Article 1156", "Art. 2176")
+    r'\b(?:article|art\.?)\s*\d+\b',
+    # GR number queries (e.g., "G.R. No. 123456")
+    r'\bg\.?\s*r\.?\s*(?:no\.?|nos\.?)\s*[\w\-]+',
+    # Specific Republic Act queries (e.g., "Republic Act 386", "RA 386")
+    r'\b(?:republic\s+act|r\.?a\.?)\s*(?:no\.?)?\s*\d+\b',
 ]
 
 
@@ -512,12 +552,17 @@ If the query is NOT ambiguous, return:
                 logger.warning(f"LLM ambiguity response JSON parse error: {jde} | content: {raw_content[:200]}")
                 return None
 
-            if not parsed.get("is_ambiguous", False):
-                return None
+            is_ambig = bool(parsed.get("is_ambiguous", False))
+            confidence = float(parsed.get("confidence", 0.5 if is_ambig else 0.0))
 
-            confidence = float(parsed.get("confidence", 0.5))
-            if confidence < 0.65:
-                return None
+            if not is_ambig or confidence < 0.65:
+                return AmbiguityResult(
+                    is_ambiguous=False,
+                    confidence=confidence,
+                    category=parsed.get("category", ""),
+                    original_query=query,
+                    reasoning=parsed.get("reasoning", "Query is sufficiently clear."),
+                )
 
             # Build ClarificationQuestion objects from LLM response
             questions = []
@@ -533,7 +578,13 @@ If the query is NOT ambiguous, return:
                 ))
 
             if not questions:
-                return None
+                return AmbiguityResult(
+                    is_ambiguous=False,
+                    confidence=confidence,
+                    category=parsed.get("category", ""),
+                    original_query=query,
+                    reasoning="No clarification questions produced; treating as clear.",
+                )
 
             return AmbiguityResult(
                 is_ambiguous=True,
@@ -596,7 +647,16 @@ async def detect_ambiguity(
         if re.search(pattern, q_lower):
             return AmbiguityResult(original_query=q_clean)
 
-    # Tier 1: Rule-based pattern matching
+    # Tier 1: ALWAYS use the LLM model to analyze the query for ambiguity
+    if use_llm:
+        if not _history_already_clarified(history, "llm_detected"):
+            llm_result = await _llm_detect_ambiguity(query, q_lower)
+            if llm_result is not None:
+                logger.info(f"LLM ambiguity evaluation completed: is_ambiguous={llm_result.is_ambiguous} (conf={llm_result.confidence:.2f})")
+                return llm_result
+
+    # Tier 2: Fallback to rule-based pattern matching if LLM model is unavailable / offline
+    logger.info("LLM ambiguity check unavailable, falling back to rule-based patterns")
     for trigger_pat, exclusion_pat, category, base_confidence, questions_fn in AMBIGUITY_RULES:
         if re.search(trigger_pat, q_lower, re.IGNORECASE):
             # Check if the exclusion pattern resolves the ambiguity
@@ -627,30 +687,6 @@ async def detect_ambiguity(
                 original_query=q_clean,
                 reasoning=CATEGORY_REASONING.get(category, "Additional context is needed for an accurate legal analysis."),
             )
-
-    # Tier 2: LLM-assisted detection (for queries that pass rule-based but seem factually thin)
-    if use_llm:
-        # Heuristic: only invoke LLM if query is factually thin
-        # (contains a scenario/story but lacks specificity)
-        content_words = [w for w in re.findall(r'\b\w+\b', q_lower) if len(w) > 2]
-        has_scenario_cues = any(w in q_lower for w in [
-            'legal', 'legit', 'pwede', 'puwede', 'allowed', 'can ', 'is it',
-            'what happens', 'ano mangyayari', 'may karapatan', 'karapatan',
-            'liable', 'liability', 'sue', 'file', 'case', 'court', 'ikaso',
-            'idemanda', 'bawal', 'valid', 'right', 'entitled', 'claim',
-        ])
-        is_factually_thin = (
-            len(content_words) >= 4  # Not too short
-            and len(content_words) <= 45  # Not an essay
-            and has_scenario_cues
-        )
-
-        if is_factually_thin:
-            # Don't double-ask if history already has clarification context
-            if not _history_already_clarified(history, "llm_detected"):
-                llm_result = await _llm_detect_ambiguity(query, q_lower)
-                if llm_result and llm_result.is_ambiguous:
-                    return llm_result
 
     # No ambiguity detected
     return AmbiguityResult(original_query=q_clean)

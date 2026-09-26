@@ -52,13 +52,19 @@ if [ "$TOOL" = "devtunnel" ]; then
   devtunnel show civilex-tunnel >/dev/null 2>&1 || devtunnel create civilex-tunnel -a --allow-anonymous
 
   # Add ports if not added
+  devtunnel port create civilex-tunnel -p 4000 >/dev/null 2>&1 || true
   devtunnel port create civilex-tunnel -p 8000 >/dev/null 2>&1 || true
   devtunnel port create civilex-tunnel -p 54321 >/dev/null 2>&1 || true
 
   echo -e "${GREEN}[✔] Ports configured:${RESET}"
+  echo -e "  - Port 4000  (Node.js Backend Gateway)"
   echo -e "  - Port 8000  (Python RAG Service)"
   echo -e "  - Port 54321 (Local Supabase API Gateway)"
-  echo -e "\n${BOLD}${YELLOW}Copy the generated URLs below into your Azure App Service Configuration!${RESET}\n"
+  echo -e "\n${BOLD}${YELLOW}Your Dev Tunnel URLs:${RESET}"
+  echo -e "  - Backend API:  https://w21xbn22-4000.asse.devtunnels.ms"
+  echo -e "  - Python RAG:   https://w21xbn22-8000.asse.devtunnels.ms"
+  echo -e "  - Supabase API: https://w21xbn22-54321.asse.devtunnels.ms"
+
 
   devtunnel host civilex-tunnel
 

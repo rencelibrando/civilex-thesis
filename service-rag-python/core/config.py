@@ -23,8 +23,13 @@ POSTGRES_DB_URL = os.getenv(
 # LM Studio default URL (OpenAI Compatible)
 LM_STUDIO_URL = os.getenv("LM_STUDIO_URL", "http://10.57.24.131:1234/v1")
 
+# LLM Provider Configuration (LM Studio as Main & Exclusive Provider)
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "lmstudio").lower()
+
 # Concurrency & Queue Policy (Unified Settings)
 # Strict limit: 1 concurrent query for 6GB VRAM GPUs (prevents CUDA OOM and thrashing)
 MAX_CONCURRENT_QUERIES = int(os.getenv("MAX_CONCURRENT_QUERIES", "1"))
 MAX_QUEUE_SIZE = int(os.getenv("MAX_QUEUE_SIZE", "50"))
 QUEUE_TIMEOUT_SECONDS = float(os.getenv("QUEUE_TIMEOUT_SECONDS", "180.0"))
+
+

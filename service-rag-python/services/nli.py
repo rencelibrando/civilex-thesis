@@ -758,30 +758,21 @@ def verify_claims_gemma_sync(
     if not claims_to_verify:
         return {}
 
-    url = f"{LM_STUDIO_URL.rstrip('/')}/chat/completions"
+    from services.llm_client import call_chat_completion_sync
+
     prompt = _build_gemma_nli_prompt(claims_to_verify, context_text)
-
     try:
-        with httpx.Client(timeout=timeout) as client:
-            resp = client.post(
-                url,
-                json={
-                    "model": "local-model",
-                    "messages": [{"role": "user", "content": prompt}],
-                    "temperature": 0.0,
-                },
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                raw_text = data["choices"][0]["message"]["content"]
-                return _parse_gemma_nli_response(raw_text)
-            else:
-                logging.warning(f"LM Studio NLI HTTP {resp.status_code}: {resp.text[:100]}")
-    except (httpx.ConnectError, httpx.TimeoutException) as e:
-        logging.info(f"LM Studio unavailable for NLI ({type(e).__name__}); using symbolic fallback.")
+        raw_text = call_chat_completion_sync(
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.0,
+            timeout_sec=timeout,
+        )
+        if raw_text:
+            return _parse_gemma_nli_response(raw_text)
     except Exception as e:
-        logging.warning(f"Unexpected error calling LM Studio NLI: {type(e).__name__} - {e}")
+        logging.warning(f"Unexpected error calling LLM NLI: {type(e).__name__} - {e}")
 
+    logging.info("LLM unavailable for NLI; using symbolic fallback.")
     return {}
 
 
@@ -794,30 +785,21 @@ async def verify_claims_gemma_async(
     if not claims_to_verify:
         return {}
 
-    url = f"{LM_STUDIO_URL.rstrip('/')}/chat/completions"
+    from services.llm_client import call_chat_completion_async
+
     prompt = _build_gemma_nli_prompt(claims_to_verify, context_text)
-
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.post(
-                url,
-                json={
-                    "model": "local-model",
-                    "messages": [{"role": "user", "content": prompt}],
-                    "temperature": 0.0,
-                },
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                raw_text = data["choices"][0]["message"]["content"]
-                return _parse_gemma_nli_response(raw_text)
-            else:
-                logging.warning(f"LM Studio NLI HTTP {resp.status_code}: {resp.text[:100]}")
-    except (httpx.ConnectError, httpx.TimeoutException) as e:
-        logging.info(f"LM Studio unavailable for NLI ({type(e).__name__}); using symbolic fallback.")
+        raw_text = await call_chat_completion_async(
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.0,
+            timeout_sec=timeout,
+        )
+        if raw_text:
+            return _parse_gemma_nli_response(raw_text)
     except Exception as e:
-        logging.warning(f"Unexpected error calling LM Studio NLI: {type(e).__name__} - {e}")
+        logging.warning(f"Unexpected error calling LLM NLI async: {type(e).__name__} - {e}")
 
+    logging.info("LLM unavailable for NLI; using symbolic fallback.")
     return {}
 
 

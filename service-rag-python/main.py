@@ -15,7 +15,11 @@ import sys
 import logging
 import time
 
-from core.config import LM_STUDIO_URL, MAX_CONCURRENT_QUERIES
+from core.config import (
+    LM_STUDIO_URL,
+    MAX_CONCURRENT_QUERIES,
+    LLM_PROVIDER,
+)
 from core.queue_manager import queue_manager
 
 logging.basicConfig(
@@ -135,7 +139,7 @@ async def get_system_queue_status():
     latency_ms = None
     try:
         t0 = time.time()
-        async with httpx.AsyncClient(timeout=2.0) as client:
+        async with httpx.AsyncClient(timeout=1.5) as client:
             resp = await client.get(f"{LM_STUDIO_URL.rstrip('/')}/models")
             latency_ms = round((time.time() - t0) * 1000, 1)
             if resp.status_code == 200:
@@ -145,12 +149,14 @@ async def get_system_queue_status():
     except Exception:
         lm_online = False
 
+    status_data["llm_provider"] = "lmstudio"
     status_data["lm_studio"] = {
         "url": LM_STUDIO_URL,
         "online": lm_online,
         "latency_ms": latency_ms,
         "models": loaded_models,
-        "vram_profile": "6.0 GB VRAM Strict Concurrency Enforced"
+        "provider": "lmstudio",
+        "vram_profile": "6.0 GB VRAM Strict Concurrency Enforced",
     }
     return status_data
 

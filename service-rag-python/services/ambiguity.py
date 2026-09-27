@@ -517,95 +517,87 @@ RESPOND WITH THIS EXACT JSON STRUCTURE:
 If the query is NOT ambiguous, return:
 {"is_ambiguous": false, "confidence": 0.0, "category": "", "reasoning": "Query is clear enough", "questions": []}"""
 
+    from services.llm_client import call_chat_completion_async
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": f"Analyze this Philippine civil law query for ambiguity:\n\n\"{query}\""},
+    ]
+
     try:
-        async with httpx.AsyncClient(timeout=25.0) as client:
-            payload = {
-                "model": "local-model",
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": f"Analyze this Philippine civil law query for ambiguity:\n\n\"{query}\""},
-                ],
-                "temperature": 0.1,
-                "max_tokens": 1200,
-                "stream": False,
-            }
-            url = f"{LM_STUDIO_URL.rstrip('/')}/chat/completions"
-            response = await client.post(url, json=payload)
-            response.raise_for_status()
+        raw_content = await call_chat_completion_async(
+            messages=messages,
+            temperature=0.1,
+            max_tokens=1200,
+            timeout_sec=25.0,
+        )
+        if not raw_content:
+            logger.warning("All LLM providers failed or returned empty response for ambiguity detection.")
+            return None
 
-            data = response.json()
-            raw_content = data["choices"][0]["message"]["content"].strip()
+        raw_content = raw_content.strip()
 
-            # Clean markdown code fences if present (e.g. ```json ... ```)
-            cleaned = re.sub(r'^```(?:json)?\s*', '', raw_content)
-            cleaned = re.sub(r'\s*```$', '', cleaned)
+        # Clean markdown code fences if present (e.g. ```json ... ```)
+        cleaned = re.sub(r'^```(?:json)?\s*', '', raw_content)
+        cleaned = re.sub(r'\s*```$', '', cleaned)
 
-            # Extract JSON from the response (handle markdown code blocks)
-            json_match = re.search(r'\{[\s\S]*\}', cleaned)
-            if not json_match:
-                logger.warning(f"LLM ambiguity response did not contain valid JSON (finish_reason={data.get('choices', [{}])[0].get('finish_reason')}): {raw_content[:200]}")
-                return None
+        # Extract JSON from the response (handle markdown code blocks)
+        json_match = re.search(r'\{[\s\S]*\}', cleaned)
+        if not json_match:
+            logger.warning(f"LLM ambiguity response did not contain valid JSON: {raw_content[:200]}")
+            return None
 
-            try:
-                parsed = json.loads(json_match.group())
-            except json.JSONDecodeError as jde:
-                logger.warning(f"LLM ambiguity response JSON parse error: {jde} | content: {raw_content[:200]}")
-                return None
+        try:
+            parsed = json.loads(json_match.group())
+        except json.JSONDecodeError as jde:
+            logger.warning(f"LLM ambiguity response JSON parse error: {jde} | content: {raw_content[:200]}")
+            return None
 
-            is_ambig = bool(parsed.get("is_ambiguous", False))
-            confidence = float(parsed.get("confidence", 0.5 if is_ambig else 0.0))
+        is_ambig = bool(parsed.get("is_ambiguous", False))
+        confidence = float(parsed.get("confidence", 0.5 if is_ambig else 0.0))
 
-            if not is_ambig or confidence < 0.65:
-                return AmbiguityResult(
-                    is_ambiguous=False,
-                    confidence=confidence,
-                    category=parsed.get("category", ""),
-                    original_query=query,
-                    reasoning=parsed.get("reasoning", "Query is sufficiently clear."),
-                )
-
-            # Build ClarificationQuestion objects from LLM response
-            questions = []
-            for q_data in parsed.get("questions", []):
-                if not q_data.get("question"):
-                    continue
-                questions.append(ClarificationQuestion(
-                    id=q_data.get("id", f"llm_q_{len(questions)}"),
-                    question=q_data["question"],
-                    options=q_data.get("options", []),
-                    allows_free_text=True,
-                    context_hint=q_data.get("context_hint", ""),
-                ))
-
-            if not questions:
-                return AmbiguityResult(
-                    is_ambiguous=False,
-                    confidence=confidence,
-                    category=parsed.get("category", ""),
-                    original_query=query,
-                    reasoning="No clarification questions produced; treating as clear.",
-                )
-
+        if not is_ambig or confidence < 0.65:
             return AmbiguityResult(
-                is_ambiguous=True,
+                is_ambiguous=False,
                 confidence=confidence,
-                category=parsed.get("category", "llm_detected"),
-                questions=questions,
+                category=parsed.get("category", ""),
                 original_query=query,
-                reasoning=parsed.get("reasoning", "LLM detected missing critical facts."),
+                reasoning=parsed.get("reasoning", "Query is sufficiently clear."),
             )
 
-    except httpx.TimeoutException:
-        logger.warning("LLM ambiguity check timed out — falling back to rule-based only")
-        return None
-    except httpx.ConnectError:
-        logger.warning("LLM ambiguity check failed to connect to LM Studio — falling back to rule-based only")
-        return None
-    except (json.JSONDecodeError, KeyError, ValueError) as e:
-        logger.warning(f"LLM ambiguity check returned unparseable response: {e}")
-        return None
+        # Build ClarificationQuestion objects from LLM response
+        questions = []
+        for q_data in parsed.get("questions", []):
+            if not q_data.get("question"):
+                continue
+            questions.append(ClarificationQuestion(
+                id=q_data.get("id", f"llm_q_{len(questions)}"),
+                question=q_data["question"],
+                options=q_data.get("options", []),
+                allows_free_text=True,
+                context_hint=q_data.get("context_hint", ""),
+            ))
+
+        if not questions:
+            return AmbiguityResult(
+                is_ambiguous=False,
+                confidence=confidence,
+                category=parsed.get("category", ""),
+                original_query=query,
+                reasoning="No clarification questions produced; treating as clear.",
+            )
+
+        return AmbiguityResult(
+            is_ambiguous=True,
+            confidence=confidence,
+            category=parsed.get("category", "llm_detected"),
+            questions=questions,
+            original_query=query,
+            reasoning=parsed.get("reasoning", "LLM detected missing critical facts."),
+        )
+
     except Exception as e:
-        logger.error(f"Unexpected error in LLM ambiguity check: {e}")
+        logger.warning(f"LLM ambiguity check failed ({type(e).__name__}: {e}) — falling back to rule-based only")
         return None
 
 

@@ -25,6 +25,7 @@ import {
   Info,
   Compass,
   AlertCircle,
+  AlertTriangle,
   PanelLeftClose,
   PanelLeftOpen,
   ArrowRight,
@@ -33,6 +34,8 @@ import {
   FolderOpen,
   HelpCircle,
   Clock,
+  ArrowLeft,
+  MessageSquare,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -56,6 +59,7 @@ import { RagStatus } from "@/context/chat-context";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import mammoth from "mammoth";
+import { cn } from "@/lib/utils";
 
 function cleanCaseSummary(text?: string): string {
   if (!text) return "No summary available for this case.";
@@ -71,6 +75,7 @@ interface UserDocument {
   status: DocumentStatus;
   progress?: number;
   created_at: string;
+  error_message?: string;
 }
 
 interface DocPromptStarter {
@@ -121,6 +126,23 @@ const DOC_STARTER_PROMPTS: DocPromptStarter[] = [
     prompt: "Review the governing law, dispute resolution, arbitration, and venue stipulations.",
   },
 ];
+
+function getDocCategoryBadgeClass(label?: string) {
+  const l = (label || "").toLowerCase();
+  if (l.includes("summary") || l.includes("obligation")) {
+    return "bg-blue-500/10 text-blue-700 dark:bg-blue-500/20 dark:text-blue-300 border border-blue-500/20";
+  }
+  if (l.includes("risk") || l.includes("void")) {
+    return "bg-rose-500/10 text-rose-700 dark:bg-rose-500/20 dark:text-rose-300 border border-rose-500/20";
+  }
+  if (l.includes("civil code") || l.includes("citation")) {
+    return "bg-indigo-500/10 text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-300 border border-indigo-500/20";
+  }
+  if (l.includes("termination") || l.includes("dispute")) {
+    return "bg-amber-500/10 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300 border border-amber-500/20";
+  }
+  return "bg-blue-500/10 text-blue-700 dark:bg-blue-500/20 dark:text-blue-300 border border-blue-500/20";
+}
 
 
 // Markdown renderer for assistant messages
@@ -266,21 +288,20 @@ function RagPipelineStepper({ status, isLive }: { status: RagStatus | null; isLi
 
   if (isLive && isPreStreamingStage) {
     return (
-      <div className="w-full max-w-md p-3.5 rounded-2xl bg-card border border-border/80 dark:border-white/10 shadow-xs animate-fade-in space-y-2.5 mb-2">
-        <div className="flex items-center justify-between text-xs font-semibold text-primary">
+      <div className="w-full max-w-xs sm:max-w-sm p-2 sm:p-2.5 rounded-xl bg-card border border-border/70 dark:border-white/10 shadow-2xs animate-fade-in space-y-1.5 mb-2">
+        <div className="flex items-center justify-between text-[11px] font-semibold text-foreground">
           <span className="flex items-center gap-1.5">
             {currentStage === "queued" ? (
-              <Clock className="w-3.5 h-3.5 animate-spin text-amber-500" />
+              <Clock className="w-3 h-3 animate-spin text-amber-500" />
             ) : (
-              <Sparkles className="w-3.5 h-3.5 animate-pulse text-primary" />
+              <Sparkles className="w-3 h-3 animate-pulse text-emerald-600 dark:text-emerald-400" />
             )}
-            CIVIL-LEX Legal Processing
+            Legal Processing
           </span>
-          <span className={`text-[10px] font-mono uppercase tracking-wider px-2 py-0.5 rounded-full border ${
-            currentStage === "queued"
-              ? "bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/30 font-bold animate-pulse"
-              : "bg-primary/10 text-primary border-primary/20"
-          }`}>
+          <span className={`text-[9px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded-full border ${currentStage === "queued"
+            ? "bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/30 font-bold animate-pulse"
+            : "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-500/20 font-medium"
+            }`}>
             {currentStage === "queued"
               ? `Queue #${status?.queue_position || 1}`
               : currentStage === "retrieving_done"
@@ -293,39 +314,39 @@ function RagPipelineStepper({ status, isLive }: { status: RagStatus | null; isLi
 
         {/* Queue Notice Banner when waiting */}
         {currentStage === "queued" ? (
-          <div className="flex items-start gap-2.5 p-2.5 rounded-xl bg-amber-500/10 dark:bg-amber-500/15 border border-amber-500/30 text-amber-900 dark:text-amber-200">
-            <Clock className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5 animate-pulse" />
-            <div className="text-xs space-y-0.5">
+          <div className="flex items-start gap-2 p-2 rounded-lg bg-amber-500/10 dark:bg-amber-500/15 border border-amber-500/30 text-amber-900 dark:text-amber-200">
+            <Clock className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5 animate-pulse" />
+            <div className="text-[11px] space-y-0.5">
               <p className="font-semibold text-amber-700 dark:text-amber-300">
                 You are #{status?.queue_position || 1} in queue
               </p>
-              <p className="text-[11px] leading-relaxed text-amber-800/90 dark:text-amber-200/90">
-                {status?.message || "Another user is currently querying the model. Your query will run automatically once resources are free."}
+              <p className="text-[10px] leading-relaxed text-amber-800/90 dark:text-amber-200/90">
+                {status?.message || "Another query is currently processing. Your query will run automatically once resources are free."}
               </p>
             </div>
           </div>
         ) : null}
 
         {/* Step Progress Pills */}
-        <div className="grid grid-cols-5 gap-1 pt-1">
+        <div className="grid grid-cols-5 gap-1 pt-0.5">
           {steps.map((step) => {
             const state = getStepState(step.id);
             return (
-              <div key={step.id} className="flex flex-col items-center gap-1">
+              <div key={step.id} className="flex flex-col items-center gap-0.5">
                 <div
-                  className={`w-full h-1.5 rounded-full transition-all duration-300 ${state === "completed"
-                    ? "bg-green-500"
+                  className={`w-full h-1 rounded-full transition-all duration-300 ${state === "completed"
+                    ? "bg-emerald-500"
                     : state === "active"
-                      ? "bg-primary animate-pulse"
+                      ? "bg-emerald-600 dark:bg-emerald-500 animate-pulse"
                       : "bg-muted dark:bg-muted/40"
                     }`}
                 />
                 <span
-                  className={`text-[9px] truncate max-w-full font-medium ${state === "active"
-                    ? "text-primary font-bold"
+                  className={`text-[8px] sm:text-[8.5px] truncate max-w-full font-medium ${state === "active"
+                    ? "text-foreground font-bold"
                     : state === "completed"
                       ? "text-foreground"
-                      : "text-muted-foreground"
+                      : "text-muted-foreground/70"
                     }`}
                 >
                   {step.name.split(". ")[1]}
@@ -337,9 +358,9 @@ function RagPipelineStepper({ status, isLive }: { status: RagStatus | null; isLi
 
         {/* Active Stage Message (when not queued) */}
         {currentStage !== "queued" && (
-          <div className="flex items-center gap-2 pt-1 text-xs text-foreground bg-accent/30 dark:bg-accent/15 px-3 py-2 rounded-xl border border-border/40">
-            <Loader2 className="w-3.5 h-3.5 animate-spin text-primary shrink-0" />
-            <span className="line-clamp-1">{status?.message || "Analyzing query..."}</span>
+          <div className="flex items-center gap-1.5 pt-0.5 text-[11px] text-foreground bg-accent/30 dark:bg-accent/15 px-2 py-1 rounded-lg border border-border/40">
+            <Loader2 className="w-3 h-3 animate-spin text-emerald-600 dark:text-emerald-400 shrink-0" />
+            <span className="line-clamp-1 truncate">{status?.message || "Analyzing query..."}</span>
           </div>
         )}
       </div>
@@ -348,11 +369,11 @@ function RagPipelineStepper({ status, isLive }: { status: RagStatus | null; isLi
 
   // Once streaming or completed: show compact expandable badge
   return (
-    <div className="mb-2">
+    <div className="mb-1.5">
       <button
         type="button"
         onClick={() => setIsExpanded(!isExpanded)}
-        className="inline-flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground hover:text-foreground transition-colors bg-accent/40 dark:bg-accent/20 hover:bg-accent px-2.5 py-1 rounded-full border border-border/60 cursor-pointer"
+        className="inline-flex items-center gap-1.5 text-[10.5px] font-medium text-muted-foreground hover:text-foreground transition-colors bg-accent/40 dark:bg-accent/20 hover:bg-accent px-2 py-0.5 rounded-full border border-border/60 cursor-pointer"
       >
         <CheckCircle2 className="w-3 h-3 text-emerald-500 shrink-0" />
         <span>RAG Pipeline Grounded (Embedded • Retrieved • Synthesized)</span>
@@ -360,17 +381,17 @@ function RagPipelineStepper({ status, isLive }: { status: RagStatus | null; isLi
       </button>
 
       {isExpanded && (
-        <div className="mt-2 p-3 bg-accent/20 dark:bg-accent/10 rounded-xl border border-border/70 text-xs space-y-1.5 animate-fade-in max-w-lg">
-          <div className="font-semibold text-primary text-xs pb-1 border-b border-border/40">
+        <div className="mt-1.5 p-2.5 bg-accent/20 dark:bg-accent/10 rounded-xl border border-border/70 text-xs space-y-1 animate-fade-in max-w-sm">
+          <div className="font-semibold text-blue-600 dark:text-blue-400 text-[11px] pb-1 border-b border-border/40">
             Autonomous Legal Retrieval Stages:
           </div>
           {steps.map((step) => {
             const state = getStepState(step.id);
             const StepIcon = step.icon;
             return (
-              <div key={step.id} className="flex items-center justify-between py-0.5">
+              <div key={step.id} className="flex items-center justify-between py-0.5 text-[11px]">
                 <span className="flex items-center gap-1.5 text-muted-foreground">
-                  <StepIcon className="w-3 h-3 text-primary shrink-0" />
+                  <StepIcon className="w-3 h-3 text-blue-600 dark:text-blue-400 shrink-0" />
                   {step.name}
                 </span>
                 <span className="text-[10px] font-mono text-emerald-500 font-medium">
@@ -477,6 +498,7 @@ export default function ResearchPage() {
   const [activeDocument, setActiveDocument] = useState<any>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [isLoadingDocs, setIsLoadingDocs] = useState(true);
+  const [fetchError, setFetchError] = useState<string | null>(null);
   const [pendingDocId, setPendingDocId] = useState<string | null>(null);
   const [isDraggingFile, setIsDraggingFile] = useState(false);
 
@@ -491,10 +513,11 @@ export default function ResearchPage() {
   const followUpPrompts = currentChat.followUpPrompts || [];
 
   // Dynamic panel resizing states
-  const [docListWidth, setDocListWidth] = useState<number>(260);
-  const [chatPanelWidth, setChatPanelWidth] = useState<number>(480);
+  const [docListWidth, setDocListWidth] = useState<number>(230);
+  const [chatPanelWidth, setChatPanelWidth] = useState<number>(400);
   const [isDocListCollapsed, setIsDocListCollapsed] = useState(false);
   const [isDocSheetOpen, setIsDocSheetOpen] = useState(false);
+  const [mobileActiveTab, setMobileActiveTab] = useState<'document' | 'chat'>('document');
   const [isDraggingDocList, setIsDraggingDocList] = useState(false);
   const [isDraggingChat, setIsDraggingChat] = useState(false);
   const [isNliModalOpen, setIsNliModalOpen] = useState(false);
@@ -525,22 +548,39 @@ export default function ResearchPage() {
     }
   }, [activeDocument, messages.length, isTyping]);
 
-  // Initialize saved widths from localStorage
+  // Initialize saved widths from localStorage with screen size awareness
   useEffect(() => {
     try {
+      const isCompact = typeof window !== "undefined" && window.innerWidth < 1440;
+      const defaultDocWidth = isCompact ? 220 : 250;
+      const defaultChatWidth = isCompact ? Math.min(380, Math.floor(window.innerWidth * 0.35)) : 440;
+
       const savedDocListWidth = localStorage.getItem("civilex_doc_list_width");
       if (savedDocListWidth) {
         const val = parseInt(savedDocListWidth, 10);
         if (!isNaN(val) && val >= 180 && val <= 420) {
-          setDocListWidth(val);
+          setDocListWidth(isCompact ? Math.min(val, 240) : val);
+        } else {
+          setDocListWidth(defaultDocWidth);
         }
+      } else {
+        setDocListWidth(defaultDocWidth);
       }
+
       const savedChatWidth = localStorage.getItem("civilex_chat_panel_width");
       if (savedChatWidth) {
         const val = parseInt(savedChatWidth, 10);
-        if (!isNaN(val) && val >= 360 && val <= 850) {
-          setChatPanelWidth(val);
+        if (!isNaN(val) && val >= 320 && val <= 850) {
+          setChatPanelWidth(isCompact ? Math.min(val, 400) : val);
+        } else {
+          setChatPanelWidth(defaultChatWidth);
         }
+      } else {
+        setChatPanelWidth(defaultChatWidth);
+      }
+
+      if (isCompact) {
+        setIsDocListCollapsed(true);
       }
     } catch (e) { }
   }, []);
@@ -563,10 +603,13 @@ export default function ResearchPage() {
         const rect = containerRef.current.getBoundingClientRect();
 
         if (isDraggingDocListRef.current) {
-          const newWidth = Math.min(420, Math.max(180, clientX - rect.left));
+          const maxWidth = Math.floor(rect.width * 0.32);
+          const newWidth = Math.min(maxWidth, Math.max(180, clientX - rect.left));
           setDocListWidth(newWidth);
         } else if (isDraggingChatRef.current) {
-          const newWidth = Math.min(850, Math.max(360, rect.right - clientX));
+          const maxWidth = Math.floor(rect.width * 0.48);
+          const minWidth = rect.width < 1024 ? 300 : 340;
+          const newWidth = Math.min(maxWidth, Math.max(minWidth, rect.right - clientX));
           setChatPanelWidth(newWidth);
         }
       });
@@ -709,7 +752,12 @@ export default function ResearchPage() {
   useEffect(() => {
     if (activeDocument) {
       const updated = documents.find(d => d.id === activeDocument.id);
-      if (updated && (updated.status !== activeDocument.status || updated.progress !== activeDocument.progress)) {
+      if (
+        updated &&
+        (updated.status !== activeDocument.status ||
+          updated.progress !== activeDocument.progress ||
+          updated.error_message !== activeDocument.error_message)
+      ) {
         setActiveDocument(updated);
       }
     }
@@ -728,13 +776,20 @@ export default function ResearchPage() {
       if (res.ok) {
         const data = await res.json();
         setDocuments(data);
+        setFetchError(null);
       } else {
         if (res.status === 401 || res.status === 403) {
           window.location.href = "/login";
+          return;
         }
+        const errJson = await res.json().catch(() => ({}));
+        const errMsg = errJson.error || `Server error (${res.status}): ${res.statusText || 'Unable to fetch documents'}`;
+        console.error("Failed to fetch documents:", errMsg);
+        setFetchError(errMsg);
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error("Failed to fetch documents:", err);
+      setFetchError(err?.message || "Network error. Unable to load documents from server.");
     } finally {
       setIsLoadingDocs(false);
     }
@@ -849,6 +904,10 @@ export default function ResearchPage() {
     ? ['uploading', 'extracting', 'processing'].includes(activeDocument.status) || isUploading
     : false;
 
+  const isDocFailed = activeDocument
+    ? ['rejected_unrelated', 'error'].includes(activeDocument.status)
+    : false;
+
   const handleSend = (overrideText?: string) => {
     if (!activeDocument) {
       fileInputRef.current?.click();
@@ -857,22 +916,36 @@ export default function ResearchPage() {
     if (isDocProcessing) {
       return;
     }
+    if (isDocFailed) {
+      alert(
+        activeDocument.error_message ||
+        (activeDocument.status === 'rejected_unrelated'
+          ? "Cannot analyze document: No readable text could be detected in this file. Please upload an image or document containing legible text."
+          : "Cannot analyze document: An error occurred during extraction. Please try uploading the file again.")
+      );
+      return;
+    }
     setIsDocListCollapsed(true);
+    setMobileActiveTab('chat');
     handleSendDocMessage(activeDocument.id, activeDocument.filename, overrideText);
   };
 
   const getStatusBadge = (doc: UserDocument) => {
     switch (doc.status) {
       case 'completed':
-        return <Badge variant="outline" className="bg-green-soft text-green border-green/20 text-[10px]">Analyzed</Badge>;
+        return (
+          <Badge variant="outline" className="bg-emerald-500/10 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 border-emerald-500/25 text-[10px] font-semibold">
+            Analyzed
+          </Badge>
+        );
       case 'extracting':
       case 'uploading':
         return (
-          <Badge variant="outline" className="bg-blue-soft text-blue-text border-blue-text/20 text-[10px] flex items-center gap-0.5">
+          <Badge variant="outline" className="bg-blue-500/10 dark:bg-blue-500/20 text-blue-700 dark:text-blue-300 border-blue-500/25 text-[10px] font-semibold flex items-center gap-0.5">
             {doc.status === 'extracting' ? (
               <CircularProgress progress={doc.progress || 0} />
             ) : (
-              <Loader2 className="w-3 h-3 animate-spin mr-1" />
+              <Loader2 className="w-3 h-3 animate-spin mr-1 text-blue-600 dark:text-blue-400" />
             )}
             {doc.status === 'uploading' ? 'Uploading...' : `Extracting ${doc.progress || 0}%`}
           </Badge>
@@ -881,16 +954,26 @@ export default function ResearchPage() {
         return (
           <Badge
             variant="outline"
-            className="bg-gold-soft text-gold border-gold/20 text-[10px]"
-            title="No readable text could be extracted from this document"
+            className="bg-amber-500/10 dark:bg-amber-500/20 text-amber-700 dark:text-amber-300 border-amber-500/25 text-[10px] font-semibold flex items-center gap-1"
+            title={doc.error_message || "No readable text could be extracted from this document"}
           >
-            No Text Extracted
+            <AlertCircle className="w-3 h-3 text-amber-600 dark:text-amber-400 shrink-0" />
+            <span>No Text Found</span>
           </Badge>
         );
       case 'error':
-        return <Badge variant="destructive" className="text-[10px]">Error</Badge>;
+        return (
+          <Badge
+            variant="destructive"
+            className="text-[10px] font-semibold flex items-center gap-1"
+            title={doc.error_message || "Extraction failed"}
+          >
+            <AlertTriangle className="w-3 h-3 shrink-0" />
+            <span>Extraction Failed</span>
+          </Badge>
+        );
       default:
-        return <Badge variant="outline" className="text-[10px]">{doc.status}</Badge>;
+        return <Badge variant="outline" className="text-[10px] font-semibold">{doc.status}</Badge>;
     }
   };
 
@@ -902,18 +985,73 @@ export default function ResearchPage() {
     >
       {/* Documents Panel - Mobile Sheet */}
       <Sheet open={isDocSheetOpen} onOpenChange={setIsDocSheetOpen}>
-        <SheetContent side="left" className="w-80 p-0 flex flex-col">
-          <SheetHeader className="p-4 border-b border-border bg-card/50">
-            <SheetTitle className="flex items-center gap-2 text-base">
-              <FileText className="w-5 h-5 text-primary" />
-              My Documents
-            </SheetTitle>
+        <SheetContent side="left" className="w-[88vw] sm:w-84 sm:max-w-md p-0 flex flex-col">
+          <SheetHeader className="p-3.5 sm:p-4 border-b border-border bg-card/50">
+            <div className="flex items-center justify-between">
+              <SheetTitle className="flex items-center gap-2 text-base">
+                <FileText className="w-5 h-5 text-primary" />
+                My Documents
+              </SheetTitle>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setActiveDocument(null);
+                  setIsDocSheetOpen(false);
+                  setMobileActiveTab('document');
+                  if (typeof window !== 'undefined') {
+                    window.history.replaceState({}, '', '/research');
+                  }
+                }}
+                className="h-7 text-xs gap-1 px-2 cursor-pointer rounded-lg"
+              >
+                <Plus className="w-3 h-3 text-primary" />
+                <span>New</span>
+              </Button>
+            </div>
           </SheetHeader>
           <div className="flex flex-col h-full overflow-hidden">
+            {/* Quick Upload Action inside Drawer */}
+            <div className="p-2.5 border-b border-border/70 bg-accent/20">
+              <Button
+                type="button"
+                size="sm"
+                onClick={() => {
+                  fileInputRef.current?.click();
+                  setIsDocSheetOpen(false);
+                }}
+                className="w-full gap-2 text-xs h-8.5 rounded-xl bg-[#100771] text-white hover:bg-[#100771]/90 dark:bg-blue-600 dark:hover:bg-blue-500 dark:text-white shadow-2xs font-semibold cursor-pointer"
+              >
+                <UploadCloud className="w-3.5 h-3.5" />
+                <span>Upload New Document</span>
+              </Button>
+            </div>
             <ScrollArea className="flex-1 p-2">
               {isLoadingDocs ? (
                 <div className="flex justify-center p-8">
                   <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+                </div>
+              ) : fetchError ? (
+                <div className="p-4 rounded-xl bg-destructive/10 border border-destructive/25 text-center flex flex-col items-center gap-2 m-2 animate-fade-in">
+                  <AlertTriangle className="w-6 h-6 text-destructive shrink-0" />
+                  <p className="text-xs font-semibold text-destructive">Failed to Load Documents</p>
+                  <p className="text-[11px] text-muted-foreground leading-relaxed line-clamp-3">
+                    {fetchError}
+                  </p>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setIsLoadingDocs(true);
+                      fetchDocuments();
+                    }}
+                    className="mt-1 h-7 text-xs px-3 bg-card hover:bg-accent border-destructive/30 text-destructive hover:text-destructive cursor-pointer gap-1.5"
+                  >
+                    <RefreshCw className="w-3 h-3" />
+                    <span>Retry</span>
+                  </Button>
                 </div>
               ) : documents.length === 0 ? (
                 <div className="text-center p-6 text-muted-foreground text-sm flex flex-col items-center">
@@ -929,6 +1067,7 @@ export default function ResearchPage() {
                         setActiveDocument(doc);
                         await ensureDocSession(doc.id, doc.filename);
                         setIsDocSheetOpen(false);
+                        setMobileActiveTab('document');
                       }}
                       className={`p-3 rounded-xl cursor-pointer transition-colors border ${activeDocument?.id === doc.id
                         ? 'bg-primary/10 border-primary/20 shadow-sm'
@@ -953,16 +1092,14 @@ export default function ResearchPage() {
         </SheetContent>
       </Sheet>
 
-      {/* Documents Panel - Desktop (hidden on mobile, resizable) */}
+      {/* Documents Panel - Desktop (hidden on mobile & tablet, resizable) */}
       <div
         style={{ width: isDocListCollapsed ? 0 : `${docListWidth}px` }}
-        className={`hidden md:flex flex-col bg-card/80 backdrop-blur-xl rounded-2xl border border-border shadow-sm overflow-hidden flex-shrink-0 min-h-0 ${
-          isDraggingDocList || isDraggingChat
-            ? "transition-none"
-            : "transition-[width,opacity,margin,border-color] duration-300 ease-in-out"
-        } ${
-          isDocListCollapsed ? "!w-0 !p-0 opacity-0 pointer-events-none -mr-1 border-transparent" : "opacity-100"
-        }`}
+        className={`hidden lg:flex flex-col bg-card/80 backdrop-blur-xl rounded-2xl border border-border shadow-sm overflow-hidden flex-shrink-0 min-h-0 ${isDraggingDocList || isDraggingChat
+          ? "transition-none"
+          : "transition-[width,opacity,margin,border-color] duration-300 ease-in-out"
+          } ${isDocListCollapsed ? "!w-0 !p-0 opacity-0 pointer-events-none -mr-1 border-transparent" : "opacity-100"
+          }`}
       >
         <div
           style={{ width: isDocListCollapsed ? `${docListWidth}px` : "100%" }}
@@ -997,11 +1134,11 @@ export default function ResearchPage() {
                   }
                 }}
                 className={`w-full gap-2 text-xs font-medium cursor-pointer transition-colors ${!activeDocument
-                  ? 'bg-primary text-primary-foreground hover:bg-primary/90 shadow-2xs font-semibold'
+                  ? 'bg-[#100771] text-white hover:bg-[#100771]/90 dark:bg-blue-600 dark:hover:bg-blue-500 dark:text-white shadow-2xs font-semibold'
                   : 'border-border/80 text-foreground bg-accent/50 hover:bg-accent'
                   }`}
               >
-                <Plus className={`w-3.5 h-3.5 ${!activeDocument ? 'text-primary-foreground' : 'text-primary'}`} />
+                <Plus className={`w-3.5 h-3.5 ${!activeDocument ? 'text-white' : 'text-blue-600 dark:text-blue-400'}`} />
                 <span>+ New Blank Analysis</span>
               </Button>
             </div>
@@ -1018,6 +1155,27 @@ export default function ResearchPage() {
             {isLoadingDocs ? (
               <div className="flex justify-center p-8">
                 <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+              </div>
+            ) : fetchError ? (
+              <div className="p-4 rounded-xl bg-destructive/10 border border-destructive/25 text-center flex flex-col items-center gap-2 m-2 animate-fade-in">
+                <AlertTriangle className="w-6 h-6 text-destructive shrink-0" />
+                <p className="text-xs font-semibold text-destructive">Failed to Load Documents</p>
+                <p className="text-[11px] text-muted-foreground leading-relaxed line-clamp-3">
+                  {fetchError}
+                </p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setIsLoadingDocs(true);
+                    fetchDocuments();
+                  }}
+                  className="mt-1 h-7 text-xs px-3 bg-card hover:bg-accent border-destructive/30 text-destructive hover:text-destructive cursor-pointer gap-1.5"
+                >
+                  <RefreshCw className="w-3 h-3" />
+                  <span>Retry</span>
+                </Button>
               </div>
             ) : documents.length === 0 ? (
               <div className="text-center p-6 text-muted-foreground text-sm flex flex-col items-center">
@@ -1037,7 +1195,7 @@ export default function ResearchPage() {
                       await ensureDocSession(doc.id, doc.filename);
                     }}
                     className={`p-3 rounded-xl cursor-pointer transition-colors border ${activeDocument?.id === doc.id
-                      ? 'bg-primary/10 border-primary/20 shadow-sm'
+                      ? 'bg-blue-500/10 dark:bg-blue-500/15 border-blue-500/30 text-blue-700 dark:text-blue-300 shadow-sm'
                       : 'bg-transparent border-transparent hover:bg-accent'
                       }`}
                   >
@@ -1092,24 +1250,25 @@ export default function ResearchPage() {
         </div>
       )}
 
-      {/* Center Pane - Document Viewer */}
-      <div className="flex-1 flex flex-col bg-card rounded-2xl border border-border shadow-sm overflow-hidden relative min-h-0 mx-1.5">
+      {/* Center Pane - Document Viewer / Dropzone (Mobile-responsive) */}
+      <div className={`${mobileActiveTab === 'document' ? 'flex flex-1' : 'hidden'
+        } lg:flex flex-col bg-card rounded-2xl border border-border shadow-sm overflow-hidden relative min-h-0 mx-0 lg:mx-1.5 w-full lg:w-auto`}>
         {activeDocument ? (
           <>
             {/* Toolbar */}
-            <div className="p-3 border-b border-border bg-muted/50 flex items-center justify-between shrink-0">
-              <div className="flex items-center gap-2 min-w-0">
-                {/* Mobile: open doc sheet */}
+            <div className="p-2 sm:p-3 border-b border-border bg-muted/50 flex items-center justify-between shrink-0 gap-1.5 sm:gap-2">
+              <div className="flex items-center gap-1.5 sm:gap-2 min-w-0">
+                {/* Mobile & Tablet: open doc sheet */}
                 <Button
                   type="button"
                   variant="outline"
                   size="sm"
                   onClick={() => setIsDocSheetOpen(true)}
-                  className="md:hidden h-8 gap-1.5 px-2 text-xs font-medium shrink-0"
+                  className="lg:hidden h-8 gap-1.5 px-2 text-xs font-medium shrink-0 rounded-xl"
                   title="Browse documents"
                 >
                   <FileText className="w-3.5 h-3.5 text-primary shrink-0" />
-                  <span>Documents</span>
+                  <span className="hidden sm:inline">Documents</span>
                   <span className="text-[10px] font-mono px-1.5 rounded-full bg-primary/10 text-primary">
                     {documents.length}
                   </span>
@@ -1120,7 +1279,7 @@ export default function ResearchPage() {
                   variant={isDocListCollapsed ? "outline" : "ghost"}
                   size="sm"
                   onClick={() => setIsDocListCollapsed(!isDocListCollapsed)}
-                  className={`h-8 gap-1.5 px-2 text-xs font-medium cursor-pointer transition-all duration-200 shrink-0 ${isDocListCollapsed
+                  className={`hidden lg:inline-flex h-8 gap-1.5 px-2 text-xs font-medium cursor-pointer transition-all duration-200 shrink-0 ${isDocListCollapsed
                     ? "bg-card hover:bg-accent text-foreground border-border/80 shadow-2xs"
                     : "text-muted-foreground hover:text-foreground hover:bg-accent/60"
                     }`}
@@ -1144,12 +1303,47 @@ export default function ResearchPage() {
 
                 <div className="h-4 w-[1px] bg-border/70 mx-0.5 hidden sm:block shrink-0" />
 
-                <Badge variant="outline" className="bg-card text-xs border-border font-medium truncate max-w-[200px] sm:max-w-[320px]">
+                <Badge variant="outline" className="bg-card text-xs border-border font-medium truncate max-w-[100px] xs:max-w-[150px] sm:max-w-[280px]">
                   {activeDocument.filename}
                 </Badge>
-                {getStatusBadge(activeDocument)}
+                <div className="hidden xs:inline-flex shrink-0">
+                  {getStatusBadge(activeDocument)}
+                </div>
               </div>
-              <div className="flex items-center gap-1.5">
+
+              {/* Center / Right controls */}
+              <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
+                {/* Mobile View Toggle: Doc Preview vs AI Chat */}
+                <div className="flex lg:hidden items-center bg-card p-0.5 rounded-xl border border-border/80 shadow-2xs">
+                  <button
+                    type="button"
+                    onClick={() => setMobileActiveTab('document')}
+                    className={cn(
+                      "flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium transition-all cursor-pointer",
+                      mobileActiveTab === 'document'
+                        ? "bg-primary text-primary-foreground font-semibold shadow-2xs"
+                        : "text-muted-foreground hover:text-foreground"
+                    )}
+                  >
+                    <FileText className="w-3.5 h-3.5" />
+                    <span className="hidden xs:inline">Preview</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setMobileActiveTab('chat')}
+                    className={cn(
+                      "flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium transition-all cursor-pointer relative",
+                      mobileActiveTab === 'chat'
+                        ? "bg-primary text-primary-foreground font-semibold shadow-2xs"
+                        : "text-muted-foreground hover:text-foreground"
+                    )}
+                  >
+                    <MessageSquare className="w-3.5 h-3.5" />
+                    <span>Chat</span>
+                    {isTyping && <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse ml-0.5" />}
+                  </button>
+                </div>
+
                 <Button
                   type="button"
                   variant="outline"
@@ -1160,91 +1354,235 @@ export default function ResearchPage() {
                       window.history.replaceState({}, '', '/research');
                     }
                   }}
-                  className="h-8 gap-1.5 px-2.5 text-xs text-muted-foreground hover:text-foreground hover:bg-accent border-border cursor-pointer shadow-2xs"
+                  className="h-8 gap-1 px-2 sm:px-2.5 text-xs text-muted-foreground hover:text-foreground hover:bg-accent border-border cursor-pointer shadow-2xs"
                   title="Return to blank analysis to upload a new document"
                 >
                   <Plus className="w-3.5 h-3.5 text-primary" />
-                  <span className="hidden sm:inline">New Analysis</span>
+                  <span className="hidden sm:inline">New</span>
                 </Button>
-                <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-foreground">
-                  <Download className="w-4 h-4" />
-                </Button>
-                <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-foreground">
+
+                {activeDocument.file_url && (
+                  <a
+                    href={activeDocument.file_url}
+                    download={activeDocument.filename}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-foreground" title="Download Document">
+                      <Download className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+                    </Button>
+                  </a>
+                )}
+                <Button variant="ghost" size="icon" className="hidden sm:inline-flex h-8 w-8 text-muted-foreground hover:text-foreground">
                   <Maximize2 className="w-4 h-4" />
                 </Button>
               </div>
             </div>
 
-            <div className="flex-1 bg-muted/30 p-4 relative overflow-hidden">
-              {activeDocument.file_url ? (
-                activeDocument.filename.match(/\.(jpeg|jpg|png)$/i) ? (
-                  <div className="w-full h-full flex items-center justify-center bg-card shadow-sm border border-border rounded-xl overflow-hidden p-4">
-                    <img
-                      src={activeDocument.file_url}
-                      alt={activeDocument.filename}
-                      className="max-w-full max-h-full object-contain"
-                    />
+            <div className="flex-1 bg-muted/30 p-2 sm:p-4 flex flex-col relative overflow-hidden min-h-0">
+              {/* Extraction Alert Banner */}
+              {activeDocument.status === 'rejected_unrelated' && (
+                <div className="shrink-0 mb-3 p-3 sm:p-3.5 rounded-xl bg-amber-500/10 dark:bg-amber-500/15 border border-amber-500/30 text-amber-900 dark:text-amber-200 flex items-start gap-3 shadow-xs animate-fade-in">
+                  <AlertCircle className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <h4 className="text-xs sm:text-sm font-semibold text-amber-900 dark:text-amber-100">
+                        No Readable Text Detected
+                      </h4>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => fileInputRef.current?.click()}
+                        className="h-7 text-xs px-2.5 bg-amber-500/20 hover:bg-amber-500/30 border-amber-500/40 text-amber-900 dark:text-amber-100 cursor-pointer"
+                      >
+                        <UploadCloud className="w-3.5 h-3.5 mr-1" />
+                        Upload Another File
+                      </Button>
+                    </div>
+                    <p className="text-xs text-amber-800/90 dark:text-amber-200/90 mt-1 leading-relaxed">
+                      {activeDocument.error_message ||
+                        "CIVIL-LEX was unable to extract legible text from this image. Please upload a clear document or photo containing legible text (e.g. contracts, deeds, pleadings, or clear scans)."}
+                    </p>
                   </div>
-                ) : activeDocument.filename.match(/\.(doc|docx)$/i) ? (
-                  <DocxViewer fileUrl={activeDocument.file_url} />
-                ) : (
-                  <iframe
-                    src={activeDocument.file_url}
-                    className={`w-full h-full rounded-xl bg-card shadow-sm border border-border ${isDraggingDocList || isDraggingChat ? "pointer-events-none" : ""
-                      }`}
-                    title={activeDocument.filename}
-                  />
-                )
-              ) : (
-                <div className="flex flex-col items-center justify-center h-full text-muted-foreground">
-                  <FileText className="w-12 h-12 mb-4 opacity-20" />
-                  <p>Preview not available</p>
                 </div>
               )}
+
+              {activeDocument.status === 'error' && (
+                <div className="shrink-0 mb-3 p-3 sm:p-3.5 rounded-xl bg-destructive/10 border border-destructive/30 text-destructive flex items-start gap-3 shadow-xs animate-fade-in">
+                  <AlertTriangle className="w-5 h-5 text-destructive shrink-0 mt-0.5" />
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <h4 className="text-xs sm:text-sm font-semibold text-destructive">
+                        Document Extraction Error
+                      </h4>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => fileInputRef.current?.click()}
+                        className="h-7 text-xs px-2.5 bg-destructive/20 hover:bg-destructive/30 border-destructive/40 text-destructive cursor-pointer"
+                      >
+                        <RefreshCw className="w-3.5 h-3.5 mr-1" />
+                        Try Again
+                      </Button>
+                    </div>
+                    <p className="text-xs text-destructive/90 mt-1 leading-relaxed">
+                      {activeDocument.error_message ||
+                        "An error occurred while processing this document. Please ensure the file is not corrupted and try again."}
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              <div className="flex-1 min-h-0 relative overflow-hidden">
+                {activeDocument.file_url ? (
+                  activeDocument.filename.match(/\.(jpeg|jpg|png)$/i) ? (
+                    <div className="w-full h-full flex items-center justify-center bg-card shadow-sm border border-border rounded-xl overflow-hidden p-2 sm:p-4">
+                      <img
+                        src={activeDocument.file_url}
+                        alt={activeDocument.filename}
+                        className="max-w-full max-h-full object-contain"
+                      />
+                    </div>
+                  ) : activeDocument.filename.match(/\.(doc|docx)$/i) ? (
+                    <DocxViewer fileUrl={activeDocument.file_url} />
+                  ) : (
+                    <iframe
+                      src={activeDocument.file_url}
+                      className={`w-full h-full rounded-xl bg-card shadow-sm border border-border ${isDraggingDocList || isDraggingChat ? "pointer-events-none" : ""
+                        }`}
+                      title={activeDocument.filename}
+                    />
+                  )
+                ) : (
+                  <div className="flex flex-col items-center justify-center h-full text-muted-foreground p-4 text-center">
+                    <FileText className="w-10 h-10 sm:w-12 sm:h-12 mb-3 opacity-20" />
+                    <p className="text-xs sm:text-sm">Preview not available</p>
+                  </div>
+                )}
+              </div>
+
+              {/* Mobile floating quick switch to Chat when previewing document */}
+              <div className="lg:hidden absolute bottom-3 right-3 z-20">
+                <Button
+                  type="button"
+                  onClick={() => setMobileActiveTab('chat')}
+                  className="h-9 px-3.5 rounded-full bg-[#100771] hover:bg-[#100771]/90 text-white dark:bg-blue-600 dark:hover:bg-blue-500 dark:text-white shadow-lg shadow-blue-900/25 flex items-center gap-1.5 text-xs font-semibold cursor-pointer active:scale-95 transition-transform"
+                >
+                  <MessageSquare className="w-3.5 h-3.5" />
+                  <span>Chat with AI</span>
+                  {isTyping && <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse ml-0.5" />}
+                </Button>
+              </div>
             </div>
           </>
         ) : (
           <div className="flex-1 flex flex-col bg-card/40 overflow-hidden">
             {/* Blank Analysis Toolbar */}
-            <div className="p-3 border-b border-border bg-muted/40 flex items-center justify-between shrink-0">
+            <div className="p-2 sm:p-3 border-b border-border bg-muted/40 flex items-center justify-between shrink-0 gap-2">
               <div className="flex items-center gap-2 min-w-0">
+                {/* Mobile Document Picker Button */}
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setIsDocSheetOpen(true)}
+                  className="lg:hidden h-8 gap-1.5 px-2 text-xs font-medium cursor-pointer bg-card hover:bg-accent text-foreground border-border/80 shadow-2xs shrink-0 rounded-xl"
+                  title="Browse documents"
+                >
+                  <FileText className="w-3.5 h-3.5 text-primary shrink-0" />
+                  <span>Docs ({documents.length})</span>
+                </Button>
+
                 {isDocListCollapsed && (
                   <Button
                     type="button"
                     variant="outline"
                     size="sm"
                     onClick={() => setIsDocListCollapsed(false)}
-                    className="h-8 gap-1.5 px-2 text-xs font-medium cursor-pointer bg-card hover:bg-accent text-foreground border-border/80 shadow-2xs shrink-0"
+                    className="hidden lg:inline-flex h-8 gap-1.5 px-2 text-xs font-medium cursor-pointer bg-card hover:bg-accent text-foreground border-border/80 shadow-2xs shrink-0"
                     title="Expand Documents panel"
                   >
-                    <PanelLeftOpen className="w-3.5 h-3.5 text-primary shrink-0" />
+                    <PanelLeftOpen className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400 shrink-0" />
                     <span className="hidden sm:inline">Documents</span>
-                    <span className="text-[10px] font-mono px-1.5 py-0.2 rounded-full bg-primary/10 text-primary">
+                    <span className="text-[10px] font-mono px-1.5 py-0.2 rounded-full bg-blue-500/10 dark:bg-blue-500/20 text-blue-600 dark:text-blue-400 font-semibold">
                       {documents.length}
                     </span>
                   </Button>
                 )}
-                <Badge variant="outline" className="bg-primary/10 text-primary text-xs border-primary/25 font-semibold">
+                <Badge variant="outline" className="bg-blue-500/10 dark:bg-blue-500/20 text-blue-700 dark:text-blue-300 text-xs border-blue-500/25 font-semibold">
                   Blank Analysis Mode
                 </Badge>
-                <span className="text-xs text-muted-foreground hidden sm:inline">Ready for New Document Ingestion</span>
+                <span className="text-xs text-muted-foreground hidden sm:inline">Ready for Document Ingestion</span>
               </div>
-              {documents.length > 0 && isDocListCollapsed && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setIsDocListCollapsed(false)}
-                  className="h-8 text-xs text-muted-foreground hover:text-foreground gap-1.5 cursor-pointer"
-                >
-                  <FolderOpen className="w-3.5 h-3.5" />
-                  <span>View Past Documents ({documents.length})</span>
-                </Button>
-              )}
+              <div className="flex items-center gap-1.5 shrink-0">
+                {/* Mobile View Toggle: Upload Dropzone vs AI Chat */}
+                <div className="flex lg:hidden items-center bg-card p-0.5 rounded-xl border border-border/80 shadow-2xs">
+                  <button
+                    type="button"
+                    onClick={() => setMobileActiveTab('document')}
+                    className={cn(
+                      "flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium transition-all cursor-pointer",
+                      mobileActiveTab === 'document'
+                        ? "bg-primary text-primary-foreground font-semibold shadow-2xs"
+                        : "text-muted-foreground hover:text-foreground"
+                    )}
+                  >
+                    <UploadCloud className="w-3.5 h-3.5" />
+                    <span>Upload</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setMobileActiveTab('chat')}
+                    className={cn(
+                      "flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium transition-all cursor-pointer relative",
+                      mobileActiveTab === 'chat'
+                        ? "bg-primary text-primary-foreground font-semibold shadow-2xs"
+                        : "text-muted-foreground hover:text-foreground"
+                    )}
+                  >
+                    <MessageSquare className="w-3.5 h-3.5" />
+                    <span>Chat</span>
+                    {isTyping && <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse ml-0.5" />}
+                  </button>
+                </div>
+              </div>
             </div>
 
             {/* Blank Analysis Workspace Body */}
-            <div className="flex-1 overflow-y-auto p-6 md:p-8 flex flex-col items-center justify-center min-h-0 custom-scrollbar">
-              <div className="max-w-xl w-full flex flex-col items-center text-center">
+            <div className="flex-1 overflow-y-auto p-3 sm:p-5 lg:p-6 flex flex-col items-center min-h-0 custom-scrollbar">
+              <div className="max-w-xl w-full my-auto flex flex-col items-center text-center py-2">
+                {/* Server Sync / Fetch Error Alert */}
+                {fetchError && (
+                  <div className="w-full mb-4 p-3.5 rounded-xl bg-destructive/10 border border-destructive/30 text-destructive flex items-start gap-3 shadow-xs animate-fade-in text-left">
+                    <AlertTriangle className="w-5 h-5 text-destructive shrink-0 mt-0.5" />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between gap-2 flex-wrap">
+                        <h4 className="text-xs sm:text-sm font-semibold text-destructive">
+                          Unable to Retrieve Documents
+                        </h4>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          onClick={() => {
+                            setIsLoadingDocs(true);
+                            fetchDocuments();
+                          }}
+                          className="h-7 text-xs px-2.5 bg-destructive/20 hover:bg-destructive/30 border-destructive/40 text-destructive cursor-pointer gap-1"
+                        >
+                          <RefreshCw className="w-3.5 h-3.5" />
+                          <span>Retry Connection</span>
+                        </Button>
+                      </div>
+                      <p className="text-xs text-destructive/90 mt-1 leading-relaxed">
+                        {fetchError}. You can still upload a new file below or click Retry Connection to re-sync with the database.
+                      </p>
+                    </div>
+                  </div>
+                )}
+
                 {/* Upload Dropzone */}
                 <div
                   onDragOver={(e) => {
@@ -1262,42 +1600,39 @@ export default function ResearchPage() {
                     if (file) await handleFileProcess(file);
                   }}
                   onClick={() => fileInputRef.current?.click()}
-                  className={`w-full p-8 md:p-10 rounded-2xl border-2 border-dashed transition-all duration-200 cursor-pointer flex flex-col items-center justify-center group ${isDraggingFile
+                  className={`w-full p-4 sm:p-6 lg:p-7 rounded-2xl border-2 border-dashed transition-all duration-200 cursor-pointer flex flex-col items-center justify-center group ${isDraggingFile
                     ? 'border-primary bg-primary/10 shadow-lg scale-[1.01]'
                     : 'border-border/80 hover:border-primary/50 bg-card/60 hover:bg-accent/40 shadow-xs'
                     }`}
                 >
-                  <div className={`w-16 h-16 rounded-2xl flex items-center justify-center mb-4 transition-transform group-hover:scale-110 duration-200 ${isDraggingFile ? 'bg-primary text-primary-foreground' : 'bg-primary/10 text-primary border border-primary/20'
-                    }`}>
-                    {isUploading ? (
-                      <Loader2 className="w-8 h-8 animate-spin text-primary" />
-                    ) : (
-                      <UploadCloud className="w-8 h-8" />
-                    )}
-                  </div>
+                  {isUploading ? (
+                    <Loader2 className="w-8 h-8 sm:w-10 sm:h-10 animate-spin text-blue-600 dark:text-blue-400 mb-2.5 sm:mb-3" />
+                  ) : (
+                    <UploadCloud className="w-8 h-8 sm:w-10 sm:h-10 text-blue-600 dark:text-blue-400 mb-2.5 sm:mb-3 group-hover:scale-110 transition-transform duration-200" />
+                  )}
 
-                  <h3 className="text-base md:text-lg font-bold text-foreground mb-1">
+                  <h3 className="text-sm sm:text-base font-bold text-foreground mb-1">
                     {isUploading ? "Uploading & Ingesting Legal Document..." : "Upload Legal Document for Analysis"}
                   </h3>
-                  <p className="text-xs md:text-sm text-muted-foreground max-w-md mb-4 leading-relaxed">
+                  <p className="text-xs sm:text-sm text-muted-foreground max-w-md mb-2.5 sm:mb-3 leading-relaxed">
                     {isUploading
                       ? "Extracting document structure, clauses, and preparing statutory audit pipeline..."
                       : "Drag & drop your file here, or click to browse. Supports PDF, DOCX, TXT, and scanned image pleadings."}
                   </p>
 
-                  <div className="flex flex-wrap items-center justify-center gap-1.5 mb-5">
+                  <div className="flex flex-wrap items-center justify-center gap-1.5 mb-3 sm:mb-4">
                     {['PDF', 'DOCX', 'TXT', 'PNG', 'JPG'].map((fmt) => (
-                      <span key={fmt} className="text-[11px] font-mono px-2 py-0.5 rounded-md bg-muted text-muted-foreground border border-border/60">
+                      <span key={fmt} className="text-[10px] sm:text-[11px] font-mono px-2 py-0.5 rounded-md bg-muted text-muted-foreground border border-border/60">
                         .{fmt.toLowerCase()}
                       </span>
                     ))}
-                    <span className="text-[11px] text-muted-foreground ml-1">Up to 50MB</span>
+                    <span className="text-[10px] sm:text-[11px] text-muted-foreground ml-1">Up to 50MB</span>
                   </div>
 
                   <Button
                     type="button"
                     disabled={isUploading}
-                    className="bg-primary hover:bg-primary/90 text-primary-foreground gap-2 rounded-xl shadow-sm cursor-pointer"
+                    className="h-8.5 sm:h-9 text-xs sm:text-sm bg-[#100771] hover:bg-[#100771]/90 text-white dark:bg-blue-600 dark:hover:bg-blue-500 dark:text-white gap-2 rounded-xl shadow-sm cursor-pointer font-medium"
                     onClick={(e) => {
                       e.stopPropagation();
                       fileInputRef.current?.click();
@@ -1309,33 +1644,27 @@ export default function ResearchPage() {
                 </div>
 
                 {/* 3 Capabilities Highlights */}
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 w-full mt-6 text-left">
-                  <div className="p-3.5 rounded-xl bg-card border border-border shadow-2xs flex flex-col gap-1.5">
-                    <div className="w-7 h-7 rounded-lg bg-accent flex items-center justify-center text-primary shrink-0">
-                      <Scale className="w-4 h-4" />
-                    </div>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 sm:gap-2.5 w-full mt-3 sm:mt-4 text-left">
+                  <div className="p-2 sm:p-2.5 rounded-xl bg-card border border-border/80 hover:border-amber-500/40 hover:bg-amber-500/5 transition-all shadow-2xs flex flex-col gap-1">
+                    <Scale className="w-4.5 h-4.5 text-amber-600 dark:text-amber-400 shrink-0" />
                     <p className="text-xs font-semibold text-foreground">Civil Code Audit</p>
-                    <p className="text-[11px] text-muted-foreground leading-relaxed">
-                      Statutory conformity check under R.A. 386 (Obligations, Contracts, & Property).
+                    <p className="text-[10px] sm:text-[11px] text-muted-foreground leading-relaxed">
+                      Statutory conformity check under R.A. 386 (Obligations, Contracts, &amp; Property).
                     </p>
                   </div>
 
-                  <div className="p-3.5 rounded-xl bg-card border border-border shadow-2xs flex flex-col gap-1.5">
-                    <div className="w-7 h-7 rounded-lg bg-accent flex items-center justify-center text-primary shrink-0">
-                      <Layers className="w-4 h-4" />
-                    </div>
+                  <div className="p-2 sm:p-2.5 rounded-xl bg-card border border-border/80 hover:border-indigo-500/40 hover:bg-indigo-500/5 transition-all shadow-2xs flex flex-col gap-1">
+                    <Layers className="w-4.5 h-4.5 text-indigo-600 dark:text-indigo-400 shrink-0" />
                     <p className="text-xs font-semibold text-foreground">NLI Entailment</p>
-                    <p className="text-[11px] text-muted-foreground leading-relaxed">
+                    <p className="text-[10px] sm:text-[11px] text-muted-foreground leading-relaxed">
                       Measures statutory entailment reliability and flags void or unconscionable terms.
                     </p>
                   </div>
 
-                  <div className="p-3.5 rounded-xl bg-card border border-border shadow-2xs flex flex-col gap-1.5">
-                    <div className="w-7 h-7 rounded-lg bg-accent flex items-center justify-center text-primary shrink-0">
-                      <BookOpen className="w-4 h-4" />
-                    </div>
+                  <div className="p-2 sm:p-2.5 rounded-xl bg-card border border-border/80 hover:border-blue-500/40 hover:bg-blue-500/5 transition-all shadow-2xs flex flex-col gap-1">
+                    <BookOpen className="w-4.5 h-4.5 text-blue-600 dark:text-blue-400 shrink-0" />
                     <p className="text-xs font-semibold text-foreground">Case Law Citations</p>
-                    <p className="text-[11px] text-muted-foreground leading-relaxed">
+                    <p className="text-[10px] sm:text-[11px] text-muted-foreground leading-relaxed">
                       Automated grounding with binding Philippine Supreme Court jurisprudence.
                     </p>
                   </div>
@@ -1343,11 +1672,11 @@ export default function ResearchPage() {
 
                 {/* Past Documents Quick Pick (if any exist) */}
                 {documents.length > 0 && (
-                  <div className="w-full mt-6 pt-5 border-t border-border/80 flex flex-col items-center">
-                    <p className="text-xs text-muted-foreground mb-2.5 font-medium">
+                  <div className="w-full mt-4 sm:mt-5 pt-3 sm:pt-4 border-t border-border/80 flex flex-col items-center">
+                    <p className="text-[11px] sm:text-xs text-muted-foreground mb-2 font-medium">
                       Or continue previous analysis on:
                     </p>
-                    <div className="flex flex-wrap items-center justify-center gap-2 max-w-lg">
+                    <div className="flex flex-wrap items-center justify-center gap-1.5 sm:gap-2 max-w-lg">
                       {documents.slice(0, 4).map((doc) => (
                         <button
                           key={doc.id}
@@ -1359,7 +1688,7 @@ export default function ResearchPage() {
                             }
                             await ensureDocSession(doc.id, doc.filename);
                           }}
-                          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-card hover:bg-accent border border-border text-xs text-foreground hover:text-primary transition-all cursor-pointer shadow-2xs group"
+                          className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-card hover:bg-accent border border-border text-xs text-foreground hover:text-primary transition-all cursor-pointer shadow-2xs group"
                           title={`Open ${doc.filename}`}
                         >
                           <FileText className="w-3.5 h-3.5 text-muted-foreground group-hover:text-primary transition-colors shrink-0" />
@@ -1399,33 +1728,66 @@ export default function ResearchPage() {
         />
       </div>
 
-      {/* Right Pane - AI Assistant (Dynamically resizable, defaults to 480px) */}
+      {/* Right Pane - AI Assistant (Dynamically resizable, full-width on mobile chat tab) */}
       <div
-        style={{ width: `${chatPanelWidth}px` }}
-        className="hidden lg:flex flex-col bg-card/80 backdrop-blur-xl rounded-2xl border border-border shadow-sm overflow-hidden flex-shrink-0 min-h-0"
+        style={{ width: typeof window !== "undefined" && window.innerWidth >= 1024 ? `${chatPanelWidth}px` : "100%" }}
+        className={`${mobileActiveTab === 'chat' ? 'flex flex-1' : 'hidden'
+          } lg:flex flex-col bg-card/80 backdrop-blur-xl rounded-2xl border border-border shadow-sm overflow-hidden flex-shrink-0 min-h-0 w-full lg:w-auto`}
       >
-        {/* Panel Header with Width Indicator / Reset */}
-        <div className="p-4 border-b border-border bg-card/50 flex items-center justify-between shrink-0">
-          <div className="flex items-center gap-2">
-            <ShieldCheck className="w-5 h-5 text-primary" />
-            <h2 className="font-bold text-foreground">Civilex Assistant</h2>
+        {/* Panel Header with Mobile Navigation & Desktop Resizer */}
+        <div className="p-3 sm:p-4 border-b border-border bg-card/50 flex items-center justify-between shrink-0 gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            {/* Mobile: Back to Preview Button */}
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setMobileActiveTab('document')}
+              className="lg:hidden h-8 gap-1 px-2 text-xs font-medium rounded-xl shrink-0"
+              title={activeDocument ? "Return to Document Preview" : "Return to Document Upload"}
+            >
+              <ArrowLeft className="w-3.5 h-3.5" />
+              <span>{activeDocument ? "Doc" : "Upload"}</span>
+            </Button>
+            <ShieldCheck className="w-5 h-5 text-blue-600 dark:text-blue-400 shrink-0" />
+            <h2 className="font-bold text-foreground text-xs sm:text-sm lg:text-base truncate">Civilex Assistant</h2>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+            {/* Mobile View Toggle: Doc vs Chat */}
+            <div className="flex lg:hidden items-center bg-card p-0.5 rounded-xl border border-border/80 shadow-2xs">
+              <button
+                type="button"
+                onClick={() => setMobileActiveTab('document')}
+                className="flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium text-muted-foreground hover:text-foreground cursor-pointer"
+              >
+                {activeDocument ? <FileText className="w-3.5 h-3.5" /> : <UploadCloud className="w-3.5 h-3.5" />}
+                <span className="hidden xs:inline">{activeDocument ? "Doc" : "Upload"}</span>
+              </button>
+              <button
+                type="button"
+                className="flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-semibold bg-primary text-primary-foreground shadow-2xs cursor-pointer"
+              >
+                <MessageSquare className="w-3.5 h-3.5" />
+                <span>Chat</span>
+              </button>
+            </div>
+
             {retainedCitations.length > 0 && (
-              <span className="text-[10px] font-mono font-medium px-2 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20">
+              <span className="text-[10px] font-mono font-medium px-2 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20 shrink-0">
                 {retainedCitations.length} Sources
               </span>
             )}
             <button
               type="button"
               onClick={() => {
-                setChatPanelWidth(480);
+                const targetWidth = typeof window !== "undefined" && window.innerWidth < 1280 ? 380 : 460;
+                setChatPanelWidth(targetWidth);
                 try {
-                  localStorage.setItem("civilex_chat_panel_width", "480");
+                  localStorage.setItem("civilex_chat_panel_width", targetWidth.toString());
                 } catch (e) { }
               }}
-              title="Reset chat panel width to 480px"
-              className="text-[10px] font-mono text-muted-foreground hover:text-foreground px-1.5 py-0.5 rounded bg-muted/60 hover:bg-muted border border-border/50 cursor-pointer transition-colors"
+              title="Reset chat panel width to standard proportion"
+              className="hidden lg:inline-block text-[10px] font-mono text-muted-foreground hover:text-foreground px-1.5 py-0.5 rounded bg-muted/60 hover:bg-muted border border-border/50 cursor-pointer transition-colors"
             >
               {chatPanelWidth}px
             </button>
@@ -1455,27 +1817,13 @@ export default function ResearchPage() {
             >
               <div className="flex items-start justify-between gap-2">
                 <div className="flex items-center gap-2.5 min-w-0 flex-1">
-                  <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 border transition-transform group-hover:scale-105 ${
-                    isNliEvaluating
-                      ? "bg-primary/10 border-primary/30 text-primary"
-                      : legalAnalytics?.is_out_of_domain || legalAnalytics?.nli_score == null
-                        ? "bg-muted/80 border-border text-muted-foreground"
-                        : legalAnalytics.is_document_legal === false || (legalAnalytics.nli_score !== null && legalAnalytics.nli_score < 40)
-                          ? "bg-rose-500/10 border-rose-500/20 text-rose-600 dark:text-rose-400"
-                          : legalAnalytics.nli_score >= 85
-                            ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-600 dark:text-emerald-400"
-                            : legalAnalytics.nli_score >= 70
-                              ? "bg-blue-500/10 border-blue-500/20 text-blue-600 dark:text-blue-400"
-                              : "bg-amber-500/10 border-amber-500/20 text-amber-600 dark:text-amber-400"
-                  }`}>
-                    {isNliEvaluating ? (
-                      <Loader2 className="w-4 h-4 animate-spin text-primary" />
-                    ) : legalAnalytics?.is_out_of_domain || legalAnalytics?.nli_score == null ? (
-                      <Compass className="w-4 h-4 text-muted-foreground" />
-                    ) : (
-                      <ShieldCheck className="w-4 h-4" />
-                    )}
-                  </div>
+                  {isNliEvaluating ? (
+                    <Loader2 className="w-5 h-5 animate-spin text-blue-600 dark:text-blue-400 shrink-0" />
+                  ) : legalAnalytics?.is_out_of_domain || legalAnalytics?.nli_score == null ? (
+                    <Compass className="w-5 h-5 text-muted-foreground shrink-0" />
+                  ) : (
+                    <ShieldCheck className="w-5 h-5 text-blue-600 dark:text-blue-400 shrink-0" />
+                  )}
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-1.5 flex-wrap">
                       <span className="text-xs font-semibold text-foreground group-hover:text-primary transition-colors">
@@ -1511,17 +1859,16 @@ export default function ResearchPage() {
                     </span>
                   ) : (
                     <span
-                      className={`text-xs font-bold px-2 py-0.5 rounded-md border tabular-nums whitespace-nowrap ${
-                        legalAnalytics?.is_out_of_domain || legalAnalytics?.nli_score == null
-                          ? "text-muted-foreground bg-muted/60 border-border"
-                          : legalAnalytics.is_document_legal === false || (legalAnalytics.nli_score !== null && legalAnalytics.nli_score < 40)
-                            ? "text-rose-700 dark:text-rose-400 bg-rose-50 dark:bg-rose-950/50 border-rose-200 dark:border-rose-800/60"
-                            : legalAnalytics.nli_score >= 85
-                              ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
-                              : legalAnalytics.nli_score >= 70
-                                ? "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60"
-                                : "text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/50 border-amber-200 dark:border-amber-800/60"
-                      }`}
+                      className={`text-xs font-bold px-2 py-0.5 rounded-md border tabular-nums whitespace-nowrap ${legalAnalytics?.is_out_of_domain || legalAnalytics?.nli_score == null
+                        ? "text-muted-foreground bg-muted/60 border-border"
+                        : legalAnalytics.is_document_legal === false || (legalAnalytics.nli_score !== null && legalAnalytics.nli_score < 40)
+                          ? "text-rose-700 dark:text-rose-400 bg-rose-50 dark:bg-rose-950/50 border-rose-200 dark:border-rose-800/60"
+                          : legalAnalytics.nli_score >= 85
+                            ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
+                            : legalAnalytics.nli_score >= 70
+                              ? "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60"
+                              : "text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/50 border-amber-200 dark:border-amber-800/60"
+                        }`}
                     >
                       {legalAnalytics?.is_out_of_domain || legalAnalytics?.is_document_legal === false || legalAnalytics?.nli_score == null
                         ? "N/A"
@@ -1538,25 +1885,23 @@ export default function ResearchPage() {
                   <div className="h-full rounded-full bg-gradient-to-r from-primary/30 via-primary to-primary/30 animate-pulse w-full" />
                 ) : (
                   <div
-                    className={`h-full rounded-full transition-all duration-700 ease-out ${
-                      legalAnalytics?.is_out_of_domain || legalAnalytics?.nli_score == null
-                        ? "bg-muted-foreground/30"
-                        : legalAnalytics.is_document_legal === false || (legalAnalytics.nli_score !== null && legalAnalytics.nli_score < 40)
-                          ? "bg-rose-500"
-                          : legalAnalytics.nli_score >= 85
-                            ? "bg-emerald-500"
-                            : legalAnalytics.nli_score >= 70
-                              ? "bg-blue-500"
-                              : "bg-amber-500"
-                    }`}
+                    className={`h-full rounded-full transition-all duration-700 ease-out ${legalAnalytics?.is_out_of_domain || legalAnalytics?.nli_score == null
+                      ? "bg-muted-foreground/30"
+                      : legalAnalytics.is_document_legal === false || (legalAnalytics.nli_score !== null && legalAnalytics.nli_score < 40)
+                        ? "bg-rose-500"
+                        : legalAnalytics.nli_score >= 85
+                          ? "bg-emerald-500"
+                          : legalAnalytics.nli_score >= 70
+                            ? "bg-blue-500"
+                            : "bg-amber-500"
+                      }`}
                     style={{
-                      width: `${
-                        legalAnalytics?.is_out_of_domain || legalAnalytics?.nli_score == null
-                          ? 0
-                          : legalAnalytics.is_document_legal === false
-                            ? 12
-                            : Math.min(100, Math.max(0, legalAnalytics.nli_score))
-                      }%`,
+                      width: `${legalAnalytics?.is_out_of_domain || legalAnalytics?.nli_score == null
+                        ? 0
+                        : legalAnalytics.is_document_legal === false
+                          ? 12
+                          : Math.min(100, Math.max(0, legalAnalytics.nli_score))
+                        }%`,
                     }}
                   />
                 )}
@@ -1566,19 +1911,18 @@ export default function ResearchPage() {
               <div className="flex items-center justify-between mt-2 text-[10px]">
                 <span className="flex items-center gap-1.5 text-muted-foreground">
                   <span
-                    className={`w-1.5 h-1.5 rounded-full ${
-                      isNliEvaluating
-                        ? "bg-primary animate-ping"
-                        : legalAnalytics?.is_out_of_domain || legalAnalytics?.nli_score == null
-                          ? "bg-muted-foreground/50"
-                          : legalAnalytics.is_document_legal === false || (legalAnalytics.nli_score !== null && legalAnalytics.nli_score < 40)
-                            ? "bg-rose-500"
-                            : legalAnalytics.nli_score >= 85
-                              ? "bg-emerald-500 animate-pulse"
-                              : legalAnalytics.nli_score >= 70
-                                ? "bg-blue-500"
-                                : "bg-amber-500"
-                    }`}
+                    className={`w-1.5 h-1.5 rounded-full ${isNliEvaluating
+                      ? "bg-primary animate-ping"
+                      : legalAnalytics?.is_out_of_domain || legalAnalytics?.nli_score == null
+                        ? "bg-muted-foreground/50"
+                        : legalAnalytics.is_document_legal === false || (legalAnalytics.nli_score !== null && legalAnalytics.nli_score < 40)
+                          ? "bg-rose-500"
+                          : legalAnalytics.nli_score >= 85
+                            ? "bg-emerald-500"
+                            : legalAnalytics.nli_score >= 70
+                              ? "bg-blue-500"
+                              : "bg-amber-500"
+                      }`}
                   />
                   {isNliEvaluating
                     ? "Auditing response claims against Civil Code..."
@@ -1658,9 +2002,8 @@ export default function ResearchPage() {
                             return (
                               <div
                                 key={idx}
-                                className={`p-3 bg-card rounded-xl border shadow-2xs hover:shadow-sm cursor-pointer transition-all duration-200 group flex flex-col justify-between ${
-                                  isOutOfRank ? "border-border/60 opacity-90 hover:opacity-100" : "border-border/80 hover:border-primary/40"
-                                }`}
+                                className={`p-3 bg-card rounded-xl border shadow-2xs hover:shadow-sm cursor-pointer transition-all duration-200 group flex flex-col justify-between ${isOutOfRank ? "border-border/60 opacity-90 hover:opacity-100" : "border-border/80 hover:border-primary/40"
+                                  }`}
                                 onClick={handleOpen}
                               >
                                 <div>
@@ -1746,7 +2089,7 @@ export default function ResearchPage() {
                                   )}
                                   <span className="font-bold text-primary text-[11px] uppercase truncate">
                                     {cit.parent_type === "civil_code" || cit.parent_type === "article"
-                                      ? `Civil Code — ${cit.parent_id}`
+                                      ? cit.parent_id
                                       : `Document Excerpt ${cit.chunk_id ? `(#${parseInt(cit.chunk_id.split('_c').pop() || '0', 10) + 1})` : ''}`}
                                   </span>
                                   {isOutOfRank ? (
@@ -1820,22 +2163,20 @@ export default function ResearchPage() {
                   )}
 
                   <div
-                    className={`flex gap-2.5 sm:gap-3 w-full ${
-                      isUser ? 'flex-row-reverse' : ''
-                    } ${
-                      idx === 0
+                    className={`flex gap-2.5 sm:gap-3 w-full ${isUser ? 'flex-row-reverse' : ''
+                      } ${idx === 0
                         ? 'mt-0'
                         : isFirstUserTurn
-                        ? 'mt-4 sm:mt-5'
-                        : msg.role === 'assistant'
-                        ? 'mt-2 sm:mt-2.5'
-                        : 'mt-0'
-                    }`}
+                          ? 'mt-4 sm:mt-5'
+                          : msg.role === 'assistant'
+                            ? 'mt-2 sm:mt-2.5'
+                            : 'mt-0'
+                      }`}
                   >
                     <Avatar className="w-7 h-7 mt-0.5 border border-border/80 shrink-0 rounded-full sm:rounded-lg overflow-hidden shadow-xs">
                       {msg.role === 'assistant' ? (
-                        <div className="bg-primary/10 dark:bg-primary/20 w-full h-full flex items-center justify-center">
-                          <Scale className="w-3.5 h-3.5 text-primary" />
+                        <div className="bg-blue-500/10 dark:bg-blue-500/20 text-blue-600 dark:text-blue-400 w-full h-full flex items-center justify-center">
+                          <Scale className="w-3.5 h-3.5" />
                         </div>
                       ) : (
                         <AvatarFallback className="bg-muted flex items-center justify-center">
@@ -1845,11 +2186,10 @@ export default function ResearchPage() {
                     </Avatar>
 
                     <div
-                      className={`flex flex-col min-w-0 ${
-                        isUser
-                          ? 'items-end max-w-[88%] sm:max-w-[80%]'
-                          : 'items-start w-full max-w-[96%] sm:max-w-[92%]'
-                      }`}
+                      className={`flex flex-col min-w-0 ${isUser
+                        ? 'items-end max-w-[88%] sm:max-w-[80%]'
+                        : 'items-start w-full max-w-[96%] sm:max-w-[92%]'
+                        }`}
                     >
                       {/* Stepper for assistant */}
                       {msg.role === 'assistant' && effectiveRagStatus && (
@@ -1860,267 +2200,266 @@ export default function ResearchPage() {
                       )}
 
                       <div
-                        className={`break-words ${
-                          isUser
-                            ? 'w-fit inline-block px-3.5 py-2 sm:px-4 sm:py-2.5 rounded-2xl rounded-tr-xs text-sm leading-relaxed bg-[#100771] text-white shadow-sm shadow-[#100771]/15 dark:bg-blue-600 dark:text-white dark:border-0 dark:shadow-md dark:shadow-blue-900/30 font-medium'
-                            : 'w-full px-3.5 py-3 text-sm rounded-2xl rounded-tl-xs bg-card dark:bg-[#131317] border border-border/80 dark:border-white/[0.08] text-foreground dark:text-zinc-100 shadow-xs'
-                        }`}
+                        className={`break-words ${isUser
+                          ? 'w-fit inline-block px-3 py-1.5 sm:px-3.5 sm:py-2 rounded-2xl rounded-tr-xs text-xs sm:text-sm leading-relaxed bg-[#100771] text-white shadow-sm shadow-[#100771]/15 dark:bg-blue-600 dark:text-white dark:border-0 dark:shadow-md dark:shadow-blue-900/30 font-medium'
+                          : 'w-full px-3 py-2 sm:px-3.5 sm:py-2.5 text-xs sm:text-sm rounded-2xl rounded-tl-xs bg-card dark:bg-[#131317] border border-border/80 dark:border-white/[0.08] text-foreground dark:text-zinc-100 shadow-xs'
+                          }`}
                       >
                         {msg.role === 'assistant' ? (
                           msg.id === 1 && (msg.content.includes("CIVIL-LEX") || msg.content.includes("Hello!") || msg.content.includes("Welcome back")) ? (
                             <StartingTypewriterMessage content={msg.content} />
                           ) : msg.content ? (
-                          <AssistantMarkdown content={msg.content} />
-                        ) : isTyping && isLatestAssistant ? (
-                          <div className="flex items-center gap-2 text-xs text-muted-foreground py-1">
-                            <Loader2 className="w-3.5 h-3.5 animate-spin text-primary" />
-                            <span>Formulating legal analysis...</span>
-                          </div>
-                        ) : null
-                      ) : (
-                        msg.content
-                      )}
-                    </div>
-                    {msg.role === 'assistant' && msg.citations && msg.citations.length > 0 && (
-                      <div className="mt-2 w-full">
-                        <Accordion className="w-full">
-                          <AccordionItem value="citations" className="border-none">
-                            <AccordionTrigger className="py-2 text-xs text-primary hover:no-underline hover:opacity-80 rounded-md focus-visible:ring-2 focus-visible:ring-primary focus-visible:outline-none flex items-center justify-start gap-2 bg-accent/20 px-3 border border-border">
-                              <BookOpen className="w-3 h-3" />
-                              View Sources ({msg.citations.length})
-                            </AccordionTrigger>
-                            <AccordionContent className="text-xs text-muted-foreground bg-accent/10 p-3 rounded-b-lg border border-t-0 border-border flex flex-col gap-2 max-h-60 overflow-y-auto custom-scrollbar">
-                              {[...msg.citations]
-                                .sort((a: any, b: any) => {
-                                  const aOut = a.is_in_context === false || a.rank_status === "out_of_rank" ? 1 : 0;
-                                  const bOut = b.is_in_context === false || b.rank_status === "out_of_rank" ? 1 : 0;
-                                  if (aOut !== bOut) return aOut - bOut;
-                                  const rankDiff = (a?.rank || 999) - (b?.rank || 999);
-                                  if (rankDiff !== 0) return rankDiff;
-                                  return (Number(b?.suitability_percent) || 0) - (Number(a?.suitability_percent) || 0);
-                                })
-                                .map((cit: any, cIdx: number) => {
-                                  const isCase =
-                                    cit.parent_type === "case" ||
-                                    cit.parent_type === "jurisprudence" ||
-                                    Boolean(cit.metadata?.gr_number) ||
-                                    String(cit.parent_id || "").startsWith("GR_");
-                                  const isOutOfRank = cit.is_in_context === false;
-                                  const rank = cit.rank ?? cIdx + 1;
+                            <AssistantMarkdown content={msg.content} />
+                          ) : isTyping && isLatestAssistant ? (
+                            <div className="flex items-center gap-2 text-xs text-muted-foreground py-1">
+                              <Loader2 className="w-3.5 h-3.5 animate-spin text-primary" />
+                              <span>Formulating legal analysis...</span>
+                            </div>
+                          ) : null
+                        ) : (
+                          msg.content
+                        )}
+                      </div>
+                      {msg.role === 'assistant' && msg.citations && msg.citations.length > 0 && (
+                        <div className="mt-2 w-full">
+                          <Accordion className="w-full">
+                            <AccordionItem value="citations" className="border-none">
+                              <AccordionTrigger className="py-2 text-xs text-primary hover:no-underline hover:opacity-80 rounded-md focus-visible:ring-2 focus-visible:ring-primary focus-visible:outline-none flex items-center justify-start gap-2 bg-accent/20 px-3 border border-border">
+                                <BookOpen className="w-3 h-3" />
+                                View Sources ({msg.citations.length})
+                              </AccordionTrigger>
+                              <AccordionContent className="text-xs text-muted-foreground bg-accent/10 p-3 rounded-b-lg border border-t-0 border-border flex flex-col gap-2 max-h-60 overflow-y-auto custom-scrollbar">
+                                {[...msg.citations]
+                                  .sort((a: any, b: any) => {
+                                    const aOut = a.is_in_context === false || a.rank_status === "out_of_rank" ? 1 : 0;
+                                    const bOut = b.is_in_context === false || b.rank_status === "out_of_rank" ? 1 : 0;
+                                    if (aOut !== bOut) return aOut - bOut;
+                                    const rankDiff = (a?.rank || 999) - (b?.rank || 999);
+                                    if (rankDiff !== 0) return rankDiff;
+                                    return (Number(b?.suitability_percent) || 0) - (Number(a?.suitability_percent) || 0);
+                                  })
+                                  .map((cit: any, cIdx: number) => {
+                                    const isCase =
+                                      cit.parent_type === "case" ||
+                                      cit.parent_type === "jurisprudence" ||
+                                      Boolean(cit.metadata?.gr_number) ||
+                                      String(cit.parent_id || "").startsWith("GR_");
+                                    const isOutOfRank = cit.is_in_context === false;
+                                    const rank = cit.rank ?? cIdx + 1;
 
-                                  if (isCase) {
-                                    const year = cit.metadata?.decision_date ? cit.metadata.decision_date.split(" ").pop() : null;
-                                    const title = cit.metadata?.title || cit.metadata?.gr_number || cit.parent_id;
-                                    const gr = cit.metadata?.gr_number || (String(cit.parent_id || "").startsWith("GR_") ? cit.parent_id : null);
-                                    const summary = cleanCaseSummary(cit.metadata?.content_summary || cit.content);
+                                    if (isCase) {
+                                      const year = cit.metadata?.decision_date ? cit.metadata.decision_date.split(" ").pop() : null;
+                                      const title = cit.metadata?.title || cit.metadata?.gr_number || cit.parent_id;
+                                      const gr = cit.metadata?.gr_number || (String(cit.parent_id || "").startsWith("GR_") ? cit.parent_id : null);
+                                      const summary = cleanCaseSummary(cit.metadata?.content_summary || cit.content);
 
-                                    const handleOpen = () => {
-                                      setSelectedCaseModal({
-                                        caseData: {
-                                          case_uid: cit.metadata?.case_uid || cit.parent_id,
-                                          title: cit.metadata?.title || cit.parent_id,
-                                          gr_number: cit.metadata?.gr_number || cit.parent_id,
-                                          decision_date: cit.metadata?.decision_date || "",
-                                          content_summary: cit.metadata?.content_summary || summary,
-                                          source_url: cit.metadata?.source_url || "",
-                                          full_text: cit.metadata?.full_text,
-                                        },
-                                        suitabilityPercent: cit.suitability_percent,
-                                      });
-                                    };
+                                      const handleOpen = () => {
+                                        setSelectedCaseModal({
+                                          caseData: {
+                                            case_uid: cit.metadata?.case_uid || cit.parent_id,
+                                            title: cit.metadata?.title || cit.parent_id,
+                                            gr_number: cit.metadata?.gr_number || cit.parent_id,
+                                            decision_date: cit.metadata?.decision_date || "",
+                                            content_summary: cit.metadata?.content_summary || summary,
+                                            source_url: cit.metadata?.source_url || "",
+                                            full_text: cit.metadata?.full_text,
+                                          },
+                                          suitabilityPercent: cit.suitability_percent,
+                                        });
+                                      };
 
-                                    return (
-                                      <div
-                                        key={cIdx}
-                                        className={`p-3 bg-card rounded-xl border shadow-2xs hover:shadow-sm cursor-pointer transition-all duration-200 group flex flex-col justify-between ${
-                                          isOutOfRank ? "border-border/60 opacity-90 hover:opacity-100" : "border-border/80 hover:border-primary/40"
-                                        }`}
-                                        onClick={handleOpen}
-                                      >
-                                        <div>
-                                          <div className="flex items-center justify-between mb-1.5 gap-1.5">
-                                            <div className="flex items-center gap-1.5 min-w-0 flex-wrap">
-                                              {rank && (
-                                                <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-muted/80 text-foreground border border-border/70 shrink-0">
-                                                  #{rank}
+                                      return (
+                                        <div
+                                          key={cIdx}
+                                          className={`p-3 bg-card rounded-xl border shadow-2xs hover:shadow-sm cursor-pointer transition-all duration-200 group flex flex-col justify-between ${isOutOfRank ? "border-border/60 opacity-90 hover:opacity-100" : "border-border/80 hover:border-primary/40"
+                                            }`}
+                                          onClick={handleOpen}
+                                        >
+                                          <div>
+                                            <div className="flex items-center justify-between mb-1.5 gap-1.5">
+                                              <div className="flex items-center gap-1.5 min-w-0 flex-wrap">
+                                                {rank && (
+                                                  <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-muted/80 text-foreground border border-border/70 shrink-0">
+                                                    #{rank}
+                                                  </span>
+                                                )}
+                                                <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20 shrink-0">
+                                                  <Scale className="w-3 h-3" />
+                                                  Jurisprudence
                                                 </span>
-                                              )}
-                                              <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20 shrink-0">
-                                                <Scale className="w-3 h-3" />
-                                                Jurisprudence
-                                              </span>
-                                              {isOutOfRank ? (
-                                                <span className="inline-flex items-center gap-1 text-[10px] font-mono font-medium px-1.5 py-0.5 rounded bg-muted text-muted-foreground border border-border/80 shrink-0">
-                                                  Out of Rank
+                                                {isOutOfRank ? (
+                                                  <span className="inline-flex items-center gap-1 text-[10px] font-mono font-medium px-1.5 py-0.5 rounded bg-muted text-muted-foreground border border-border/80 shrink-0">
+                                                    Out of Rank
+                                                  </span>
+                                                ) : (
+                                                  <span className="inline-flex items-center gap-1 text-[10px] font-mono font-medium px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 shrink-0">
+                                                    Active
+                                                  </span>
+                                                )}
+                                                {year && (
+                                                  <Badge variant="outline" className="text-[10px] whitespace-nowrap bg-background font-mono">
+                                                    {year}
+                                                  </Badge>
+                                                )}
+                                              </div>
+
+                                              {cit.suitability_percent !== undefined && (
+                                                <span
+                                                  className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-md border tabular-nums shrink-0 ${cit.suitability_percent >= 85
+                                                    ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
+                                                    : cit.suitability_percent >= 70
+                                                      ? "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60"
+                                                      : "text-muted-foreground bg-muted border-border"
+                                                    }`}
+                                                >
+                                                  {cit.suitability_percent}%
                                                 </span>
-                                              ) : (
-                                                <span className="inline-flex items-center gap-1 text-[10px] font-mono font-medium px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 shrink-0">
-                                                  Active
-                                                </span>
-                                              )}
-                                              {year && (
-                                                <Badge variant="outline" className="text-[10px] whitespace-nowrap bg-background font-mono">
-                                                  {year}
-                                                </Badge>
                                               )}
                                             </div>
 
-                                            {cit.suitability_percent !== undefined && (
-                                              <span
-                                                className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-md border tabular-nums shrink-0 ${cit.suitability_percent >= 85
-                                                  ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
-                                                  : cit.suitability_percent >= 70
-                                                    ? "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60"
-                                                    : "text-muted-foreground bg-muted border-border"
-                                                  }`}
-                                              >
-                                                {cit.suitability_percent}%
+                                            <div className="mb-1.5">
+                                              <h4 className="font-semibold text-xs text-foreground group-hover:text-primary transition-colors leading-snug line-clamp-2">
+                                                {title}
+                                              </h4>
+                                              {gr && (
+                                                <span className="text-[10px] font-mono text-muted-foreground block mt-0.5">
+                                                  {gr}
+                                                </span>
+                                              )}
+                                            </div>
+
+                                            <p className="text-xs text-muted-foreground leading-relaxed line-clamp-2 mb-2">
+                                              {summary}
+                                            </p>
+                                          </div>
+
+                                          <div className="flex items-center justify-between pt-1.5 border-t border-border/50 text-[11px] font-semibold text-primary mt-auto">
+                                            <span className="flex items-center group-hover:translate-x-1 transition-transform">
+                                              Read full case <ArrowRight className="w-3 h-3 ml-1" />
+                                            </span>
+                                            {cit.metadata?.source_url && (
+                                              <span className="text-[10px] font-normal text-muted-foreground">
+                                                LawPhil
                                               </span>
                                             )}
                                           </div>
+                                        </div>
+                                      );
+                                    }
 
-                                          <div className="mb-1.5">
-                                            <h4 className="font-semibold text-xs text-foreground group-hover:text-primary transition-colors leading-snug line-clamp-2">
-                                              {title}
-                                            </h4>
-                                            {gr && (
-                                              <span className="text-[10px] font-mono text-muted-foreground block mt-0.5">
-                                                {gr}
+                                    return (
+                                      <div key={cIdx} className={`flex flex-col gap-1 p-2.5 bg-card rounded-lg border shadow-2xs ${isOutOfRank ? "border-border/60 opacity-90 hover:opacity-100" : "border-border/60"}`}>
+                                        <div className="flex items-center justify-between gap-2">
+                                          <div className="min-w-0 flex items-center gap-1.5 flex-wrap">
+                                            {rank && (
+                                              <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-muted/80 text-foreground border border-border/70 shrink-0">
+                                                #{rank}
+                                              </span>
+                                            )}
+                                            <span className="font-bold text-primary text-[11px] uppercase truncate">
+                                              {cit.parent_type === "civil_code" ? cit.parent_id : `${cit.parent_type?.toUpperCase?.() ?? "SOURCE"} : ${cit.parent_id}`}
+                                            </span>
+                                            {isOutOfRank ? (
+                                              <span className="inline-flex items-center gap-1 text-[10px] font-mono font-medium px-1.5 py-0.5 rounded bg-muted text-muted-foreground border border-border/80 shrink-0">
+                                                Out of Rank
+                                              </span>
+                                            ) : (
+                                              <span className="inline-flex items-center gap-1 text-[10px] font-mono font-medium px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 shrink-0">
+                                                Active Grounding
                                               </span>
                                             )}
                                           </div>
-
-                                          <p className="text-xs text-muted-foreground leading-relaxed line-clamp-2 mb-2">
-                                            {summary}
-                                          </p>
-                                        </div>
-
-                                        <div className="flex items-center justify-between pt-1.5 border-t border-border/50 text-[11px] font-semibold text-primary mt-auto">
-                                          <span className="flex items-center group-hover:translate-x-1 transition-transform">
-                                            Read full case <ArrowRight className="w-3 h-3 ml-1" />
-                                          </span>
-                                          {cit.metadata?.source_url && (
-                                            <span className="text-[10px] font-normal text-muted-foreground">
-                                              LawPhil
+                                          {cit.suitability_percent !== undefined && (
+                                            <span
+                                              className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-md border tabular-nums shrink-0 ${cit.suitability_percent >= 85
+                                                ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
+                                                : cit.suitability_percent >= 70
+                                                  ? "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60"
+                                                  : "text-muted-foreground bg-muted border-border"
+                                                }`}
+                                            >
+                                              {cit.suitability_percent}%
                                             </span>
                                           )}
                                         </div>
-                                      </div>
-                                    );
-                                  }
-
-                                  return (
-                                    <div key={cIdx} className={`flex flex-col gap-1 p-2.5 bg-card rounded-lg border shadow-2xs ${isOutOfRank ? "border-border/60 opacity-90 hover:opacity-100" : "border-border/60"}`}>
-                                      <div className="flex items-center justify-between gap-2">
-                                        <div className="min-w-0 flex items-center gap-1.5 flex-wrap">
-                                          {rank && (
-                                            <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-muted/80 text-foreground border border-border/70 shrink-0">
-                                              #{rank}
-                                            </span>
-                                          )}
-                                          <span className="font-bold text-primary text-[11px] uppercase truncate">
-                                            {cit.parent_type === "civil_code" ? "Civil Code Article" : cit.parent_type?.toUpperCase?.() ?? "SOURCE"} — {cit.parent_id}
-                                          </span>
-                                          {isOutOfRank ? (
-                                            <span className="inline-flex items-center gap-1 text-[10px] font-mono font-medium px-1.5 py-0.5 rounded bg-muted text-muted-foreground border border-border/80 shrink-0">
-                                              Out of Rank
-                                            </span>
-                                          ) : (
-                                            <span className="inline-flex items-center gap-1 text-[10px] font-mono font-medium px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 shrink-0">
-                                              Active Grounding
-                                            </span>
-                                          )}
-                                        </div>
-                                        {cit.suitability_percent !== undefined && (
-                                          <span
-                                            className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-md border tabular-nums shrink-0 ${cit.suitability_percent >= 85
-                                              ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
-                                              : cit.suitability_percent >= 70
-                                                ? "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60"
-                                                : "text-muted-foreground bg-muted border-border"
-                                              }`}
-                                          >
-                                            {cit.suitability_percent}%
-                                          </span>
+                                        {cit.metadata?.title && (
+                                          <span className="font-medium text-foreground text-xs">{cit.metadata.title}</span>
+                                        )}
+                                        <span className="text-muted-foreground text-xs line-clamp-2">{cit.content}</span>
+                                        {cit.metadata?.source_url && (
+                                          <a href={cit.metadata.source_url} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline text-[11px] mt-1 inline-block">
+                                            View full document
+                                          </a>
                                         )}
                                       </div>
-                                      {cit.metadata?.title && (
-                                        <span className="font-medium text-foreground text-xs">{cit.metadata.title}</span>
-                                      )}
-                                      <span className="text-muted-foreground text-xs line-clamp-2">{cit.content}</span>
-                                      {cit.metadata?.source_url && (
-                                        <a href={cit.metadata.source_url} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline text-[11px] mt-1 inline-block">
-                                          View full document
-                                        </a>
-                                      )}
-                                    </div>
-                                  );
-                                })}
-                            </AccordionContent>
-                          </AccordionItem>
-                        </Accordion>
-                      </div>
-                    )}
+                                    );
+                                  })}
+                              </AccordionContent>
+                            </AccordionItem>
+                          </Accordion>
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </div>
-              </div>
-            );
-          })}
+              );
+            })}
           </div>
         </div>
 
-        {/* Dynamic Document Analysis Prompt Suggestions (Horizontal, Non-Scrollable) */}
+        {/* Dynamic Document Analysis Prompt Suggestions - Responsive 2-Prompt Grid without Scroll */}
         {messages.length === 1 && (
-          <div className="px-3 py-2 border-t border-border/40 bg-card/40 space-y-1.5 animate-fade-in shrink-0">
-            <div className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
-              <Sparkles className="w-3 h-3 text-primary" />
-              <span>Suggested Document Inquiries:</span>
+          <div className="px-2.5 sm:px-3 py-1.5 border-t border-border/40 bg-card/40 space-y-1 animate-fade-in shrink-0">
+            <div className="flex items-center justify-between text-[10px] sm:text-[11px] font-medium text-muted-foreground px-0.5">
+              <div className="flex items-center gap-1.5">
+                <Sparkles className="w-3 h-3 text-blue-600 dark:text-blue-400" />
+                <span>Suggested Document Inquiries:</span>
+              </div>
             </div>
 
-            {/* Non-scrollable horizontal row: 2 items side-by-side filling panel width without scrolling */}
-            <div className="flex flex-row items-center gap-1.5 w-full">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 sm:gap-2 w-full">
               {docStarters.slice(0, 2).map((item) => (
                 <button
                   key={item.id}
                   type="button"
-                  disabled={isDocProcessing}
+                  disabled={isDocProcessing || isDocFailed}
                   onClick={() => handleSend(item.prompt)}
-                  className="flex-1 min-w-0 group flex items-center justify-between gap-1.5 px-2.5 py-1.5 rounded-xl text-xs bg-accent/40 dark:bg-accent/20 hover:bg-primary hover:text-primary-foreground text-foreground border border-border/70 hover:border-primary/40 transition-all shadow-2xs hover:shadow-xs active:scale-98 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                  className="group flex items-center justify-between gap-2 px-3 py-1.5 sm:py-2 rounded-xl text-xs bg-accent/40 dark:bg-accent/20 hover:bg-[#100771] dark:hover:bg-blue-600 hover:text-white text-foreground border border-border/70 hover:border-transparent dark:hover:border-transparent transition-all shadow-2xs hover:shadow-xs active:scale-98 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed w-full text-left"
                   title={item.prompt}
                 >
-                  <span className="font-semibold text-[10px] uppercase tracking-wider text-primary group-hover:text-primary-foreground/90 bg-primary/10 dark:bg-primary/20 group-hover:bg-white/20 px-1.5 py-0.5 rounded shrink-0">
-                    {item.label}
-                  </span>
-                  <span className="truncate text-xs text-left min-w-0 flex-1">
+                  <span className="truncate text-xs min-w-0 font-normal group-hover:text-white flex-1">
                     {item.prompt}
                   </span>
-                  <ChevronRight className="w-3 h-3 opacity-50 group-hover:opacity-100 group-hover:translate-x-0.5 transition-all shrink-0" />
+                  <ChevronRight className="w-3.5 h-3.5 opacity-50 group-hover:opacity-100 group-hover:text-white group-hover:translate-x-0.5 transition-all shrink-0" />
                 </button>
               ))}
             </div>
           </div>
         )}
-        {/* Suggested Next Inquiries (Dynamic Follow-Up Prompts with Smooth Transition Animation) */}
+
+        {/* Suggested Next Inquiries (Dynamic Follow-Up Prompts - Responsive 2-Prompt Grid without Scroll) */}
         {!isTyping && followUpPrompts.length > 0 && messages.length > 1 && (
-          <div className="px-3 py-2 border-t border-border/40 bg-card/40 space-y-1.5 animate-fade-in-up transition-all duration-300 ease-out shrink-0">
-            <div className="flex items-center gap-1.5 text-[11px] font-semibold text-primary px-0.5">
-              <HelpCircle className="w-3.5 h-3.5 text-primary" />
-              <span>Suggested Next Inquiries:</span>
+          <div className="px-2.5 sm:px-3 py-1.5 border-t border-border/40 bg-card/40 space-y-1 animate-fade-in-up transition-all duration-300 ease-out shrink-0">
+            <div className="flex items-center justify-between text-[10px] sm:text-[11px] font-semibold text-blue-600 dark:text-blue-400 px-0.5">
+              <div className="flex items-center gap-1.5">
+                <HelpCircle className="w-3 h-3 text-blue-600 dark:text-blue-400" />
+                <span>Suggested Next Inquiries:</span>
+              </div>
             </div>
-            <div className="flex flex-row items-center gap-1.5 w-full">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 sm:gap-2 w-full">
               {followUpPrompts.slice(0, 2).map((prompt, i) => (
                 <button
                   key={i}
                   type="button"
-                  disabled={isDocProcessing}
+                  disabled={isDocProcessing || isDocFailed}
                   onClick={() => handleSend(prompt)}
-                  className="flex-1 min-w-0 group flex items-center justify-between gap-1.5 px-2.5 py-1.5 rounded-xl text-xs bg-accent/40 dark:bg-accent/20 hover:bg-primary hover:text-primary-foreground text-foreground border border-border/70 hover:border-primary/40 transition-all duration-200 shadow-2xs hover:shadow-xs active:scale-98 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                  className="group flex items-center justify-between gap-2 px-3 py-1.5 sm:py-2 rounded-xl text-xs bg-accent/40 dark:bg-accent/20 hover:bg-[#100771] dark:hover:bg-blue-600 hover:text-white text-foreground border border-border/70 hover:border-transparent dark:hover:border-transparent transition-all duration-200 shadow-2xs hover:shadow-xs active:scale-98 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed w-full text-left"
                   title={prompt}
                 >
-                  <span className="truncate text-xs text-left min-w-0 flex-1 group-hover:text-primary-foreground transition-colors font-medium">
+                  <span className="truncate text-xs min-w-0 group-hover:text-white transition-colors font-normal flex-1">
                     {prompt}
                   </span>
-                  <ChevronRight className="w-3 h-3 opacity-50 group-hover:opacity-100 group-hover:translate-x-0.5 transition-all shrink-0" />
+                  <ChevronRight className="w-3.5 h-3.5 opacity-50 group-hover:opacity-100 group-hover:text-white group-hover:translate-x-0.5 transition-all shrink-0" />
                 </button>
               ))}
             </div>
@@ -2128,10 +2467,10 @@ export default function ResearchPage() {
         )}
 
         {/* Input */}
-        <div className="p-4 border-t border-border bg-card/50 shrink-0">
+        <div className="p-2.5 sm:p-3 2xl:p-4 border-t border-border bg-card/50 shrink-0">
           {isDocProcessing && (
-            <div className="flex items-center gap-2 px-3.5 py-2 bg-primary/10 text-primary text-xs font-medium rounded-xl border border-primary/20 animate-pulse mb-2.5">
-              <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+            <div className="flex items-center gap-2 px-3 py-1.5 bg-blue-500/10 dark:bg-blue-500/20 text-blue-700 dark:text-blue-300 text-xs font-medium rounded-xl border border-blue-500/25 animate-pulse mb-2">
+              <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0 text-blue-600 dark:text-blue-400" />
               <span>
                 {activeDocument?.status === 'extracting'
                   ? `Extracting & vectorizing document chunks (${activeDocument.progress || 0}%)... Chat will enable once complete.`
@@ -2139,25 +2478,47 @@ export default function ResearchPage() {
               </span>
             </div>
           )}
-          <div className={`relative flex items-center bg-card border border-border/80 dark:border-white/10 rounded-2xl overflow-hidden focus-within:ring-2 focus-within:ring-primary focus-within:border-primary transition-all shadow-sm ${isDocProcessing ? 'opacity-75 cursor-not-allowed bg-muted/40' : ''}`}>
+
+          {isDocFailed && (
+            <div className="flex items-start gap-2.5 px-3 py-2 bg-amber-500/10 dark:bg-amber-500/20 text-amber-800 dark:text-amber-200 text-xs font-medium rounded-xl border border-amber-500/30 mb-2 animate-fade-in">
+              <AlertCircle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+              <div className="flex-1 min-w-0">
+                <p className="font-semibold">
+                  {activeDocument?.status === 'rejected_unrelated'
+                    ? "No readable text detected"
+                    : "Document extraction error"}
+                </p>
+                <p className="text-[11px] opacity-90 mt-0.5 leading-relaxed">
+                  {activeDocument?.error_message ||
+                    (activeDocument?.status === 'rejected_unrelated'
+                      ? "The uploaded file does not contain readable or OCR-recognizable text. Legal AI analysis is unavailable for this file."
+                      : "An error occurred during extraction. Please upload the file again.")}
+                </p>
+              </div>
+            </div>
+          )}
+
+          <div className={`relative flex items-center bg-card border border-border/80 dark:border-white/10 rounded-2xl overflow-hidden focus-within:ring-2 focus-within:ring-primary focus-within:border-primary transition-all shadow-sm ${isDocProcessing || isDocFailed ? 'opacity-75 cursor-not-allowed bg-muted/40' : ''}`}>
             <input
               type="text"
-              disabled={isDocProcessing}
+              disabled={isDocProcessing || isDocFailed}
               value={inputValue}
               onChange={(e) => setDocInputValue(activeDocId, e.target.value)}
               onFocus={() => {
                 // Auto-collapse documents pane when user focuses on chat input to maximize preview & chat width
                 setIsDocListCollapsed(true);
               }}
-              onKeyDown={(e) => e.key === 'Enter' && !isDocProcessing && handleSend()}
+              onKeyDown={(e) => e.key === 'Enter' && !isDocProcessing && !isDocFailed && handleSend()}
               placeholder={
                 isDocProcessing
                   ? `Please wait while ${activeDocument?.filename || 'document'} is being processed...`
-                  : activeDocument
-                    ? `Ask about ${activeDocument.filename}...`
-                    : "Ask a general question..."
+                  : isDocFailed
+                    ? `Chat disabled: No readable text extracted from this document`
+                    : activeDocument
+                      ? `Ask about ${activeDocument.filename}...`
+                      : "Ask a general question..."
               }
-              className="flex-1 bg-transparent dark:bg-transparent border-none shadow-none outline-none focus:outline-none focus:ring-0 text-foreground placeholder:text-muted-foreground px-4 h-11 text-sm disabled:cursor-not-allowed"
+              className="flex-1 bg-transparent dark:bg-transparent border-none shadow-none outline-none focus:outline-none focus:ring-0 text-foreground placeholder:text-muted-foreground px-3 h-10 sm:h-11 text-xs sm:text-sm disabled:cursor-not-allowed"
             />
             {isTyping ? (
               <Button
@@ -2172,8 +2533,8 @@ export default function ResearchPage() {
               <Button
                 type="button"
                 onClick={() => handleSend()}
-                disabled={!inputValue.trim() || isDocProcessing}
-                className="mr-1.5 bg-primary hover:bg-primary/90 text-primary-foreground rounded-xl h-8 w-8 p-0 shrink-0 shadow-sm disabled:opacity-40"
+                disabled={!inputValue.trim() || isDocProcessing || isDocFailed}
+                className="mr-1.5 bg-[#100771] hover:bg-[#100771]/90 text-white dark:bg-blue-600 dark:hover:bg-blue-500 dark:text-white rounded-xl h-8 w-8 p-0 shrink-0 shadow-sm disabled:opacity-40"
               >
                 {isDocProcessing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
               </Button>
@@ -2188,7 +2549,7 @@ export default function ResearchPage() {
       <Dialog open={isNliModalOpen} onOpenChange={setIsNliModalOpen}>
         <DialogContent
           showCloseButton
-          className="sm:max-w-2xl bg-card border border-border text-foreground shadow-2xl p-6 rounded-2xl max-h-[90vh] overflow-y-auto custom-scrollbar"
+          className="w-[95vw] sm:w-[92vw] md:w-[88vw] lg:w-[80vw] xl:w-[72vw] max-w-4xl xl:max-w-5xl bg-card border border-border text-foreground shadow-2xl p-4 sm:p-6 lg:p-8 rounded-2xl max-h-[90dvh] overflow-y-auto custom-scrollbar"
         >
           <DialogHeader className="pb-3 border-b border-border">
             <div className="flex items-center gap-3">

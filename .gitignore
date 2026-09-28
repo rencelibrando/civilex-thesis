@@ -48,6 +48,7 @@ supabase/
 
 # agent configuration
 .agents/
+.agents/anti-slop/
 
 # logs
 .logs/

@@ -17,7 +17,7 @@
   --card-foreground: #1e293b;
   --sidebar: #f8f9fb;
 
-  /* Brand — deep institutional navy */
+  /* Brand: deep institutional navy */
   --primary: #100771;
   --primary-foreground: #ffffff;
   --secondary: #f0f2f6;
@@ -39,7 +39,7 @@
   --destructive-foreground: #ffffff;
   --destructive-soft: #fee2e2;
 
-  /* Civilex extended palette — WCAG AA compliant */
+  /* Civilex extended palette: WCAG AA compliant */
   --navy: #1a2f6b;
   --navy-dark: #101e4a;
   --navy-light: #2b4a9e;
@@ -114,7 +114,7 @@
   --destructive-foreground: #ffffff;
   --destructive-soft: #2a1417;
 
-  /* Civilex extended palette — neutral & functional */
+  /* Civilex extended palette: neutral and functional */
   --navy: #94a3b8;
   --navy-dark: #334155;
   --navy-light: #cbd5e1;
@@ -226,12 +226,38 @@
   --radius-4xl: calc(var(--radius) * 2.6);
 }
 
-html,
-body {
+/* ------------------------------------------------------------------ */
+/* Responsive Root Scaling (14" Laptops & Mobile Optimization)        */
+/* ------------------------------------------------------------------ */
+html {
   height: 100%;
+  font-size: 13.5px;
+}
+
+@media (min-width: 640px) {
+  html {
+    font-size: 14px;
+  }
+}
+
+@media (min-width: 1024px) {
+
+  /* 14-inch laptops (1024px - 1535px, normalized against OS 125%/150% scaling) */
+  html {
+    font-size: 14.5px;
+  }
+}
+
+@media (min-width: 1536px) {
+
+  /* 15.6"+ displays and unscaled 1080p/1440p desktop monitors */
+  html {
+    font-size: 16px;
+  }
 }
 
 body {
+  height: 100%;
   font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -335,50 +361,8 @@ body {
 
   .animate-fade-in-up,
   .animate-fade-in,
-  .animate-slide-in-right,
-  .animate-civ-spin-slow,
-  .animate-civ-glow-pulse {
+  .animate-slide-in-right {
     animation: none !important;
-  }
-}
-
-/* ------------------------------------------------------------------ */
-/* Gemini-style glowing chat input                                     */
-/* ------------------------------------------------------------------ */
-
-@keyframes civ-spin-slow {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-@keyframes civ-glow-pulse {
-
-  0%,
-  100% {
-    opacity: 0.65;
-  }
-
-  50% {
-    opacity: 1;
-  }
-}
-
-.animate-civ-spin-slow {
-  animation: civ-spin-slow 3.5s linear infinite;
-}
-
-.animate-civ-glow-pulse {
-  animation: civ-glow-pulse 2.2s ease-in-out infinite;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .animate-civ-spin-slow {
-    animation-duration: 8s;
-  }
-
-  .animate-civ-glow-pulse {
-    animation: none;
   }
 }
 

@@ -45,6 +45,7 @@ export default function SettingsPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
   const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
+  const [avatarFeedback, setAvatarFeedback] = useState<{ type: "success" | "error"; message: string } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Password change state
@@ -97,51 +98,96 @@ export default function SettingsPage() {
     if (!file) return;
 
     if (!file.type.startsWith("image/")) {
+      setAvatarFeedback({ type: "error", message: "Please select an image file (JPEG, PNG, WEBP, GIF)." });
+      return;
+    }
+
+    if (file.size > 5 * 1024 * 1024) {
+      setAvatarFeedback({ type: "error", message: "Image size must be less than 5MB." });
       return;
     }
 
     setIsUploadingAvatar(true);
+    setAvatarFeedback(null);
     try {
       const { data: { session } } = await supabase.auth.getSession();
-      if (!session) return;
-
-      const userId = session.user.id;
-      const ext = file.name.split(".").pop() || "png";
-      const filePath = `${userId}/avatar.${ext}`;
-
-      const { error: uploadError } = await supabase.storage
-        .from("avatars")
-        .upload(filePath, file, { upsert: true, contentType: file.type });
-
-      if (uploadError) {
-        console.error("Avatar upload error:", uploadError);
+      if (!session) {
+        setAvatarFeedback({ type: "error", message: "Please sign in to update your profile photo." });
         return;
       }
 
-      const { data: urlData } = supabase.storage
-        .from("avatars")
-        .getPublicUrl(filePath);
+      let newAvatarUrl: string | null = null;
 
-      const newAvatarUrl = `${urlData.publicUrl}?t=${Date.now()}`;
+      // Strategy 1: Upload via backend endpoint (bypasses browser client RLS issues)
+      try {
+        const formData = new FormData();
+        formData.append("avatar", file);
 
-      const res = await fetch(`${BACKEND_URL}/api/profiles/me`, {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${session.access_token}`
-        },
-        body: JSON.stringify({ avatar_url: newAvatarUrl })
-      });
+        const res = await fetch(`${BACKEND_URL}/api/profiles/me/avatar`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${session.access_token}`,
+          },
+          body: formData,
+        });
 
-      if (res.ok) {
+        if (res.ok) {
+          const data = await res.json();
+          if (data.avatar_url) {
+            newAvatarUrl = data.avatar_url;
+          }
+        }
+      } catch (backendErr) {
+        console.warn("Backend avatar upload failed, falling back to direct storage:", backendErr);
+      }
+
+      // Strategy 2 (Fallback): Direct Supabase storage upload
+      if (!newAvatarUrl) {
+        const userId = session.user.id;
+        const ext = file.name.split(".").pop() || "png";
+        const filePath = `${userId}/avatar.${ext}`;
+
+        const { error: uploadError } = await supabase.storage
+          .from("avatars")
+          .upload(filePath, file, { upsert: true, contentType: file.type });
+
+        if (uploadError) {
+          throw new Error(uploadError.message || "Failed to upload image to storage.");
+        }
+
+        const { data: urlData } = supabase.storage
+          .from("avatars")
+          .getPublicUrl(filePath);
+
+        newAvatarUrl = `${urlData.publicUrl}?t=${Date.now()}`;
+
+        // Save to backend profiles
+        await fetch(`${BACKEND_URL}/api/profiles/me`, {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${session.access_token}`,
+          },
+          body: JSON.stringify({ avatar_url: newAvatarUrl }),
+        });
+      }
+
+      if (newAvatarUrl) {
         setAvatarUrl(newAvatarUrl);
         await supabase.auth.updateUser({
-          data: { avatar_url: newAvatarUrl }
+          data: { avatar_url: newAvatarUrl },
         });
         window.dispatchEvent(new Event("profile-updated"));
+        setAvatarFeedback({ type: "success", message: "Profile photo updated successfully!" });
+      } else {
+        throw new Error("Unable to save photo. Please try again.");
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error("Failed to upload avatar", err);
+      setAvatarFeedback({
+        type: "error",
+        message: err.message || "Failed to upload avatar. Please try again.",
+      });
     } finally {
       setIsUploadingAvatar(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
@@ -150,6 +196,8 @@ export default function SettingsPage() {
 
   const handleRemoveAvatar = async () => {
     try {
+      setIsUploadingAvatar(true);
+      setAvatarFeedback(null);
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) return;
 
@@ -157,20 +205,24 @@ export default function SettingsPage() {
         method: "PATCH",
         headers: {
           "Content-Type": "application/json",
-          "Authorization": `Bearer ${session.access_token}`
+          Authorization: `Bearer ${session.access_token}`,
         },
-        body: JSON.stringify({ avatar_url: null })
+        body: JSON.stringify({ avatar_url: null }),
       });
 
       if (res.ok) {
         setAvatarUrl(null);
         await supabase.auth.updateUser({
-          data: { avatar_url: null }
+          data: { avatar_url: null },
         });
         window.dispatchEvent(new Event("profile-updated"));
+        setAvatarFeedback({ type: "success", message: "Profile photo removed." });
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error("Failed to remove avatar", err);
+      setAvatarFeedback({ type: "error", message: "Failed to remove photo." });
+    } finally {
+      setIsUploadingAvatar(false);
     }
   };
 
@@ -260,30 +312,30 @@ export default function SettingsPage() {
   };
 
   return (
-    <div className="h-full overflow-y-auto custom-scrollbar p-6 md:p-8">
-      <div className="max-w-4xl mx-auto space-y-8 animate-fade-in pb-12">
+    <div className="h-full overflow-y-auto custom-scrollbar">
+      <div className="w-full max-w-4xl 2xl:max-w-5xl 3xl:max-w-6xl mx-auto space-y-4 sm:space-y-6 2xl:space-y-8 animate-fade-in pb-8 sm:pb-12 px-1 sm:px-2">
         <div>
-          <h1 className="text-2xl font-bold text-foreground">Settings</h1>
-          <p className="text-muted-foreground text-sm mt-1">
+          <h1 className="text-xl sm:text-2xl 2xl:text-3xl font-bold text-foreground">Settings</h1>
+          <p className="text-muted-foreground text-xs sm:text-sm mt-1">
             Manage your personal profile, legal specialization, and account credentials.
           </p>
         </div>
 
         {/* Section 1: Personal Information */}
         <Card className="bg-card border border-border shadow-sm rounded-2xl overflow-hidden">
-          <CardHeader className="border-b border-border px-6 py-5">
-            <CardTitle className="flex items-center gap-2 text-foreground font-semibold">
-              <User className="w-5 h-5 text-primary" />
+          <CardHeader className="border-b border-border px-4 py-3.5 sm:px-6 sm:py-4">
+            <CardTitle className="flex items-center gap-2 text-foreground font-semibold text-base sm:text-lg">
+              <User className="w-4 h-4 sm:w-5 sm:h-5 text-primary" />
               Personal Information
             </CardTitle>
-            <CardDescription className="text-muted-foreground">
+            <CardDescription className="text-muted-foreground text-xs sm:text-sm">
               Update your photo, professional title, legal affiliation, and contact details.
             </CardDescription>
           </CardHeader>
-          <CardContent className="p-6 space-y-6">
+          <CardContent className="p-4 sm:p-6 space-y-5 sm:space-y-6">
             <div className="flex flex-col sm:flex-row items-center gap-6 pb-6 border-b border-border">
-              <div className="relative group">
-                <Avatar className="w-24 h-24 border-2 border-border shadow-sm ring-4 ring-card">
+              <div className="relative group shrink-0">
+                <Avatar className="size-24 border-2 border-border shadow-sm ring-4 ring-card overflow-hidden">
                   <AvatarImage src={avatarUrl || undefined} alt={name || "User"} />
                   <AvatarFallback className="text-2xl font-semibold bg-accent text-accent-foreground">
                     {name ? name.charAt(0).toUpperCase() : 'U'}
@@ -295,32 +347,48 @@ export default function SettingsPage() {
                   </div>
                 )}
               </div>
-              <div className="flex flex-col sm:flex-row gap-3">
-                <input
-                  type="file"
-                  ref={fileInputRef}
-                  onChange={handleAvatarUpload}
-                  accept="image/*"
-                  className="hidden"
-                />
-                <Button
-                  variant="outline"
-                  className="border-border text-foreground hover:bg-accent/50 rounded-xl cursor-pointer"
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={isUploadingAvatar}
-                >
-                  <Camera className="w-4 h-4 mr-2" />
-                  {isUploadingAvatar ? "Uploading..." : "Change Photo"}
-                </Button>
-                <Button
-                  variant="ghost"
-                  className="text-muted-foreground hover:text-destructive hover:bg-destructive/10 rounded-xl cursor-pointer"
-                  onClick={handleRemoveAvatar}
-                  disabled={!avatarUrl}
-                >
-                  <Trash2 className="w-4 h-4 mr-2" />
-                  Remove
-                </Button>
+              <div className="flex flex-col items-center sm:items-start gap-2">
+                <div className="flex flex-wrap items-center justify-center sm:justify-start gap-3">
+                  <input
+                    type="file"
+                    ref={fileInputRef}
+                    onChange={handleAvatarUpload}
+                    accept="image/*"
+                    className="hidden"
+                  />
+                  <Button
+                    variant="outline"
+                    className="border-border text-foreground hover:bg-accent/50 rounded-xl cursor-pointer"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={isUploadingAvatar}
+                  >
+                    <Camera className="w-4 h-4 mr-2" />
+                    {isUploadingAvatar ? "Uploading..." : "Change Photo"}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    className="text-muted-foreground hover:text-destructive hover:bg-destructive/10 rounded-xl cursor-pointer"
+                    onClick={handleRemoveAvatar}
+                    disabled={!avatarUrl || isUploadingAvatar}
+                  >
+                    <Trash2 className="w-4 h-4 mr-2" />
+                    Remove
+                  </Button>
+                </div>
+                {avatarFeedback && (
+                  <p
+                    className={`text-xs mt-0.5 font-medium ${
+                      avatarFeedback.type === "error"
+                        ? "text-destructive"
+                        : "text-emerald-600 dark:text-emerald-400"
+                    }`}
+                  >
+                    {avatarFeedback.message}
+                  </p>
+                )}
+                <p className="text-xs text-muted-foreground">
+                  Supported formats: JPG, PNG, WEBP, GIF. Max file size: 5MB.
+                </p>
               </div>
             </div>
 

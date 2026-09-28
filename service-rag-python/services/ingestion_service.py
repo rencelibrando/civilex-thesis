@@ -74,8 +74,9 @@ class DBHelper:
                     user_id UUID REFERENCES auth.users(id),
                     filename TEXT,
                     file_url TEXT,
-                    status TEXT CHECK (status IN ('uploading', 'extracting', 'completed', 'rejected_unrelated')),
+                    status TEXT CHECK (status IN ('uploading', 'extracting', 'completed', 'rejected_unrelated', 'error')),
                     progress INT DEFAULT 0,
+                    error_message TEXT,
                     created_at TIMESTAMPTZ DEFAULT NOW()
                 );
             """)

@@ -99,30 +99,27 @@ export function Header() {
     : "U";
 
   return (
-    <header className="h-16 border-b border-border bg-background text-foreground flex items-center justify-between px-6 z-10 sticky top-0 backdrop-blur-md">
-      <div className="flex items-center gap-3">
+    <header className="h-14 2xl:h-16 border-b border-border bg-background text-foreground flex items-center justify-between px-3.5 sm:px-4 2xl:px-6 z-10 sticky top-0 backdrop-blur-md shrink-0">
+      <div className="flex items-center gap-2.5 sm:gap-3">
         <Sheet>
           <SheetTrigger render={
-            <Button variant="ghost" size="icon" className="md:hidden text-muted-foreground hover:text-foreground" />
+            <Button variant="ghost" size="icon" className="lg:hidden h-9 w-9 text-muted-foreground hover:text-foreground" />
           }>
             <Menu className="h-5 w-5" />
             <span className="sr-only">Toggle navigation menu</span>
           </SheetTrigger>
-          <SheetContent side="left" className="w-64 p-0">
-            <div className="flex items-center gap-2 p-6 border-b border-border">
-              <div className="w-8 h-8 rounded-lg bg-accent flex items-center justify-center">
-                <Scale className="w-5 h-5 text-primary" />
-              </div>
+          <SheetContent side="left" className="w-[85vw] sm:w-72 max-w-xs p-0">
+            <div className="flex items-center gap-2.5 p-5 border-b border-border">
+              <Scale className="w-5 h-5 text-[#100771] dark:text-blue-500 shrink-0" />
               <span className="font-bold text-lg tracking-wide">CIVIL-LEX</span>
             </div>
-            <SidebarNav className="h-[calc(100dvh-5rem)]" />
+            <SidebarNav className="h-[calc(100dvh-4.5rem)]" />
           </SheetContent>
         </Sheet>
-        <div className="w-8 h-8 rounded-lg bg-accent flex items-center justify-center hidden md:flex">
-          <Scale className="w-5 h-5 text-primary" />
-        </div>
-        <Link href="/dashboard" className="font-bold text-lg tracking-wide flex items-center gap-2 focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:outline-none rounded-md">
-          CIVIL-LEX <span className="font-normal text-muted-foreground text-sm hidden sm:inline-block">Legal Intelligence</span>
+        <Link href="/dashboard" className="font-bold text-base sm:text-lg tracking-wide flex items-center gap-2 focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:outline-none rounded-md">
+          <Scale className="w-5 h-5 text-[#100771] dark:text-blue-500 shrink-0" />
+          <span>CIVIL-LEX</span>
+          <span className="font-normal text-muted-foreground text-xs sm:text-sm hidden sm:inline-block">Legal Intelligence</span>
         </Link>
       </div>
 
@@ -140,7 +137,7 @@ export function Header() {
               </AvatarFallback>
             </Avatar>
           </DropdownMenuTrigger>
-          <DropdownMenuContent className="w-60 p-2" align="end">
+          <DropdownMenuContent className="w-60 sm:w-64 max-w-[90vw] p-2" align="end">
             <div className="px-2 py-2">
               <p className="text-sm font-semibold leading-none text-foreground truncate">{userName}</p>
               {userEmail && (

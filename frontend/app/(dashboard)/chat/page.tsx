@@ -38,6 +38,7 @@ import { BACKEND_URL } from "@/lib/config";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { JurisprudenceModal, JurisprudenceCase } from "@/components/jurisprudence-modal";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -46,6 +47,26 @@ import { useChat, RagStatus, getCitationKey, ClarificationData } from "@/context
 function cleanCaseSummary(text?: string): string {
   if (!text) return "No summary available for this case.";
   return text.replace(/^\[(?:Supporting Case Doctrine|Jurisprudence Doctrine)[^\]]*\]\s*/i, "").trim();
+}
+
+function getChatCategoryBadgeClass(category?: string) {
+  const cat = (category || "").toLowerCase();
+  if (cat.includes("contract") || cat.includes("obligation")) {
+    return "bg-blue-500/10 text-blue-700 dark:bg-blue-500/20 dark:text-blue-300 border border-blue-500/20";
+  }
+  if (cat.includes("family") || cat.includes("person")) {
+    return "bg-rose-500/10 text-rose-700 dark:bg-rose-500/20 dark:text-rose-300 border border-rose-500/20";
+  }
+  if (cat.includes("property") || cat.includes("land")) {
+    return "bg-amber-500/10 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300 border border-amber-500/20";
+  }
+  if (cat.includes("succession") || cat.includes("will")) {
+    return "bg-indigo-500/10 text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-300 border border-indigo-500/20";
+  }
+  if (cat.includes("tort") || cat.includes("damage")) {
+    return "bg-emerald-500/10 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300 border border-emerald-500/20";
+  }
+  return "bg-blue-500/10 text-blue-700 dark:bg-blue-500/20 dark:text-blue-300 border border-blue-500/20";
 }
 
 
@@ -194,21 +215,20 @@ function RagPipelineStepper({ status, isLive }: { status: RagStatus | null; isLi
 
   if (isLive && isPreStreamingStage) {
     return (
-      <div className="w-full max-w-md p-3.5 rounded-2xl bg-card border border-border/80 dark:border-white/10 shadow-xs animate-fade-in space-y-2.5">
-        <div className="flex items-center justify-between text-xs font-semibold text-primary">
+      <div className="w-full max-w-xs sm:max-w-sm p-2 sm:p-2.5 rounded-xl bg-card border border-border/70 dark:border-white/10 shadow-2xs animate-fade-in space-y-1.5 mb-2">
+        <div className="flex items-center justify-between text-[11px] font-semibold text-foreground">
           <span className="flex items-center gap-1.5">
             {currentStage === "queued" ? (
-              <Clock className="w-3.5 h-3.5 animate-spin text-amber-500" />
+              <Clock className="w-3 h-3 animate-spin text-amber-500" />
             ) : (
-              <Sparkles className="w-3.5 h-3.5 animate-pulse text-primary" />
+              <Sparkles className="w-3 h-3 animate-pulse text-emerald-600 dark:text-emerald-400" />
             )}
             CIVIL-LEX Legal Processing
           </span>
-          <span className={`text-[10px] font-mono uppercase tracking-wider px-2 py-0.5 rounded-full border ${
-            currentStage === "queued"
-              ? "bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/30 font-bold animate-pulse"
-              : "bg-primary/10 text-primary border-primary/20"
-          }`}>
+          <span className={`text-[9px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded-full border ${currentStage === "queued"
+            ? "bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/30 font-bold animate-pulse"
+            : "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-500/20 font-medium"
+            }`}>
             {currentStage === "queued"
               ? `Queue #${status?.queue_position || 1}`
               : currentStage === "retrieving_done"
@@ -221,13 +241,13 @@ function RagPipelineStepper({ status, isLive }: { status: RagStatus | null; isLi
 
         {/* Queue Notice Banner when waiting */}
         {currentStage === "queued" ? (
-          <div className="flex items-start gap-2.5 p-2.5 rounded-xl bg-amber-500/10 dark:bg-amber-500/15 border border-amber-500/30 text-amber-900 dark:text-amber-200">
-            <Clock className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5 animate-pulse" />
-            <div className="text-xs space-y-0.5">
+          <div className="flex items-start gap-2 p-2 rounded-lg bg-amber-500/10 dark:bg-amber-500/15 border border-amber-500/30 text-amber-900 dark:text-amber-200">
+            <Clock className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5 animate-pulse" />
+            <div className="text-[11px] space-y-0.5">
               <p className="font-semibold text-amber-700 dark:text-amber-300">
                 You are #{status?.queue_position || 1} in queue
               </p>
-              <p className="text-[11px] leading-relaxed text-amber-800/90 dark:text-amber-200/90">
+              <p className="text-[10px] leading-relaxed text-amber-800/90 dark:text-amber-200/90">
                 {status?.message || "Another user is currently querying the model. Your query will run automatically once resources are free."}
               </p>
             </div>
@@ -235,25 +255,25 @@ function RagPipelineStepper({ status, isLive }: { status: RagStatus | null; isLi
         ) : null}
 
         {/* Step Progress Pills */}
-        <div className="grid grid-cols-5 gap-1 pt-1">
+        <div className="grid grid-cols-5 gap-1 pt-0.5">
           {steps.map((step) => {
             const state = getStepState(step.id);
             return (
-              <div key={step.id} className="flex flex-col items-center gap-1">
+              <div key={step.id} className="flex flex-col items-center gap-0.5">
                 <div
-                  className={`w-full h-1.5 rounded-full transition-all duration-300 ${state === "completed"
-                    ? "bg-green-500"
+                  className={`w-full h-1 rounded-full transition-all duration-300 ${state === "completed"
+                    ? "bg-emerald-500"
                     : state === "active"
-                      ? "bg-primary animate-pulse"
+                      ? "bg-emerald-600 dark:bg-emerald-500 animate-pulse"
                       : "bg-muted dark:bg-muted/40"
                     }`}
                 />
                 <span
-                  className={`text-[9px] truncate max-w-full font-medium ${state === "active"
-                    ? "text-primary font-bold"
+                  className={`text-[8px] sm:text-[8.5px] truncate max-w-full font-medium ${state === "active"
+                    ? "text-foreground font-bold"
                     : state === "completed"
                       ? "text-foreground"
-                      : "text-muted-foreground"
+                      : "text-muted-foreground/70"
                     }`}
                 >
                   {step.name.split(". ")[1]}
@@ -265,9 +285,9 @@ function RagPipelineStepper({ status, isLive }: { status: RagStatus | null; isLi
 
         {/* Active Stage Message (when not queued) */}
         {currentStage !== "queued" && (
-          <div className="flex items-center gap-2 pt-1 text-xs text-foreground bg-accent/30 dark:bg-accent/15 px-3 py-2 rounded-xl border border-border/40">
-            <Loader2 className="w-3.5 h-3.5 animate-spin text-primary shrink-0" />
-            <span className="line-clamp-1">{status?.message || "Analyzing query..."}</span>
+          <div className="flex items-center gap-1.5 pt-0.5 text-[11px] text-foreground bg-accent/30 dark:bg-accent/15 px-2 py-1 rounded-lg border border-border/40">
+            <Loader2 className="w-3 h-3 animate-spin text-emerald-600 dark:text-emerald-400 shrink-0" />
+            <span className="line-clamp-1 truncate">{status?.message || "Analyzing query..."}</span>
           </div>
         )}
       </div>
@@ -400,19 +420,17 @@ function ClarificationCard({
                     type="button"
                     disabled={submitted}
                     onClick={() => handleOptionSelect(question.id, option)}
-                    className={`w-full text-left flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs transition-all border ${
-                      isSelected
-                        ? "bg-primary/10 dark:bg-primary/15 border-primary/40 text-foreground font-medium"
-                        : submitted
-                          ? "bg-muted/30 border-border/40 text-muted-foreground opacity-60"
-                          : "bg-accent/30 dark:bg-accent/10 border-border/50 text-foreground hover:bg-accent/60 hover:border-border cursor-pointer"
-                    }`}
+                    className={`w-full text-left flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs transition-all border ${isSelected
+                      ? "bg-primary/10 dark:bg-primary/15 border-primary/40 text-foreground font-medium"
+                      : submitted
+                        ? "bg-muted/30 border-border/40 text-muted-foreground opacity-60"
+                        : "bg-accent/30 dark:bg-accent/10 border-border/50 text-foreground hover:bg-accent/60 hover:border-border cursor-pointer"
+                      }`}
                   >
-                    <span className={`w-3.5 h-3.5 rounded-full border-2 shrink-0 flex items-center justify-center transition-colors ${
-                      isSelected
-                        ? "border-primary bg-primary"
-                        : "border-muted-foreground/40"
-                    }`}>
+                    <span className={`w-3.5 h-3.5 rounded-full border-2 shrink-0 flex items-center justify-center transition-colors ${isSelected
+                      ? "border-primary bg-primary"
+                      : "border-muted-foreground/40"
+                      }`}>
                       {isSelected && (
                         <span className="w-1.5 h-1.5 rounded-full bg-white" />
                       )}
@@ -429,19 +447,17 @@ function ClarificationCard({
                     type="button"
                     disabled={submitted}
                     onClick={() => handleFreeTextToggle(question.id)}
-                    className={`w-full text-left flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs transition-all border ${
-                      usingFreeText[question.id]
-                        ? "bg-primary/10 dark:bg-primary/15 border-primary/40 text-foreground font-medium"
-                        : submitted
-                          ? "bg-muted/30 border-border/40 text-muted-foreground opacity-60"
-                          : "bg-accent/30 dark:bg-accent/10 border-border/50 text-foreground hover:bg-accent/60 hover:border-border cursor-pointer"
-                    }`}
+                    className={`w-full text-left flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs transition-all border ${usingFreeText[question.id]
+                      ? "bg-primary/10 dark:bg-primary/15 border-primary/40 text-foreground font-medium"
+                      : submitted
+                        ? "bg-muted/30 border-border/40 text-muted-foreground opacity-60"
+                        : "bg-accent/30 dark:bg-accent/10 border-border/50 text-foreground hover:bg-accent/60 hover:border-border cursor-pointer"
+                      }`}
                   >
-                    <span className={`w-3.5 h-3.5 rounded-full border-2 shrink-0 flex items-center justify-center transition-colors ${
-                      usingFreeText[question.id]
-                        ? "border-primary bg-primary"
-                        : "border-muted-foreground/40"
-                    }`}>
+                    <span className={`w-3.5 h-3.5 rounded-full border-2 shrink-0 flex items-center justify-center transition-colors ${usingFreeText[question.id]
+                      ? "border-primary bg-primary"
+                      : "border-muted-foreground/40"
+                      }`}>
                       {usingFreeText[question.id] && (
                         <span className="w-1.5 h-1.5 rounded-full bg-white" />
                       )}
@@ -482,7 +498,7 @@ function ClarificationCard({
       ) : (
         <div className="flex items-center gap-1.5 mt-4 pt-3 border-t border-border/40 text-xs text-muted-foreground">
           <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
-          <span>Context submitted — generating tailored legal analysis...</span>
+          <span>Context submitted: generating tailored legal analysis...</span>
         </div>
       )}
     </div>
@@ -526,6 +542,7 @@ export default function ChatPage() {
   const [isAutoScrollEnabled, setIsAutoScrollEnabled] = useState(true);
   const [copiedCitation, setCopiedCitation] = useState(false);
   const [isNliModalOpen, setIsNliModalOpen] = useState(false);
+  const [isMobileCitationsOpen, setIsMobileCitationsOpen] = useState(false);
 
   const handleCopyCitation = useCallback((text: string) => {
     if (!navigator?.clipboard) return;
@@ -642,41 +659,53 @@ export default function ChatPage() {
   }, []);
 
   return (
-    <div className="flex h-full gap-6 animate-fade-in min-h-0">
+    <div className="flex h-full gap-3 xl:gap-4 2xl:gap-6 animate-fade-in min-h-0">
 
       {/* Main Chat Area*/}
       <div className="flex-1 flex flex-col bg-card rounded-2xl border border-border shadow-sm overflow-hidden relative min-h-0">
         {/* Chat Panel Top Bar */}
-        <div className="px-3.5 sm:px-4 py-2.5 border-b border-border/70 flex items-center justify-between bg-card/95 backdrop-blur-sm shrink-0 z-10">
+        <div className="px-3 sm:px-4 py-2 border-b border-border/70 flex items-center justify-between bg-card/95 backdrop-blur-sm shrink-0 z-10">
           <div className="flex items-center gap-2">
-            <div className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" />
-            <span className="text-xs font-semibold text-foreground tracking-tight">CIVIL-LEX Intelligence</span>
-            <span className="hidden sm:inline-block text-[10px] text-muted-foreground/75 px-1.5 py-0.5 rounded bg-accent/40 font-mono">
-              RA 386 Grounded
+            <span className="text-xs font-semibold text-foreground tracking-tight flex items-center gap-1.5">
+              <Scale className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+              CIVIL-LEX Intelligence
             </span>
           </div>
 
-          {messages.length > 1 && (
+          <div className="flex items-center gap-2">
+            {messages.length > 1 && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleNewChat}
+                className="border-blue-500/25 text-blue-600 dark:text-blue-400 hover:bg-blue-500/10 dark:hover:bg-blue-500/20 gap-1.5 text-xs h-7 px-2.5 sm:h-8 sm:px-3 rounded-full shadow-2xs transition-all"
+                title="Start a new chat (immediately stops active query)"
+              >
+                <PlusCircle className="w-3.5 h-3.5" />
+                <span>New Chat</span>
+              </Button>
+            )}
+
             <Button
               variant="outline"
               size="sm"
-              onClick={handleNewChat}
-              className="border-primary/20 hover:bg-primary/10 hover:text-primary gap-1.5 text-xs h-7 px-2.5 sm:h-8 sm:px-3 rounded-full shadow-2xs transition-all"
-              title="Start a new chat (immediately stops active query)"
+              onClick={() => setIsMobileCitationsOpen(true)}
+              className="xl:hidden border-border/80 hover:bg-accent gap-1.5 text-xs h-7 px-2.5 sm:h-8 sm:px-3 rounded-full shadow-2xs transition-all"
+              title="View statutory citations and grounding"
             >
-              <PlusCircle className="w-3.5 h-3.5" />
-              <span>New Chat</span>
+              <BookOpen className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+              <span>Citations ({retainedCitations.length})</span>
             </Button>
-          )}
+          </div>
         </div>
 
         {/* Scrollable messages area */}
         <div
           ref={chatScrollRef}
           onScroll={handleScroll}
-          className="flex-1 overflow-y-auto px-3 py-4 sm:px-5 sm:py-6 custom-scrollbar min-h-0"
+          className="flex-1 overflow-y-auto px-2.5 py-3 sm:px-4 sm:py-5 2xl:px-6 2xl:py-6 custom-scrollbar min-h-0"
         >
-          <div className="flex flex-col max-w-3xl mx-auto w-full">
+          <div className="flex flex-col w-full max-w-4xl 2xl:max-w-5xl 3xl:max-w-6xl mx-auto px-1 sm:px-2">
             {messages.map((msg, idx) => {
               const isAssistant = msg.role === "assistant";
               const isLatestAssistant =
@@ -705,38 +734,29 @@ export default function ChatPage() {
 
                   {/* Message Row with Messenger-Style Rhythm */}
                   <div
-                    className={`flex gap-2 sm:gap-3.5 w-full ${
-                      isUser ? "flex-row-reverse" : ""
-                    } ${
-                      idx === 0
+                    className={`flex gap-2 sm:gap-3.5 w-full ${isUser ? "flex-row-reverse" : ""
+                      } ${idx === 0
                         ? "mt-0"
                         : isFirstUserTurn
-                        ? "mt-5 sm:mt-6"
-                        : isAssistant
-                        ? "mt-2.5 sm:mt-3"
-                        : "mt-0"
-                    }`}
+                          ? "mt-5 sm:mt-6"
+                          : isAssistant
+                            ? "mt-2.5 sm:mt-3"
+                            : "mt-0"
+                      }`}
                   >
-                    {/* Avatar */}
-                    <Avatar className="w-7 h-7 sm:w-8 sm:h-8 mt-0.5 border border-border/80 shrink-0 rounded-full sm:rounded-xl overflow-hidden shadow-2xs">
-                      {isAssistant ? (
-                        <div className="bg-primary/10 dark:bg-primary/20 w-full h-full flex items-center justify-center">
-                          <Scale className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-primary" />
-                        </div>
-                      ) : (
-                        <AvatarFallback className="bg-muted flex items-center justify-center">
-                          <User className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-muted-foreground" />
-                        </AvatarFallback>
-                      )}
-                    </Avatar>
+                    {/* Clean Message Icon */}
+                    {isAssistant ? (
+                      <Scale className="w-5 h-5 text-blue-600 dark:text-blue-400 mt-1 shrink-0" />
+                    ) : (
+                      <User className="w-5 h-5 text-muted-foreground mt-1 shrink-0" />
+                    )}
 
                     {/* Message Bubble Container */}
                     <div
-                      className={`flex flex-col min-w-0 ${
-                        isUser
-                          ? "items-end max-w-[88%] sm:max-w-[80%] md:max-w-[72%]"
-                          : "items-start w-full max-w-[96%] sm:max-w-[92%] md:max-w-[90%]"
-                      }`}
+                      className={`flex flex-col min-w-0 ${isUser
+                        ? "items-end max-w-[88%] sm:max-w-[80%] md:max-w-[72%]"
+                        : "items-start w-full max-w-[96%] sm:max-w-[92%] md:max-w-[90%]"
+                        }`}
                     >
                       {/* Assistant RAG Pipeline Stepper */}
                       {isAssistant && msg.id !== 1 && (
@@ -749,13 +769,12 @@ export default function ChatPage() {
                       {/* Message Bubble */}
                       {(msg.content || msg.clarificationData || !isAssistant) && (
                         <div
-                          className={`break-words ${
-                            isUser
-                              ? "w-fit inline-block px-4 py-2.5 sm:px-5 sm:py-3 rounded-2xl sm:rounded-3xl rounded-tr-xs sm:rounded-tr-xs text-sm sm:text-[15px] leading-relaxed bg-[#100771] text-white shadow-sm shadow-[#100771]/15 dark:bg-blue-600 dark:text-white dark:border-0 dark:shadow-md dark:shadow-blue-900/30 font-medium"
-                              : msg.clarificationData
-                                ? "w-full" /* ClarificationCard has its own styling */
-                                : "w-full p-4 sm:p-5 md:p-6 rounded-2xl sm:rounded-3xl rounded-tl-xs sm:rounded-tl-xs bg-card dark:bg-[#131317] border border-border/80 dark:border-white/[0.08] text-foreground dark:text-zinc-100 shadow-xs text-sm sm:text-base"
-                          }`}
+                          className={`break-words ${isUser
+                            ? "w-fit inline-block px-3 py-1.5 sm:px-3.5 sm:py-2 2xl:px-5 2xl:py-3 rounded-2xl sm:rounded-3xl rounded-tr-xs sm:rounded-tr-xs text-xs sm:text-sm 2xl:text-[15px] leading-relaxed bg-[#100771] text-white shadow-sm shadow-[#100771]/15 dark:bg-blue-600 dark:text-white dark:border-0 dark:shadow-md dark:shadow-blue-900/30 font-medium"
+                            : msg.clarificationData
+                              ? "w-full" /* ClarificationCard has its own styling */
+                              : "w-full p-2.5 sm:p-3.5 2xl:p-5 rounded-2xl sm:rounded-3xl rounded-tl-xs sm:rounded-tl-xs bg-card dark:bg-[#131317] border border-border/80 dark:border-white/[0.08] text-foreground dark:text-zinc-100 shadow-xs text-xs sm:text-sm 2xl:text-base leading-relaxed"
+                            }`}
                         >
                           {isAssistant ? (
                             msg.clarificationData ? (
@@ -802,77 +821,76 @@ export default function ChatPage() {
         </div>
 
         {/* Chat Input & Compact Suggestions Bar */}
-        <div className="p-2.5 sm:p-4 border-t border-border bg-card shrink-0">
-          <div className="max-w-3xl mx-auto space-y-2.5 sm:space-y-3">
+        <div className="p-2 sm:p-2.5 2xl:p-3.5 border-t border-border bg-card shrink-0">
+          <div className="max-w-3xl 2xl:max-w-4xl mx-auto space-y-1.5 sm:space-y-2">
 
-            {/* 1. Dynamic Prompt Starters */}
+            {/* 1. Dynamic Prompt Starters - Responsive 2-Prompt Grid without Scroll */}
             {messages.length === 1 && (
-              <div className="space-y-1.5 animate-fade-in">
-                <div className="flex items-center gap-1.5 px-1 text-[11px] font-medium text-muted-foreground">
-                  <HelpCircle className="w-3.5 h-3.5 text-primary" />
-                  <span>Suggested Legal Topics:</span>
+              <div className="space-y-1 animate-fade-in">
+                <div className="flex items-center justify-between px-0.5 text-[10px] sm:text-[11px] font-medium text-muted-foreground">
+                  <div className="flex items-center gap-1.5">
+                    <HelpCircle className="w-3 h-3 sm:w-3.5 sm:h-3.5 text-blue-600 dark:text-blue-400" />
+                    <span>Suggested Legal Inquiries:</span>
+                  </div>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 w-full">
-                  {starterPrompts.slice(0, 3).map((item) => (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 sm:gap-2 w-full">
+                  {starterPrompts.slice(0, 2).map((item) => (
                     <button
                       key={item.id}
                       type="button"
                       onClick={() => handleSend(item.prompt)}
-                      className="min-w-0 group flex items-center justify-between gap-2 px-3 py-2.5 sm:py-2 rounded-xl text-xs bg-accent/40 dark:bg-accent/20 hover:bg-primary hover:text-primary-foreground text-foreground border border-border/70 hover:border-primary/40 transition-all shadow-2xs hover:shadow-xs active:scale-98 cursor-pointer"
+                      className="group flex items-center justify-between gap-2 px-3 py-1.5 sm:py-2 rounded-xl text-xs bg-accent/40 dark:bg-accent/20 hover:bg-[#100771] dark:hover:bg-blue-600 hover:text-white text-foreground border border-border/70 hover:border-transparent dark:hover:border-transparent transition-all shadow-2xs hover:shadow-xs active:scale-98 cursor-pointer w-full text-left"
                       title={item.prompt}
                     >
-                      <span className="font-semibold text-[10px] uppercase tracking-wider text-primary group-hover:text-primary-foreground/90 bg-primary/10 dark:bg-primary/20 group-hover:bg-white/20 px-1.5 py-0.5 rounded shrink-0">
-                        {item.category}
-                      </span>
-                      <span className="truncate text-xs text-left min-w-0 flex-1">
+                      <span className="truncate text-xs font-normal group-hover:text-white flex-1">
                         {item.prompt}
                       </span>
-                      <ChevronRight className="w-3.5 h-3.5 opacity-50 group-hover:opacity-100 group-hover:translate-x-0.5 transition-all shrink-0" />
+                      <ChevronRight className="w-3.5 h-3.5 opacity-50 group-hover:opacity-100 group-hover:text-white group-hover:translate-x-0.5 transition-all shrink-0" />
                     </button>
                   ))}
                 </div>
               </div>
             )}
 
-            {/* ------------------------------------------------------------- */}
-            {/* 2. Contextual Follow-Up Suggestions                           */}
-            {/* ------------------------------------------------------------- */}
+            {/* 2. Contextual Follow-Up Suggestions - Responsive 2-Prompt Grid without Scroll */}
             {!isTyping && followUpPrompts.length > 0 && messages.length > 1 && (
-              <div className="space-y-1.5 animate-fade-in">
-                <div className="flex items-center gap-1.5 text-xs font-semibold text-primary px-1">
-                  <HelpCircle className="w-3.5 h-3.5" />
-                  <span>Suggested Follow-up Inquiries:</span>
+              <div className="space-y-1 animate-fade-in">
+                <div className="flex items-center justify-between px-0.5 text-[10px] sm:text-[11px] font-semibold text-blue-600 dark:text-blue-400">
+                  <div className="flex items-center gap-1.5">
+                    <HelpCircle className="w-3 h-3 sm:w-3.5 sm:h-3.5 text-blue-600 dark:text-blue-400" />
+                    <span>Suggested Follow-up Inquiries:</span>
+                  </div>
                 </div>
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 w-full">
-                  {followUpPrompts.slice(0, 3).map((prompt, i) => (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 sm:gap-2 w-full">
+                  {followUpPrompts.slice(0, 2).map((prompt, i) => (
                     <button
                       key={i}
                       type="button"
                       onClick={() => handleSend(prompt)}
-                      className="min-w-0 text-xs px-3 py-2.5 sm:py-2 rounded-xl bg-accent/50 dark:bg-accent/20 hover:bg-primary hover:text-primary-foreground text-foreground border border-border/80 transition-all flex items-center justify-between gap-1.5 shadow-2xs hover:shadow-xs active:scale-98 cursor-pointer"
+                      className="group flex items-center justify-between gap-2 px-3 py-1.5 sm:py-2 rounded-xl text-xs bg-accent/50 dark:bg-accent/20 hover:bg-[#100771] dark:hover:bg-blue-600 hover:text-white text-foreground border border-border/80 hover:border-transparent dark:hover:border-transparent transition-all shadow-2xs hover:shadow-xs active:scale-98 cursor-pointer w-full text-left"
                       title={prompt}
                     >
-                      <span className="truncate text-left min-w-0 flex-1">{prompt}</span>
-                      <ChevronRight className="w-3.5 h-3.5 opacity-60 shrink-0" />
+                      <span className="truncate text-left text-xs font-normal group-hover:text-white flex-1">{prompt}</span>
+                      <ChevronRight className="w-3.5 h-3.5 opacity-60 group-hover:opacity-100 group-hover:text-white group-hover:translate-x-0.5 transition-all shrink-0" />
                     </button>
                   ))}
                 </div>
               </div>
             )}
 
-            {/* ------------------------------------------------------------- */}
+
             {/* 3. Unified Chat Input Box                                     */}
-            {/* ------------------------------------------------------------- */}
+
             <div className="relative flex items-center bg-card border border-border/80 dark:border-white/10 rounded-2xl overflow-hidden focus-within:ring-2 focus-within:ring-primary focus-within:border-primary transition-all shadow-sm">
               <Button
                 type="button"
                 variant="ghost"
                 size="icon"
-                className="text-muted-foreground hover:text-foreground hover:bg-accent/40 ml-1 shrink-0 bg-transparent border-0 h-9 w-9 sm:h-10 sm:w-10"
+                className="text-muted-foreground hover:text-foreground hover:bg-accent/40 ml-1 shrink-0 bg-transparent border-0 h-8 w-8 sm:h-9 sm:w-9 2xl:h-10 2xl:w-10"
                 title="Attach Document"
               >
-                <Paperclip className="w-4 h-4 sm:w-5 sm:h-5" />
+                <Paperclip className="w-4 h-4 2xl:w-5 2xl:h-5" />
               </Button>
               <input
                 type="text"
@@ -880,13 +898,13 @@ export default function ChatPage() {
                 onChange={(e) => setInputValue(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && handleSend()}
                 placeholder="Ask CIVIL-LEX about Philippine Civil Code articles, jurisprudence, or contracts..."
-                className="flex-1 bg-transparent dark:bg-transparent border-none shadow-none outline-none focus:outline-none focus:ring-0 text-foreground placeholder:text-muted-foreground px-2 sm:px-3 h-11 sm:h-12 text-xs sm:text-sm md:text-base"
+                className="flex-1 bg-transparent dark:bg-transparent border-none shadow-none outline-none focus:outline-none focus:ring-0 text-foreground placeholder:text-muted-foreground px-2 sm:px-3 h-10 sm:h-11 2xl:h-12 text-xs sm:text-sm 2xl:text-base"
               />
               {isTyping ? (
                 <Button
                   type="button"
                   onClick={handleStop}
-                  className="mr-1.5 sm:mr-2 bg-destructive hover:bg-destructive/90 text-destructive-foreground rounded-xl h-8 w-8 sm:h-9 sm:w-9 p-0 focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-destructive focus-visible:outline-none transition-transform active:scale-95 shrink-0"
+                  className="mr-1.5 sm:mr-2 bg-destructive hover:bg-destructive/90 text-destructive-foreground rounded-xl h-7 w-7 sm:h-8 sm:w-8 2xl:h-9 2xl:w-9 p-0 focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-destructive focus-visible:outline-none transition-transform active:scale-95 shrink-0"
                   title="Stop Generating"
                 >
                   <Square className="w-3.5 h-3.5 sm:w-4 sm:h-4 fill-current" />
@@ -896,7 +914,7 @@ export default function ChatPage() {
                   type="button"
                   onClick={() => handleSend()}
                   disabled={!inputValue.trim()}
-                  className="mr-1.5 sm:mr-2 bg-primary hover:bg-primary/90 text-primary-foreground rounded-xl h-8 w-8 sm:h-9 sm:w-9 p-0 focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-primary focus-visible:outline-none transition-transform active:scale-95 shrink-0 disabled:opacity-40"
+                  className="mr-1.5 sm:mr-2 bg-[#100771] hover:bg-[#100771]/90 text-white dark:bg-blue-600 dark:hover:bg-blue-500 dark:text-white rounded-xl h-7 w-7 sm:h-8 sm:w-8 2xl:h-9 2xl:w-9 p-0 focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-blue-600 focus-visible:outline-none transition-transform active:scale-95 shrink-0 disabled:opacity-40"
                   title="Send Message"
                 >
                   <Send className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
@@ -908,441 +926,456 @@ export default function ChatPage() {
       </div>
 
       {/* ------------------------------------------------------------------ */}
-      {/* Citations Side Panel                                                 */}
+      {/* Citations Side Panel & Responsive Drawer                           */}
       {/* ------------------------------------------------------------------ */}
-      <div className="hidden lg:flex flex-col w-84 bg-card rounded-2xl border border-border shadow-sm overflow-hidden min-h-0">
-        {/* Panel header with Filter Tabs */}
-        <div className="p-3.5 border-b border-border bg-card flex flex-col gap-2.5 shrink-0">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <BookOpen className="w-4 h-4 text-primary" />
-              <h3 className="font-semibold text-sm text-foreground">Retained Citations</h3>
+      {(() => {
+        const citationsBody = (
+          <div className="flex flex-col h-full bg-card min-h-0 overflow-hidden">
+            {/* Panel header with Filter Tabs */}
+            <div className="p-3.5 border-b border-border bg-card flex flex-col gap-2.5 shrink-0">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <BookOpen className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+                  <h3 className="font-semibold text-sm text-foreground">Retained Citations</h3>
+                </div>
+                <span className="text-[10px] font-mono font-medium px-2 py-0.5 rounded-full bg-blue-500/10 dark:bg-blue-500/20 text-blue-600 dark:text-blue-400 border border-blue-500/20">
+                  {retainedCitations.length} Total
+                </span>
+              </div>
+
+              {/* Segmented Filter Pills */}
+              <div className="grid grid-cols-2 p-0.5 bg-accent/40 dark:bg-accent/20 rounded-xl border border-border/60 text-xs">
+                <button
+                  type="button"
+                  onClick={() => setActiveCitationFilter("all")}
+                  className={`py-1.5 px-2 rounded-lg font-medium transition-all text-center cursor-pointer ${activeCitationFilter === "all"
+                    ? "bg-background text-foreground shadow-2xs font-semibold"
+                    : "text-muted-foreground hover:text-foreground"
+                    }`}
+                >
+                  All Sources ({retainedCitations.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveCitationFilter("latest")}
+                  className={`py-1.5 px-2 rounded-lg font-medium transition-all text-center cursor-pointer ${activeCitationFilter === "latest"
+                    ? "bg-background text-foreground shadow-2xs font-semibold"
+                    : "text-muted-foreground hover:text-foreground"
+                    }`}
+                >
+                  Latest ({currentCitations.length})
+                </button>
+              </div>
             </div>
-            <span className="text-[10px] font-mono font-medium px-2 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20">
-              {retainedCitations.length} Total
-            </span>
-          </div>
 
-          {/* Segmented Filter Pills */}
-          <div className="grid grid-cols-2 p-0.5 bg-accent/40 dark:bg-accent/20 rounded-xl border border-border/60 text-xs">
-            <button
-              type="button"
-              onClick={() => setActiveCitationFilter("all")}
-              className={`py-1.5 px-2 rounded-lg font-medium transition-all text-center cursor-pointer ${activeCitationFilter === "all"
-                ? "bg-background text-foreground shadow-2xs font-semibold"
-                : "text-muted-foreground hover:text-foreground"
-                }`}
-            >
-              All Sources ({retainedCitations.length})
-            </button>
-            <button
-              type="button"
-              onClick={() => setActiveCitationFilter("latest")}
-              className={`py-1.5 px-2 rounded-lg font-medium transition-all text-center cursor-pointer ${activeCitationFilter === "latest"
-                ? "bg-background text-foreground shadow-2xs font-semibold"
-                : "text-muted-foreground hover:text-foreground"
-                }`}
-            >
-              Latest ({currentCitations.length})
-            </button>
-          </div>
-        </div>
+            {/* Scrollable citations list */}
+            <div ref={citationScrollRef} className="flex-1 overflow-y-auto p-4 custom-scrollbar min-h-0">
+              {/* NLI Statutory Grounding Reliability Header */}
+              {(() => {
+                const isNliEvaluating =
+                  ragStatus?.stage === "evaluating_nli" ||
+                  legalAnalytics?.nli_status === "Evaluating";
+                const shouldShowCard =
+                  legalAnalytics?.nli_score != null ||
+                  legalAnalytics?.is_out_of_domain ||
+                  isNliEvaluating;
 
-        {/* Scrollable citations list */}
-        <div ref={citationScrollRef} className="flex-1 overflow-y-auto p-4 custom-scrollbar min-h-0">
-          {/* NLI Statutory Grounding Reliability Header */}
-          {(() => {
-            const isNliEvaluating =
-              ragStatus?.stage === "evaluating_nli" ||
-              legalAnalytics?.nli_status === "Evaluating";
-            const shouldShowCard =
-              legalAnalytics?.nli_score != null ||
-              legalAnalytics?.is_out_of_domain ||
-              isNliEvaluating;
+                if (!shouldShowCard) return null;
 
-            if (!shouldShowCard) return null;
-
-            return (
-              <div
-                role="button"
-                tabIndex={0}
-                onClick={() => setIsNliModalOpen(true)}
-                onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && setIsNliModalOpen(true)}
-                className="p-3 mb-3 rounded-xl bg-card border border-border hover:border-primary/40 hover:bg-muted/40 transition-all duration-200 shadow-xs cursor-pointer group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-                title="Click to view full Natural Language Inference (NLI) statutory grounding audit"
-              >
-                <div className="flex items-start justify-between gap-2">
-                  <div className="flex items-center gap-2.5 min-w-0 flex-1">
-                    <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 border transition-transform group-hover:scale-105 ${
-                      isNliEvaluating
-                        ? "bg-primary/10 border-primary/30 text-primary"
-                        : legalAnalytics?.is_out_of_domain || legalAnalytics?.nli_score == null
-                          ? "bg-muted/80 border-border text-muted-foreground"
-                          : legalAnalytics.nli_score >= 85
-                            ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-600 dark:text-emerald-400"
-                            : legalAnalytics.nli_score >= 70
-                              ? "bg-blue-500/10 border-blue-500/20 text-blue-600 dark:text-blue-400"
-                              : "bg-amber-500/10 border-amber-500/20 text-amber-600 dark:text-amber-400"
-                    }`}>
-                      {isNliEvaluating ? (
-                        <Loader2 className="w-4 h-4 animate-spin text-primary" />
-                      ) : legalAnalytics?.is_out_of_domain || legalAnalytics?.nli_score == null ? (
-                        <Compass className="w-4 h-4 text-muted-foreground" />
-                      ) : (
-                        <ShieldCheck className="w-4 h-4" />
-                      )}
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-1.5 flex-wrap">
-                        <span className="text-xs font-semibold text-foreground group-hover:text-primary transition-colors">
-                          NLI Grounding
-                        </span>
-                        <span className="text-[10px] font-mono font-medium px-1.5 py-0.2 rounded bg-muted text-muted-foreground border border-border/70 shrink-0">
-                          {legalAnalytics?.is_out_of_domain
-                            ? legalAnalytics?.domain_category === "other_legal"
-                              ? "Jurisdiction Redirect"
-                              : "Scope Boundary"
-                            : "RA 386"}
-                        </span>
-                      </div>
-                      <p className="text-[11px] text-muted-foreground truncate">
-                        {isNliEvaluating
-                          ? "Auditing claims against Philippine Civil Code..."
+                return (
+                  <div
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => setIsNliModalOpen(true)}
+                    onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && setIsNliModalOpen(true)}
+                    className="p-3 mb-3 rounded-xl bg-card border border-border hover:border-primary/40 hover:bg-muted/40 transition-all duration-200 shadow-xs cursor-pointer group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                    title="Click to view full Natural Language Inference (NLI) statutory grounding audit"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                        <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 border transition-transform group-hover:scale-105 ${isNliEvaluating
+                          ? "bg-primary/10 border-primary/30 text-primary"
                           : legalAnalytics?.is_out_of_domain || legalAnalytics?.nli_score == null
-                            ? legalAnalytics?.domain_category === "other_legal"
-                              ? "Statutory jurisdiction redirection"
-                              : "Civil law scope boundary"
-                            : "Statutory entailment reliability"}
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-1 shrink-0 ml-1">
-                    {isNliEvaluating ? (
-                      <span className="text-xs font-semibold px-2 py-0.5 rounded-md border text-primary bg-primary/10 border-primary/30 animate-pulse flex items-center gap-1.5 whitespace-nowrap">
-                        <Loader2 className="w-3 h-3 animate-spin shrink-0" />
-                        Evaluating...
-                      </span>
-                    ) : (
-                      <span
-                        className={`text-xs font-bold px-2 py-0.5 rounded-md border tabular-nums whitespace-nowrap ${
-                          legalAnalytics?.is_out_of_domain || legalAnalytics?.nli_score == null
-                            ? "text-muted-foreground bg-muted/60 border-border"
+                            ? "bg-muted/80 border-border text-muted-foreground"
                             : legalAnalytics.nli_score >= 85
-                              ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
+                              ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-600 dark:text-emerald-400"
                               : legalAnalytics.nli_score >= 70
-                                ? "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60"
-                                : "text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/50 border-amber-200 dark:border-amber-800/60"
-                        }`}
-                      >
-                        {legalAnalytics?.is_out_of_domain || legalAnalytics?.nli_score == null ? "N/A" : `${legalAnalytics.nli_score}%`}
-                      </span>
-                    )}
-                    <Info className="w-3.5 h-3.5 text-muted-foreground/60 group-hover:text-primary transition-colors ml-0.5 shrink-0" />
-                  </div>
-                </div>
+                                ? "bg-blue-500/10 border-blue-500/20 text-blue-600 dark:text-blue-400"
+                                : "bg-amber-500/10 border-amber-500/20 text-amber-600 dark:text-amber-400"
+                          }`}>
+                          {isNliEvaluating ? (
+                            <Loader2 className="w-4 h-4 animate-spin text-primary" />
+                          ) : legalAnalytics?.is_out_of_domain || legalAnalytics?.nli_score == null ? (
+                            <Compass className="w-4 h-4 text-muted-foreground" />
+                          ) : (
+                            <ShieldCheck className="w-4 h-4" />
+                          )}
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="text-xs font-semibold text-foreground group-hover:text-primary transition-colors">
+                              NLI Grounding
+                            </span>
+                            <span className="text-[10px] font-mono font-medium px-1.5 py-0.2 rounded bg-muted text-muted-foreground border border-border/70 shrink-0">
+                              {legalAnalytics?.is_out_of_domain
+                                ? legalAnalytics?.domain_category === "other_legal"
+                                  ? "Jurisdiction Redirect"
+                                  : "Scope Boundary"
+                                : "RA 386"}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-muted-foreground truncate">
+                            {isNliEvaluating
+                              ? "Auditing claims against Philippine Civil Code..."
+                              : legalAnalytics?.is_out_of_domain || legalAnalytics?.nli_score == null
+                                ? legalAnalytics?.domain_category === "other_legal"
+                                  ? "Statutory jurisdiction redirection"
+                                  : "Civil law scope boundary"
+                                : "Statutory entailment reliability"}
+                          </p>
+                        </div>
+                      </div>
 
-                {/* Dynamic Visual Progress Meter */}
-                <div className="w-full bg-muted/70 dark:bg-muted/40 rounded-full h-1.5 overflow-hidden mt-2.5">
-                  {isNliEvaluating ? (
-                    <div className="h-full rounded-full bg-gradient-to-r from-primary/30 via-primary to-primary/30 animate-pulse w-full" />
-                  ) : (
-                    <div
-                      className={`h-full rounded-full transition-all duration-700 ease-out ${
-                        legalAnalytics?.is_out_of_domain || legalAnalytics?.nli_score == null
-                          ? "bg-muted-foreground/30"
-                          : legalAnalytics.nli_score >= 85
-                            ? "bg-emerald-500"
-                            : legalAnalytics.nli_score >= 70
-                              ? "bg-blue-500"
-                              : "bg-amber-500"
-                      }`}
-                      style={{
-                        width: `${
-                          legalAnalytics?.is_out_of_domain || legalAnalytics?.nli_score == null
-                            ? 0
-                            : Math.min(100, Math.max(0, legalAnalytics.nli_score))
-                        }%`,
-                      }}
-                    />
-                  )}
-                </div>
+                      <div className="flex items-center gap-1 shrink-0 ml-1">
+                        {isNliEvaluating ? (
+                          <span className="text-xs font-semibold px-2 py-0.5 rounded-md border text-primary bg-primary/10 border-primary/30 animate-pulse flex items-center gap-1.5 whitespace-nowrap">
+                            <Loader2 className="w-3 h-3 animate-spin shrink-0" />
+                            Evaluating...
+                          </span>
+                        ) : (
+                          <span
+                            className={`text-xs font-bold px-2 py-0.5 rounded-md border tabular-nums whitespace-nowrap ${legalAnalytics?.is_out_of_domain || legalAnalytics?.nli_score == null
+                              ? "text-muted-foreground bg-muted/60 border-border"
+                              : legalAnalytics.nli_score >= 85
+                                ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
+                                : legalAnalytics.nli_score >= 70
+                                  ? "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60"
+                                  : "text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/50 border-amber-200 dark:border-amber-800/60"
+                              }`}
+                          >
+                            {legalAnalytics?.is_out_of_domain || legalAnalytics?.nli_score == null ? "N/A" : `${legalAnalytics.nli_score}%`}
+                          </span>
+                        )}
+                        <Info className="w-3.5 h-3.5 text-muted-foreground/60 group-hover:text-primary transition-colors ml-0.5 shrink-0" />
+                      </div>
+                    </div>
 
-                {/* Verification Footer Label */}
-                <div className="flex items-center justify-between mt-2 text-[10px]">
-                  <span className="flex items-center gap-1.5 text-muted-foreground">
-                    <span
-                      className={`w-1.5 h-1.5 rounded-full ${
-                        isNliEvaluating
-                          ? "bg-primary animate-ping"
-                          : legalAnalytics?.is_out_of_domain || legalAnalytics?.nli_score == null
-                            ? "bg-muted-foreground/50"
+                    {/* Dynamic Visual Progress Meter */}
+                    <div className="w-full bg-muted/70 dark:bg-muted/40 rounded-full h-1.5 overflow-hidden mt-2.5">
+                      {isNliEvaluating ? (
+                        <div className="h-full rounded-full bg-gradient-to-r from-primary/30 via-primary to-primary/30 animate-pulse w-full" />
+                      ) : (
+                        <div
+                          className={`h-full rounded-full transition-all duration-700 ease-out ${legalAnalytics?.is_out_of_domain || legalAnalytics?.nli_score == null
+                            ? "bg-muted-foreground/30"
                             : legalAnalytics.nli_score >= 85
-                              ? "bg-emerald-500 animate-pulse"
+                              ? "bg-emerald-500"
                               : legalAnalytics.nli_score >= 70
                                 ? "bg-blue-500"
                                 : "bg-amber-500"
-                      }`}
-                    />
-                    {isNliEvaluating
-                      ? "Auditing response claims against Civil Code..."
-                      : legalAnalytics?.is_out_of_domain || legalAnalytics?.nli_score == null
-                        ? legalAnalytics?.domain_category === "other_legal"
-                          ? `Redirected (${legalAnalytics.target_domain || "Non-Civil Statute"})`
-                          : "Domain Scope Refusal"
-                        : legalAnalytics.nli_score >= 85
-                          ? "Strict Statutory Entailment"
-                          : legalAnalytics.nli_score >= 70
-                            ? "Substantially Consistent"
-                            : "Generalized Principles"}
-                  </span>
-                  <span className="text-[10px] font-medium text-muted-foreground group-hover:text-primary transition-colors inline-flex items-center gap-0.5">
-                    Inspect audit <ChevronRight className="w-3 h-3 group-hover:translate-x-0.5 transition-transform" />
-                  </span>
-                </div>
-              </div>
-            );
-          })()}
+                            }`}
+                          style={{
+                            width: `${legalAnalytics?.is_out_of_domain || legalAnalytics?.nli_score == null
+                              ? 0
+                              : Math.min(100, Math.max(0, legalAnalytics.nli_score))
+                              }%`,
+                          }}
+                        />
+                      )}
+                    </div>
 
-          {(() => {
-            const rawDisplayCitations =
-              activeCitationFilter === "latest"
-                ? currentCitations
-                : retainedCitations.length > 0
-                  ? retainedCitations
-                  : currentCitations;
+                    {/* Verification Footer Label */}
+                    <div className="flex items-center justify-between mt-2 text-[10px]">
+                      <span className="flex items-center gap-1.5 text-muted-foreground">
+                        <span
+                          className={`w-1.5 h-1.5 rounded-full ${isNliEvaluating
+                            ? "bg-primary animate-ping"
+                            : legalAnalytics?.is_out_of_domain || legalAnalytics?.nli_score == null
+                              ? "bg-muted-foreground/50"
+                              : legalAnalytics.nli_score >= 85
+                                ? "bg-emerald-500"
+                                : legalAnalytics.nli_score >= 70
+                                  ? "bg-blue-500"
+                                  : "bg-amber-500"
+                            }`}
+                        />
+                        {isNliEvaluating
+                          ? "Auditing response claims against Civil Code..."
+                          : legalAnalytics?.is_out_of_domain || legalAnalytics?.nli_score == null
+                            ? legalAnalytics?.domain_category === "other_legal"
+                              ? `Redirected (${legalAnalytics.target_domain || "Non-Civil Statute"})`
+                              : "Domain Scope Refusal"
+                            : legalAnalytics.nli_score >= 85
+                              ? "Strict Statutory Entailment"
+                              : legalAnalytics.nli_score >= 70
+                                ? "Substantially Consistent"
+                                : "Generalized Principles"}
+                      </span>
+                      <span className="text-[10px] font-medium text-muted-foreground group-hover:text-primary transition-colors inline-flex items-center gap-0.5">
+                        Inspect audit <ChevronRight className="w-3 h-3 group-hover:translate-x-0.5 transition-transform" />
+                      </span>
+                    </div>
+                  </div>
+                );
+              })()}
 
-            // Separate active grounding authorities from out-of-rank authorities
-            const activeGroundCitations = [...rawDisplayCitations]
-              .filter((c: any) => c.is_in_context !== false && c.rank_status !== "out_of_rank")
-              .sort((a, b) => (a?.rank || 999) - (b?.rank || 999) || (Number(b?.suitability_percent) || 0) - (Number(a?.suitability_percent) || 0));
+              {(() => {
+                const rawDisplayCitations =
+                  activeCitationFilter === "latest"
+                    ? currentCitations
+                    : retainedCitations.length > 0
+                      ? retainedCitations
+                      : currentCitations;
 
-            const outOfRankCitations = [...rawDisplayCitations]
-              .filter((c: any) => c.is_in_context === false || c.rank_status === "out_of_rank")
-              .sort((a, b) => (a?.rank || 999) - (b?.rank || 999) || (Number(b?.suitability_percent) || 0) - (Number(a?.suitability_percent) || 0));
+                // Separate active grounding authorities from out-of-rank authorities
+                const activeGroundCitations = [...rawDisplayCitations]
+                  .filter((c: any) => c.is_in_context !== false && c.rank_status !== "out_of_rank")
+                  .sort((a, b) => (a?.rank || 999) - (b?.rank || 999) || (Number(b?.suitability_percent) || 0) - (Number(a?.suitability_percent) || 0));
 
-            // Show all citations with active ground first and out-of-rank placed last
-            const displayCitations = [...activeGroundCitations, ...outOfRankCitations];
+                const outOfRankCitations = [...rawDisplayCitations]
+                  .filter((c: any) => c.is_in_context === false || c.rank_status === "out_of_rank")
+                  .sort((a, b) => (a?.rank || 999) - (b?.rank || 999) || (Number(b?.suitability_percent) || 0) - (Number(a?.suitability_percent) || 0));
 
-            if (displayCitations.length > 0) {
-              return (
-                <div className="space-y-3">
-                  {displayCitations.map((cit, idx) => {
-                    const isCase =
-                      cit.parent_type === "case" ||
-                      cit.parent_type === "jurisprudence" ||
-                      Boolean(cit.metadata?.gr_number) ||
-                      String(cit.parent_id || "").startsWith("GR_");
+                // Show all citations with active ground first and out-of-rank placed last
+                const displayCitations = [...activeGroundCitations, ...outOfRankCitations];
 
-                    const isOutOfRank = cit.is_in_context === false || cit.rank_status === "out_of_rank";
-                    const isFirstOutOfRank = isOutOfRank && idx === activeGroundCitations.length && activeGroundCitations.length > 0;
+                if (displayCitations.length > 0) {
+                  return (
+                    <div className="space-y-3">
+                      {displayCitations.map((cit, idx) => {
+                        const isCase =
+                          cit.parent_type === "case" ||
+                          cit.parent_type === "jurisprudence" ||
+                          Boolean(cit.metadata?.gr_number) ||
+                          String(cit.parent_id || "").startsWith("GR_");
 
-                    const year = cit.metadata?.decision_date ? cit.metadata.decision_date.split(" ").pop() : null;
-                    const title = cit.metadata?.title || cit.metadata?.gr_number || cit.parent_id;
-                    const gr = cit.metadata?.gr_number || (String(cit.parent_id || "").startsWith("GR_") ? cit.parent_id : null);
-                    const summary = cleanCaseSummary(cit.metadata?.content_summary || cit.content);
+                        const isOutOfRank = cit.is_in_context === false || cit.rank_status === "out_of_rank";
+                        const isFirstOutOfRank = isOutOfRank && idx === activeGroundCitations.length && activeGroundCitations.length > 0;
 
-                    return (
-                      <Fragment key={idx}>
-                        {isFirstOutOfRank && (
-                          <div className="pt-3 pb-1 flex items-center gap-2">
-                            <div className="h-px bg-border/80 flex-1" />
-                            <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider px-2 py-0.5 rounded-full bg-muted/60 border border-border/70">
-                              Out of Rank Authorities ({outOfRankCitations.length})
-                            </span>
-                            <div className="h-px bg-border/80 flex-1" />
-                          </div>
-                        )}
-                        {isCase ? (
-                          <div
-                            className={`p-3.5 rounded-xl border shadow-xs hover:shadow-md hover:-translate-y-0.5 cursor-pointer transition-all duration-300 group flex flex-col justify-between ${isOutOfRank
-                              ? "bg-card/60 dark:bg-card/40 border-border/70 opacity-90 hover:opacity-100 hover:border-border"
-                              : "bg-card/90 dark:bg-card/70 border-border/80 hover:border-primary/40"
-                              }`}
-                            onClick={() => setSelectedCitation(cit)}
-                          >
-                            <div>
-                              <div className="flex items-center justify-between mb-2 gap-1.5">
-                                <div className="flex items-center gap-1.5 min-w-0 flex-wrap">
-                                  {cit.rank && (
-                                    <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-muted/80 text-foreground border border-border/70 shrink-0">
-                                      #{cit.rank}
-                                    </span>
-                                  )}
-                                  <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20 shrink-0">
-                                    <Scale className="w-3 h-3" />
-                                    Jurisprudence
+                        const year = cit.metadata?.decision_date ? cit.metadata.decision_date.split(" ").pop() : null;
+                        const title = cit.metadata?.title || cit.metadata?.gr_number || cit.parent_id;
+                        const gr = cit.metadata?.gr_number || (String(cit.parent_id || "").startsWith("GR_") ? cit.parent_id : null);
+                        const summary = cleanCaseSummary(cit.metadata?.content_summary || cit.content);
+
+                        return (
+                          <Fragment key={idx}>
+                            {isFirstOutOfRank && (
+                              <div className="pt-3 pb-1 flex items-center gap-2">
+                                <div className="h-px bg-border/80 flex-1" />
+                                <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider px-2 py-0.5 rounded-full bg-muted/60 border border-border/70">
+                                  Out of Rank Authorities ({outOfRankCitations.length})
+                                </span>
+                                <div className="h-px bg-border/80 flex-1" />
+                              </div>
+                            )}
+                            {isCase ? (
+                              <div
+                                className={`p-3.5 rounded-xl border shadow-xs hover:shadow-md hover:-translate-y-0.5 cursor-pointer transition-all duration-300 group flex flex-col justify-between ${isOutOfRank
+                                  ? "bg-card/60 dark:bg-card/40 border-border/70 opacity-90 hover:opacity-100 hover:border-border"
+                                  : "bg-card/90 dark:bg-card/70 border-border/80 hover:border-primary/40"
+                                  }`}
+                                onClick={() => setSelectedCitation(cit)}
+                              >
+                                <div>
+                                  <div className="flex items-center justify-between mb-2 gap-1.5">
+                                    <div className="flex items-center gap-1.5 min-w-0 flex-wrap">
+                                      {cit.rank && (
+                                        <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-muted/80 text-foreground border border-border/70 shrink-0">
+                                          #{cit.rank}
+                                        </span>
+                                      )}
+                                      <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20 shrink-0">
+                                        <Scale className="w-3 h-3" />
+                                        Jurisprudence
+                                      </span>
+                                      {isOutOfRank ? (
+                                        <span className="inline-flex items-center gap-1 text-[10px] font-mono font-medium px-1.5 py-0.5 rounded bg-muted text-muted-foreground border border-border/80 shrink-0">
+                                          Out of Rank
+                                        </span>
+                                      ) : (
+                                        <span className="inline-flex items-center gap-1 text-[10px] font-mono font-medium px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 shrink-0">
+                                          Active
+                                        </span>
+                                      )}
+                                      {year && (
+                                        <Badge variant="outline" className="text-[10px] whitespace-nowrap bg-background font-mono">
+                                          {year}
+                                        </Badge>
+                                      )}
+                                    </div>
+
+                                    {cit.suitability_percent !== undefined && (
+                                      <span
+                                        className={`text-xs font-semibold px-2 py-0.5 rounded-md border tabular-nums shrink-0 ${cit.suitability_percent >= 85
+                                          ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
+                                          : cit.suitability_percent >= 70
+                                            ? "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60"
+                                            : "text-muted-foreground bg-muted border-border"
+                                          }`}
+                                      >
+                                        {cit.suitability_percent}%
+                                      </span>
+                                    )}
+                                  </div>
+
+                                  <div className="mb-2">
+                                    <h4 className="font-semibold text-xs text-foreground group-hover:text-primary transition-colors leading-snug line-clamp-2">
+                                      {title}
+                                    </h4>
+                                    {gr && (
+                                      <span className="text-[10px] font-mono text-muted-foreground block mt-0.5">
+                                        {gr}
+                                      </span>
+                                    )}
+                                  </div>
+
+                                  <p className="text-xs text-muted-foreground leading-relaxed line-clamp-3 mb-3">
+                                    {summary}
+                                  </p>
+                                </div>
+
+                                <div className="flex items-center justify-between pt-2 border-t border-border/50 text-xs font-semibold text-primary mt-auto">
+                                  <span className="flex items-center group-hover:translate-x-1 transition-transform">
+                                    Read full case <ArrowRight className="w-3 h-3 ml-1" />
                                   </span>
-                                  {isOutOfRank ? (
-                                    <span className="inline-flex items-center gap-1 text-[10px] font-mono font-medium px-1.5 py-0.5 rounded bg-muted text-muted-foreground border border-border/80 shrink-0">
-                                      Out of Rank
-                                    </span>
-                                  ) : (
-                                    <span className="inline-flex items-center gap-1 text-[10px] font-mono font-medium px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 shrink-0">
-                                      Active
+                                  {cit.metadata?.source_url && (
+                                    <span className="text-[10px] font-normal text-muted-foreground">
+                                      LawPhil
                                     </span>
                                   )}
-                                  {year && (
-                                    <Badge variant="outline" className="text-[10px] whitespace-nowrap bg-background font-mono">
-                                      {year}
-                                    </Badge>
+                                </div>
+                              </div>
+                            ) : (
+                              <div
+                                className={`p-3 rounded-lg border hover:bg-muted/40 cursor-pointer transition-colors shadow-xs group ${isOutOfRank
+                                  ? "bg-card/60 border-border/70 opacity-90 hover:opacity-100"
+                                  : "bg-card border-border hover:border-primary/40"
+                                  }`}
+                                onClick={() => setSelectedCitation(cit)}
+                              >
+                                <div className="flex items-center justify-between mb-1.5 gap-2">
+                                  <div className="min-w-0 flex items-center gap-1.5 flex-wrap">
+                                    {cit.rank && (
+                                      <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-muted/80 text-foreground border border-border/70 shrink-0">
+                                        #{cit.rank}
+                                      </span>
+                                    )}
+                                    <span className="text-[11px] font-mono font-medium text-foreground/80 px-1.5 py-0.5 rounded bg-muted border border-border/60 shrink-0">
+                                      {cit.parent_id}
+                                    </span>
+                                    {isOutOfRank ? (
+                                      <span className="inline-flex items-center gap-1 text-[10px] font-mono font-medium px-1.5 py-0.5 rounded bg-muted text-muted-foreground border border-border/80 shrink-0">
+                                        Out of Rank
+                                      </span>
+                                    ) : (
+                                      <span className="inline-flex items-center gap-1 text-[10px] font-mono font-medium px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 shrink-0">
+                                        Active Grounding
+                                      </span>
+                                    )}
+                                  </div>
+
+                                  {cit.suitability_percent !== undefined && (
+                                    <span
+                                      className={`text-xs font-semibold px-2 py-0.5 rounded-md border tabular-nums shrink-0 ${cit.suitability_percent >= 85
+                                        ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
+                                        : cit.suitability_percent >= 70
+                                          ? "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60"
+                                          : "text-muted-foreground bg-muted border-border"
+                                        }`}
+                                    >
+                                      {cit.suitability_percent}%
+                                    </span>
                                   )}
                                 </div>
 
-                                {cit.suitability_percent !== undefined && (
-                                  <span
-                                    className={`text-xs font-semibold px-2 py-0.5 rounded-md border tabular-nums shrink-0 ${cit.suitability_percent >= 85
-                                      ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
-                                      : cit.suitability_percent >= 70
-                                        ? "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60"
-                                        : "text-muted-foreground bg-muted border-border"
-                                      }`}
-                                  >
-                                    {cit.suitability_percent}%
-                                  </span>
+                                {cit.metadata?.title && (
+                                  <p className="text-xs font-semibold text-foreground line-clamp-1 mb-1">
+                                    {cit.metadata.title} {cit.metadata.gr_number ? `(GR ${cit.metadata.gr_number})` : ""}
+                                  </p>
                                 )}
+                                <p className="text-xs text-muted-foreground leading-relaxed line-clamp-3">
+                                  {cit.content}
+                                </p>
                               </div>
-
-                              <div className="mb-2">
-                                <h4 className="font-semibold text-xs text-foreground group-hover:text-primary transition-colors leading-snug line-clamp-2">
-                                  {title}
-                                </h4>
-                                {gr && (
-                                  <span className="text-[10px] font-mono text-muted-foreground block mt-0.5">
-                                    {gr}
-                                  </span>
-                                )}
-                              </div>
-
-                              <p className="text-xs text-muted-foreground leading-relaxed line-clamp-3 mb-3">
-                                {summary}
-                              </p>
-                            </div>
-
-                            <div className="flex items-center justify-between pt-2 border-t border-border/50 text-xs font-semibold text-primary mt-auto">
-                              <span className="flex items-center group-hover:translate-x-1 transition-transform">
-                                Read full case <ArrowRight className="w-3 h-3 ml-1" />
-                              </span>
-                              {cit.metadata?.source_url && (
-                                <span className="text-[10px] font-normal text-muted-foreground">
-                                  LawPhil
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                        ) : (
-                          <div
-                            className={`p-3 rounded-lg border hover:bg-muted/40 cursor-pointer transition-colors shadow-xs group ${isOutOfRank
-                              ? "bg-card/60 border-border/70 opacity-90 hover:opacity-100"
-                              : "bg-card border-border hover:border-primary/40"
-                              }`}
-                            onClick={() => setSelectedCitation(cit)}
-                          >
-                            <div className="flex items-center justify-between mb-1.5 gap-2">
-                              <div className="min-w-0 flex items-center gap-1.5 flex-wrap">
-                                {cit.rank && (
-                                  <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-muted/80 text-foreground border border-border/70 shrink-0">
-                                    #{cit.rank}
-                                  </span>
-                                )}
-                                <h4 className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider truncate">
-                                  {cit.parent_type === "civil_code" || cit.parent_type === "article"
-                                    ? "Civil Code"
-                                    : "Legal Authority"}
-                                </h4>
-                                <span className="text-[11px] font-mono font-medium text-foreground/80 px-1.5 py-0.5 rounded bg-muted border border-border/60 shrink-0">
-                                  {cit.parent_id}
-                                </span>
-                                {isOutOfRank ? (
-                                  <span className="inline-flex items-center gap-1 text-[10px] font-mono font-medium px-1.5 py-0.5 rounded bg-muted text-muted-foreground border border-border/80 shrink-0">
-                                    Out of Rank
-                                  </span>
-                                ) : (
-                                  <span className="inline-flex items-center gap-1 text-[10px] font-mono font-medium px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 shrink-0">
-                                    Active Grounding
-                                  </span>
-                                )}
-                              </div>
-
-                              {cit.suitability_percent !== undefined && (
-                                <span
-                                  className={`text-xs font-semibold px-2 py-0.5 rounded-md border tabular-nums shrink-0 ${cit.suitability_percent >= 85
-                                    ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
-                                    : cit.suitability_percent >= 70
-                                      ? "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60"
-                                      : "text-muted-foreground bg-muted border-border"
-                                    }`}
-                                >
-                                  {cit.suitability_percent}%
-                                </span>
-                              )}
-                            </div>
-
-                            {cit.metadata?.title && (
-                              <p className="text-xs font-semibold text-foreground line-clamp-1 mb-1">
-                                {cit.metadata.title} {cit.metadata.gr_number ? `(GR ${cit.metadata.gr_number})` : ""}
-                              </p>
                             )}
-                            <p className="text-xs text-muted-foreground leading-relaxed line-clamp-3">
-                              {cit.content}
-                            </p>
-                          </div>
-                        )}
-                      </Fragment>
-                    );
-                  })}
-                  <div className="h-2" />
-                </div>
-              );
-            }
-
-            if (isTyping && displayCitations.length === 0) {
-              return (
-                <div className="h-full flex flex-col items-center justify-center text-center text-muted-foreground space-y-2.5 pt-16 animate-fade-in px-4">
-                  <Loader2 className="w-6 h-6 text-primary animate-spin opacity-80" />
-                  <p className="text-xs font-semibold text-foreground">Processing legal inquiry...</p>
-                  <p className="text-[11px] text-muted-foreground max-w-xs leading-relaxed">
-                    Relevant statutory provisions and jurisprudence will appear once the response begins streaming.
-                  </p>
-                </div>
-              );
-            }
-
-            if (messages.length > 1 && !isTyping) {
-              if (legalAnalytics?.is_out_of_domain) {
-                return (
-                  <div className="h-full flex flex-col items-center justify-center text-center text-muted-foreground space-y-2.5 pt-16 px-4 animate-fade-in">
-                    <div className="w-10 h-10 rounded-xl bg-muted flex items-center justify-center border border-border/80">
-                      <ShieldAlert className="w-5 h-5 text-muted-foreground" />
+                          </Fragment>
+                        );
+                      })}
+                      <div className="h-2" />
                     </div>
-                    <p className="text-xs font-semibold text-foreground">No Philippine Civil Code Citations</p>
-                    <p className="text-[11px] text-muted-foreground max-w-xs leading-relaxed">
-                      {legalAnalytics.domain_category === "other_legal"
-                        ? `This inquiry involves ${legalAnalytics.target_domain || "a specialized legal field outside the Civil Code"}. Vector search was bypassed to prevent irrelevant statutory citations.`
-                        : "This inquiry falls outside the scope of Philippine Civil Law (RA 386). Vector search was bypassed to preserve retrieval precision."}
+                  );
+                }
+
+                if (isTyping && displayCitations.length === 0) {
+                  return (
+                    <div className="h-full flex flex-col items-center justify-center text-center text-muted-foreground space-y-2.5 pt-16 animate-fade-in px-4">
+                      <Loader2 className="w-6 h-6 text-primary animate-spin opacity-80" />
+                      <p className="text-xs font-semibold text-foreground">Processing legal inquiry...</p>
+                      <p className="text-[11px] text-muted-foreground max-w-xs leading-relaxed">
+                        Relevant statutory provisions and jurisprudence will appear once the response begins streaming.
+                      </p>
+                    </div>
+                  );
+                }
+
+                if (messages.length > 1 && !isTyping) {
+                  if (legalAnalytics?.is_out_of_domain) {
+                    return (
+                      <div className="h-full flex flex-col items-center justify-center text-center text-muted-foreground space-y-2.5 pt-16 px-4 animate-fade-in">
+                        <div className="w-10 h-10 rounded-xl bg-muted flex items-center justify-center border border-border/80">
+                          <ShieldAlert className="w-5 h-5 text-muted-foreground" />
+                        </div>
+                        <p className="text-xs font-semibold text-foreground">No Philippine Civil Code Citations</p>
+                        <p className="text-[11px] text-muted-foreground max-w-xs leading-relaxed">
+                          {legalAnalytics.domain_category === "other_legal"
+                            ? `This inquiry involves ${legalAnalytics.target_domain || "a specialized legal field outside the Civil Code"}. Vector search was bypassed to prevent irrelevant statutory citations.`
+                            : "This inquiry falls outside the scope of Philippine Civil Law (RA 386). Vector search was bypassed to preserve retrieval precision."}
+                        </p>
+                      </div>
+                    );
+                  }
+                  return (
+                    <div className="h-full flex flex-col items-center justify-center text-center text-muted-foreground space-y-2 pt-16">
+                      <BookOpen className="w-8 h-8 opacity-20" />
+                      <p className="text-sm">No specific citations found in this view.</p>
+                    </div>
+                  );
+                }
+
+                return (
+                  <div className="h-full flex flex-col items-center justify-center text-center text-muted-foreground space-y-2 pt-16">
+                    <BookOpen className="w-8 h-8 opacity-20" />
+                    <p className="text-sm">
+                      Retained statutory citations and doctrines will accumulate here across conversation turns.
                     </p>
                   </div>
                 );
-              }
-              return (
-                <div className="h-full flex flex-col items-center justify-center text-center text-muted-foreground space-y-2 pt-16">
-                  <BookOpen className="w-8 h-8 opacity-20" />
-                  <p className="text-sm">No specific citations found in this view.</p>
-                </div>
-              );
-            }
+              })()}
+            </div>
+          </div>
+        );
 
-            return (
-              <div className="h-full flex flex-col items-center justify-center text-center text-muted-foreground space-y-2 pt-16">
-                <BookOpen className="w-8 h-8 opacity-20" />
-                <p className="text-sm">
-                  Retained statutory citations and doctrines will accumulate here across conversation turns.
-                </p>
-              </div>
-            );
-          })()}
-        </div>
-      </div>
+        return (
+          <>
+            {/* Desktop Citations Panel (Shown on xl+ / >= 1280px) */}
+            <div className="hidden xl:flex flex-col w-80 xl:w-84 2xl:w-96 3xl:w-[26rem] bg-card rounded-2xl border border-border shadow-sm overflow-hidden min-h-0 shrink-0 transition-all duration-200">
+              {citationsBody}
+            </div>
+
+            {/* Responsive Citations Drawer (Mobile, Tablet, and 14-inch Laptops < xl) */}
+            <Sheet open={isMobileCitationsOpen} onOpenChange={setIsMobileCitationsOpen}>
+              <SheetContent side="right" className="w-[90vw] sm:w-[480px] max-w-lg p-0 flex flex-col h-full bg-card">
+                <SheetHeader className="sr-only">
+                  <SheetTitle>Retained Citations</SheetTitle>
+                </SheetHeader>
+                <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+                  {citationsBody}
+                </div>
+              </SheetContent>
+            </Sheet>
+          </>
+        );
+      })()}
 
       {/* Supreme Court Jurisprudence Full Document Reader Modal - Matches Table of Contents */}
       {(() => {
@@ -1377,7 +1410,7 @@ export default function ChatPage() {
 
             {/* Statutory / General Citation Detail Modal */}
             <Dialog open={Boolean(selectedCitation && !isSelectedCase)} onOpenChange={(open) => !open && setSelectedCitation(null)}>
-              <DialogContent className="w-[92vw] sm:w-[70vw] sm:max-w-[70vw] max-w-[70vw] max-h-[88vh] overflow-y-auto custom-scrollbar p-6 sm:p-8 rounded-2xl">
+              <DialogContent className="w-[95vw] sm:w-[92vw] md:w-[88vw] lg:w-[82vw] xl:w-[76vw] 2xl:w-[70vw] max-w-6xl 2xl:max-w-7xl max-h-[90dvh] overflow-y-auto custom-scrollbar p-4 sm:p-6 lg:p-8 rounded-2xl">
                 <DialogHeader className="space-y-3 pb-4 border-b border-border/70">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="flex items-center gap-2">
@@ -1452,8 +1485,8 @@ export default function ChatPage() {
                     <DialogTitle className="text-xl sm:text-2xl font-bold text-foreground tracking-tight">
                       {selectedCitation?.metadata?.title || (
                         selectedCitation?.parent_type === "civil_code" || selectedCitation?.parent_type === "article"
-                          ? `Civil Code of the Philippines — ${selectedCitation?.parent_id}`
-                          : `${selectedCitation?.parent_type?.toUpperCase?.() ?? "SOURCE"} — ${selectedCitation?.parent_id}`
+                          ? `Civil Code of the Philippines : ${selectedCitation?.parent_id}`
+                          : `${selectedCitation?.parent_type?.toUpperCase?.() ?? "SOURCE"} : ${selectedCitation?.parent_id}`
                       )}
                     </DialogTitle>
                     {selectedCitation?.metadata?.hierarchy && (
@@ -1471,7 +1504,7 @@ export default function ChatPage() {
                 </DialogHeader>
 
                 <div className="mt-4 space-y-4">
-                  <div className="p-5 sm:p-6 bg-accent/20 dark:bg-accent/10 rounded-xl border border-border/70 text-foreground leading-relaxed text-sm sm:text-base whitespace-pre-wrap selection:bg-primary/20">
+                  <div className="p-5 sm:p-6 lg:p-7 bg-accent/20 dark:bg-accent/10 rounded-xl border border-border/70 text-foreground leading-relaxed text-sm sm:text-base lg:text-[17px] whitespace-pre-wrap selection:bg-primary/20">
                     {selectedCitation?.content}
                   </div>
 
@@ -1497,7 +1530,7 @@ export default function ChatPage() {
 
       {/* Natural Language Inference (NLI) Audit Modal */}
       <Dialog open={isNliModalOpen} onOpenChange={setIsNliModalOpen}>
-        <DialogContent className="w-[92vw] sm:w-[580px] sm:max-w-[580px] max-h-[90vh] overflow-y-auto custom-scrollbar p-6 sm:p-7 rounded-2xl bg-card border border-border shadow-2xl">
+        <DialogContent className="w-[95vw] sm:w-[90vw] md:w-[680px] md:max-w-2xl lg:max-w-3xl max-h-[90dvh] overflow-y-auto custom-scrollbar p-4 sm:p-6 lg:p-8 rounded-2xl bg-card border border-border shadow-2xl">
           <DialogHeader className="space-y-2 pb-4 border-b border-border/80">
             <div className="flex items-center gap-2.5">
               <div className="w-9 h-9 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center shrink-0">

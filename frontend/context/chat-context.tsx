@@ -251,7 +251,7 @@ export const ALL_STARTER_PROMPTS: StarterPrompt[] = [
   },
 ];
 
-export function getRandomStarters(count: number = 3): StarterPrompt[] {
+export function getRandomStarters(count: number = 2): StarterPrompt[] {
   // Shuffle array using Fisher-Yates and pick first N
   const pool = [...ALL_STARTER_PROMPTS];
   for (let i = pool.length - 1; i > 0; i--) {
@@ -272,7 +272,7 @@ export function generateFollowUpPrompts(lastAnswer: string, citations: any[] = [
 
   const addPrompt = (p: string) => {
     const clean = p.trim();
-    if (!seen.has(clean.toLowerCase()) && suggestions.length < 3) {
+    if (!seen.has(clean.toLowerCase()) && suggestions.length < 2) {
       seen.add(clean.toLowerCase());
       suggestions.push(clean);
     }
@@ -323,11 +323,11 @@ export function generateFollowUpPrompts(lastAnswer: string, citations: any[] = [
     "What are the relevant exceptions recognized under Philippine jurisprudence?",
   ];
   for (const fb of fallbacks) {
-    if (suggestions.length >= 3) break;
+    if (suggestions.length >= 2) break;
     addPrompt(fb);
   }
 
-  return suggestions.slice(0, 3);
+  return suggestions.slice(0, 2);
 }
 
 
@@ -430,11 +430,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
   // Initialize random starter prompts on mount
   useEffect(() => {
-    setStarterPrompts(getRandomStarters(3));
+    setStarterPrompts(getRandomStarters(2));
   }, []);
 
   const refreshStarters = useCallback(() => {
-    setStarterPrompts(getRandomStarters(3));
+    setStarterPrompts(getRandomStarters(2));
   }, []);
 
 
@@ -759,7 +759,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                   fullResponseAccumulator += data.text;
                   enqueueText(data.text);
                 } else if (data.type === "clarification_needed") {
-                  // Backend detected ambiguity — render clarification card
+                  // Backend detected ambiguity: render clarification card
                   const clarData = data.data as ClarificationData;
                   const clarStatus: RagStatus = {
                     stage: "clarification_needed",
@@ -773,7 +773,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                         : msg
                     )
                   );
-                  // Stop typing state — user needs to interact
+                  // Stop typing state: user needs to interact
                   stopCharStream();
                   setIsTyping(false);
                 } else if (data.type === "done") {

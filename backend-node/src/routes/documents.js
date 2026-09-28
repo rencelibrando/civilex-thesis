@@ -19,6 +19,33 @@ const supabaseStorage = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY || 'dummy'
 );
 
+// Ensure 'documents' bucket exists with 50MB file size limit
+const ensureBucket = async () => {
+  try {
+    const { data: bucket, error } = await supabaseStorage.storage.getBucket('documents');
+    if (error && (error.status === 404 || error.message?.toLowerCase().includes('not found'))) {
+      const { error: createError } = await supabaseStorage.storage.createBucket('documents', {
+        public: true,
+        fileSizeLimit: 50 * 1024 * 1024, // 50MB
+      });
+      if (createError) {
+        console.warn("Could not create 'documents' bucket:", createError.message);
+      }
+    } else if (bucket && bucket.file_size_limit !== 50 * 1024 * 1024) {
+      const { error: updateError } = await supabaseStorage.storage.updateBucket('documents', {
+        public: true,
+        fileSizeLimit: 50 * 1024 * 1024, // 50MB
+      });
+      if (updateError) {
+        console.warn("Could not update 'documents' bucket limit:", updateError.message);
+      }
+    }
+  } catch (err) {
+    console.warn("Error checking/updating 'documents' bucket:", err.message);
+  }
+};
+ensureBucket();
+
 // Allowed MIME types for document uploads
 const ALLOWED_MIME_TYPES = [
   'application/pdf',
@@ -91,7 +118,11 @@ router.post('/upload', requireAuth, upload.single('file'), async (req, res) => {
 
     if (uploadError) {
       console.error("Supabase Storage Error:", uploadError);
-      return res.status(500).json({ error: "Failed to upload to storage" });
+      const statusCode = uploadError.statusCode ? parseInt(uploadError.statusCode, 10) : (uploadError.status || 500);
+      const finalStatus = (!isNaN(statusCode) && statusCode >= 400 && statusCode < 600) ? statusCode : 500;
+      return res.status(finalStatus).json({
+        error: uploadError.message || (typeof uploadError === 'string' ? uploadError : "Failed to upload to storage")
+      });
     }
 
     // Get public URL

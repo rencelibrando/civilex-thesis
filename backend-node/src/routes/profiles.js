@@ -1,4 +1,5 @@
 import express from 'express';
+import multer from 'multer';
 import { createClient } from '@supabase/supabase-js';
 import dotenv from 'dotenv';
 import { requireAuth } from '../middleware/auth.js';
@@ -6,6 +7,19 @@ import { requireAuth } from '../middleware/auth.js';
 dotenv.config();
 
 const router = express.Router();
+
+// Memory storage for avatar images (max 5MB, images only)
+const avatarUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype.startsWith('image/')) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only image files (JPEG, PNG, WEBP, GIF) are allowed'), false);
+    }
+  }
+});
 
 // Service-role client for admin operations (e.g. ensuring profile exists)
 const supabaseAdmin = createClient(
@@ -48,6 +62,70 @@ router.get('/me', requireAuth, async (req, res) => {
   }
 });
 
+// Upload avatar for current user via service-role (guaranteed reliability)
+router.post('/me/avatar', requireAuth, avatarUpload.single('avatar'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No image file uploaded' });
+    }
+
+    const userId = req.user.id;
+    const ext = req.file.originalname.split('.').pop() || 'png';
+    const filePath = `${userId}/avatar.${ext}`;
+
+    // Upload with supabaseAdmin (service role, always works)
+    const { error: uploadError } = await supabaseAdmin.storage
+      .from('avatars')
+      .upload(filePath, req.file.buffer, {
+        contentType: req.file.mimetype,
+        upsert: true
+      });
+
+    if (uploadError) {
+      console.error('Avatar storage upload error in backend:', uploadError);
+      return res.status(500).json({ error: uploadError.message });
+    }
+
+    const { data: urlData } = supabaseAdmin.storage
+      .from('avatars')
+      .getPublicUrl(filePath);
+
+    const newAvatarUrl = `${urlData.publicUrl}?t=${Date.now()}`;
+
+    // Upsert into profiles table
+    const { data: profile, error: profileError } = await supabaseAdmin
+      .from('profiles')
+      .upsert({ id: userId, avatar_url: newAvatarUrl }, { onConflict: 'id' })
+      .select()
+      .maybeSingle();
+
+    if (profileError) {
+      console.error('Failed to update profile record:', profileError);
+    }
+
+    // Keep Supabase auth user metadata in sync
+    try {
+      await supabaseAdmin.auth.admin.updateUserById(userId, {
+        user_metadata: {
+          ...req.user.user_metadata,
+          avatar_url: newAvatarUrl
+        }
+      });
+    } catch (metaErr) {
+      console.warn('Could not sync user auth metadata:', metaErr);
+    }
+
+    return res.json({
+      success: true,
+      avatar_url: newAvatarUrl,
+      profile: profile || { id: userId, avatar_url: newAvatarUrl }
+    });
+  } catch (err) {
+    console.error('Error handling avatar upload:', err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 // Update (or create) user settings — upsert to handle missing profile rows
 router.patch('/me', requireAuth, async (req, res) => {
   try {
@@ -81,6 +159,28 @@ router.patch('/me', requireAuth, async (req, res) => {
       .maybeSingle();
 
     if (error) throw error;
+
+    // Sync auth user metadata if fields like full_name or avatar_url changed
+    try {
+      const metaUpdates = {};
+      if (full_name !== undefined) metaUpdates.full_name = full_name;
+      if (role !== undefined) metaUpdates.role = role;
+      if (organization !== undefined) metaUpdates.organization = organization;
+      if (practice_area !== undefined) metaUpdates.practice_area = practice_area;
+      if (phone_number !== undefined) metaUpdates.phone_number = phone_number;
+      if (avatar_url !== undefined) metaUpdates.avatar_url = avatar_url;
+
+      if (Object.keys(metaUpdates).length > 0) {
+        await supabaseAdmin.auth.admin.updateUserById(userId, {
+          user_metadata: {
+            ...req.user.user_metadata,
+            ...metaUpdates
+          }
+        });
+      }
+    } catch (metaErr) {
+      console.warn('Could not sync user auth metadata:', metaErr);
+    }
 
     res.json(data);
   } catch (err) {

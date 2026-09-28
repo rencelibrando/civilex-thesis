@@ -445,6 +445,148 @@ NON_CIVIL_LEGAL_DOMAINS = [
     )
 ]
 
+CIVIL_LAW_DOC_PATTERNS = [
+    # Primary Civil Document Headers / Agreements (Weight = 3)
+    (r'\b(?:contract\s+of\s+lease|lease\s+contract|lease\s+agreement|rental\s+agreement|contract\s+of\s+rent|tenancy\s+agreement)\b', 3),
+    (r'\b(?:contract\s+of\s+sale|deed\s+of\s+(?:absolute\s+)?sale|conditional\s+sale|contract\s+to\s+sell|deed\s+of\s+donation|deed\s+of\s+assignment|deed\s+of\s+conveyance|deed\s+of\s+transfer)\b', 3),
+    (r'\b(?:loan\s+agreement|promissory\s+note|contract\s+of\s+loan|acknowledgment\s+of\s+debt|kasulatan\s+ng\s+utang|pautang)\b', 3),
+    (r'\b(?:real\s+estate\s+mortgage|chattel\s+mortgage|contract\s+of\s+mortgage|mortgage\s+contract|antichresis|contract\s+of\s+pledge|pactum\s+commissorium)\b', 3),
+    (r'\b(?:last\s+will\s+and\s+testament|holographic\s+will|notarial\s+will|testamento|habilin|probate\s+of\s+will)\b', 3),
+    (r'\b(?:extrajudicial\s+settlement|extra-judicial\s+settlement|settlement\s+of\s+estate|partition\s+of\s+(?:real\s+)?estate|deed\s+of\s+extrajudicial|kasunduan\s+sa\s+paghahati)\b', 3),
+    (r'\b(?:compromise\s+agreement|amicable\s+settlement|release\s+and\s+quitclaim|waiver\s+and\s+quitclaim|release\s+of\s+claims|waiver\s+of\s+rights|kasunduan\s+ng\s+pag-aayos)\b', 3),
+    (r'\b(?:special\s+power\s+of\s+attorney|general\s+power\s+of\s+attorney|\bspa\b|attorney-in-fact|principal\s+and\s+agent)\b', 3),
+    (r'\b(?:marriage\s+settlement|prenuptial\s+agreement|marriage\s+contract|absolute\s+community\s+of\s+property|conjugal\s+partnership\s+of\s+gains|declaration\s+of\s+(?:absolute\s+)?nullity\s+of\s+marriage|psychological\s+incapacity|legal\s+separation|support\s+pendente\s+lite)\b', 3),
+    (r'\b(?:affidavit\s+of\s+loss|affidavit\s+of\s+undertaking|affidavit\s+of\s+two\s+disinterested\s+persons|affidavit\s+of\s+guardianship|affidavit\s+of\s+support\s+and\s+consent|affidavit\s+of\s+adverse\s+claim|affidavit\s+of\s+self-adjudication)\b', 3),
+    (r'\b(?:memorandum\s+of\s+agreement|\bmoa\b|memorandum\s+of\s+understanding|\bmou\b|service\s+agreement|consultancy\s+agreement|independent\s+contractor\s+agreement|retainer\s+agreement)\b', 2),
+    # Codified Civil Law Provisions & Doctrine
+    (r'\b(?:civil\s+code\s+of\s+the\s+philippines|republic\s+act\s+(?:no\.?\s*)?386|\bra\s*386\b)\b', 3),
+    (r'\b(?:family\s+code\s+of\s+the\s+philippines|executive\s+order\s*(?:no\.?\s*)?209|\beo\s*209\b)\b', 3),
+    (r'\b(?:lessor\b|lessee\b|vendor\b|vendee\b|mortgagor\b|mortgagee\b|pledgor\b|pledgee\b|testator\b|testatrix\b|compulsory\s+heir|legitime\b)\b', 2),
+    (r'\b(?:quasi[- ]delict|torts?\s+and\s+damages|vicarious\s+liability|actual\s+damages|moral\s+damages|exemplary\s+damages|liquidated\s+damages|nominal\s+damages)\b', 1),
+    (r'\b(?:easement\s+of\s+right\s+of\s+way|builder\s+in\s+good\s+faith|quieting\s+of\s+title|usufruct|accession|co-ownership)\b', 2),
+    (r'\b(?:know\s+all\s+men\s+by\s+these\s+presents|in\s+witness\s+whereof|subscribed\s+and\s+sworn\s+to\s+before\s+me|notary\s+public|doc\.\s*no\.\s*\d+)\b', 1)
+]
+
+NON_CIVIL_LEGAL_DOC_DOMAINS = [
+    {
+        "domain": "Philippine Criminal Law (Revised Penal Code / Special Penal Laws / DOJ National Prosecution Service / PNP)",
+        "primary": [
+            r'\b(?:revised\s+penal\s+code|act\s+no\.?\s*3815|\brpc\b|special\s+penal\s+laws?)\b',
+            r'\b(?:complaint-affidavit|criminal\s+complaint|information\s+filed\s+in\s+court|police\s+blotter|inquest\s+resolution|inquest\s+proceedings?|preliminary\s+investigation|probable\s+cause|warrant\s+of\s+arrest|search\s+warrant|plea\s+bargaining|bail\s+bond|criminal\s+case\s+no\.?)\b',
+            r'\b(?:office\s+of\s+the\s+city\s+prosecutor|office\s+of\s+the\s+provincial\s+prosecutor|national\s+prosecution\s+service|department\s+of\s+justice|pnp-cidg|philippine\s+national\s+police|national\s+bureau\s+of\s+investigation)\b',
+            r'\b(?:comprehensive\s+dangerous\s+drugs\s+act|ra\s*9165|comprehensive\s+firearms|ra\s*10591|anti-carnapping|ra\s*10883|anti-fencing\s+law|pd\s*1612|anti-graft|ra\s*3019)\b'
+        ],
+        "secondary": [
+            r'\b(?:homicide|murder|robbery|theft|estafa|swindling|rape|kidnapping|illegal\s+detention|parricide|infanticide|rebellion|sedition|shabu|marijuana|buy-bust|accused|complainant)\b'
+        ]
+    },
+    {
+        "domain": "Philippine Labor Law (Presidential Decree No. 442 - Labor Code / DOLE / NLRC)",
+        "primary": [
+            r'\b(?:labor\s+code\s+of\s+the\s+philippines|presidential\s+decree\s+(?:no\.?\s*)?442|\bpd\s*442\b|dole\s+department\s+order)\b',
+            r'\b(?:department\s+of\s+labor\s+and\s+employment|\bdole\b|national\s+labor\s+relations\s+commission|\bnlrc\b|labor\s+arbiter|single\s+entry\s+approach|\bsena\b|national\s+conciliation\s+and\s+mediation\s+board|\bncmb\b)\b',
+            r'\b(?:illegal\s+dismissal|constructive\s+dismissal|unjust\s+dismissal|unfair\s+labor\s+practice|\bulp\b|labor\s+union|collective\s+bargaining\s+agreement|\bcba\b|retrenchment|redundancy\s+program|dole\s+labor\s+inspection)\b'
+        ],
+        "secondary": [
+            r'\b(?:separation\s+pay|backwages|13th\s+month\s+pay|holiday\s+pay|overtime\s+pay|minimum\s+wage\s+order|strike|lockout)\b'
+        ]
+    },
+    {
+        "domain": "Philippine Tax Law (National Internal Revenue Code [NIRC] / Bureau of Internal Revenue [BIR])",
+        "primary": [
+            r'\b(?:national\s+internal\s+revenue\s+code|\bnirc\b|tax\s+code|republic\s+act\s+(?:no\.?\s*)?8424|\bra\s*8424\b|train\s+law|ra\s*10963|create\s+act|ra\s*11534|tariff\s+and\s+customs\s+code|customs\s+modernization\s+and\s+tariff\s+act|\bcmta\b)\b',
+            r'\b(?:bureau\s+of\s+internal\s+revenue|\bbir\b|court\s+of\s+tax\s+appeals|\bcta\b|bureau\s+of\s+customs|\bboc\b|department\s+of\s+finance|\bdof\b|local\s+board\s+of\s+assessment\s+appeals)\b',
+            r'\b(?:preliminary\s+assessment\s+notice|\bpan\b|final\s+assessment\s+notice|\bfan\b|formal\s+letter\s+of\s+demand|\bfld\b|letter\s+of\s+authority|\bloa\b|tax\s+audit|tax\s+deficiency|tax\s+evasion)\b'
+        ],
+        "secondary": [
+            r'\b(?:income\s+tax\s+return|\bitr\b|value-added\s+tax|\bvat\b|percentage\s+tax|withholding\s+tax|capital\s+gains\s+tax|donor\'s\s+tax|estate\s+tax\s+return|tax\s+clearance)\b'
+        ]
+    },
+    {
+        "domain": "Philippine Data Privacy & Cybercrime Law (RA 10173 [DPA] / RA 10175 [Cybercrime Act] / NPC / CICC)",
+        "primary": [
+            r'\b(?:data\s+privacy\s+act\s+of\s+2012|republic\s+act\s+(?:no\.?\s*)?10173|\bra\s*10173\b|cybercrime\s+prevention\s+act\s+of\s+2012|republic\s+act\s+(?:no\.?\s*)?10175|\bra\s*10175\b)\b',
+            r'\b(?:national\s+privacy\s+commission|\bnpc\b|cybercrime\s+investigation\s+and\s+coordinating\s+center|\bcicc\b|pnp\s+anti-cybercrime\s+group|pnp-acg|nbi\s+cybercrime\s+division)\b',
+            r'\b(?:personal\s+information\s+controller|\bpic\b|personal\s+information\s+processor|\bpip\b|data\s+subject\s+rights|data\s+breach\s+notification|privacy\s+impact\s+assessment|\bpia\b|unauthorized\s+processing\s+of\s+personal)\b'
+        ],
+        "secondary": [
+            r'\b(?:illegal\s+access\s+to\s+computer\s+system|data\s+interference|cyber-squatting|cyber-libel|computer-related\s+forgery|computer-related\s+fraud)\b'
+        ]
+    },
+    {
+        "domain": "Philippine Corporate & Commercial Law (Revised Corporation Code [RA 11232] / SEC / BSP)",
+        "primary": [
+            r'\b(?:revised\s+corporation\s+code\s+of\s+the\s+philippines|republic\s+act\s+(?:no\.?\s*)?11232|\bra\s*11232\b|securities\s+regulation\s+code|\bsrc\b|republic\s+act\s+(?:no\.?\s*)?8799|\bra\s*8799\b|anti-money\s+laundering\s+act|\bamla\b|ra\s*9160|general\s+banking\s+law|ra\s*8791)\b',
+            r'\b(?:securities\s+and\s+exchange\s+commission|\bsec\b|bangko\s+sentral\s+ng\s+pilipinas|\bbsp\b|anti-money\s+laundering\s+council|\bamlc\b|insurance\s+commission|\bic\b)\b',
+            r'\b(?:articles\s+of\s+incorporation|corporate\s+by-laws|general\s+information\s+sheet|\bgis\b|board\s+resolution|secretary\'s\s+certificate|sec\s+registration|sec\s+revocation|sec\s+compliance)\b'
+        ],
+        "secondary": [
+            r'\b(?:board\s+of\s+directors\s+meeting|quorum\s+of\s+the\s+board|stockholders\'?\s+meeting|outstanding\s+capital\s+stock|subscribed\s+capital|treasury\s+shares|corporate\s+officers|ultra\s+vires|corporate\s+dissolution)\b'
+        ]
+    },
+    {
+        "domain": "Philippine Intellectual Property Law (Republic Act No. 8293 - IP Code / IPOPHL)",
+        "primary": [
+            r'\b(?:intellectual\s+property\s+code\s+of\s+the\s+philippines|republic\s+act\s+(?:no\.?\s*)?8293|\bra\s*8293\b|\bip\s+code\b)\b',
+            r'\b(?:intellectual\s+property\s+office\s+of\s+the\s+philippines|\bipophl\b|bureau\s+of\s+legal\s+affairs|\bbla\b)\b',
+            r'\b(?:trademark\s+registration|trademark\s+infringement|patent\s+application|patent\s+infringement|letters\s+patent|utility\s+model|industrial\s+design|copyright\s+registration|inter\s+partes\s+proceedings|unfair\s+competition\s+under\s+section\s+168)\b'
+        ],
+        "secondary": [
+            r'\b(?:copyright\s+infringement|infringing\s+goods|patent\s+claim)\b'
+        ]
+    }
+]
+
+def classify_document_domain(text: str, filename: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Evaluates an uploaded document's content and filename to determine whether it belongs to
+    the domain of the Philippine Civil Code (RA 386), specialized non-civil Philippine law (redirection),
+    or constitutes non-legal technical/academic/general material (strict refusal).
+    """
+    combined = f"{filename or ''} {text or ''}".lower()
+
+    # 1. Specialized Non-Civil Legal domain matching
+    non_civil_scores = []
+    for d in NON_CIVIL_LEGAL_DOC_DOMAINS:
+        primary_hits = sum(1 for p in d["primary"] if re.search(p, combined))
+        sec_hits = sum(1 for p in d.get("secondary", []) if re.search(p, combined))
+        # A non-civil domain qualifies if it has at least one primary statutory/institutional marker
+        if primary_hits > 0:
+            score = (primary_hits * 3) + sec_hits
+            non_civil_scores.append((d["domain"], score))
+
+    # 2. Civil Law scoring
+    civil_score = sum(weight for p, weight in CIVIL_LAW_DOC_PATTERNS if re.search(p, combined))
+
+    if non_civil_scores:
+        non_civil_scores.sort(key=lambda x: x[1], reverse=True)
+        top_domain, top_score = non_civil_scores[0]
+        if top_score >= civil_score:
+            return {
+                "category": "out_of_domain_legal",
+                "target_domain": top_domain,
+                "reason": f"Document belongs to specialized Philippine legal jurisdiction: {top_domain}."
+            }
+
+    if civil_score >= 2:
+        return {
+            "category": "in_domain_civil",
+            "target_domain": None,
+            "reason": "Document contains authentic Philippine Civil Law concepts, instruments, or stipulations."
+        }
+    elif non_civil_scores:
+        return {
+            "category": "out_of_domain_legal",
+            "target_domain": non_civil_scores[0][0],
+            "reason": f"Document belongs to specialized Philippine legal jurisdiction: {non_civil_scores[0][0]}."
+        }
+    else:
+        return {
+            "category": "out_of_domain_non_legal",
+            "target_domain": None,
+            "reason": "Document contains non-legal material and lacks recognized Philippine Civil Code concepts."
+        }
+
 CIVIL_LAW_POSITIVE_PATTERNS = [
     r'(?:article|art\.?)\s*\d+',
     r'\b(civil\s+code|ra\s*386|republic\s+act\s*(?:no\.?\s*)?386|family\s+code|executive\s+order\s*(?:no\.?\s*)?209|eo\s*209)\b',
@@ -899,24 +1041,21 @@ def search_with_embedding(q_emb: list, query: str, document_id: Optional[str] = 
                     """, (document_id,))
                     doc_results = cur.fetchall()
 
-                # Inspect active document content to verify if it is an actual legal document
-                DOC_LEGAL_MARKERS = [
-                    'contract', 'agreement', 'lease', 'lessor', 'lessee', 'party', 'parties', 
-                    'obligat', 'liability', 'liable', 'breach', 'stipulat', 'hereby', 'whereas', 
-                    'covenant', 'undertak', 'remedy', 'damages', 'severability', 'jurisdiction', 
-                    'court', 'civil code', 'statute', 'employment', 'employee', 'employer', 
-                    'affidavit', 'deed', 'mortgage', 'promissory', 'loan', 'waiver', 'quitclaim',
-                    'tenant', 'landlord', 'buyer', 'seller', 'vendor', 'vendee', 'donor', 'donee',
-                    'heir', 'inheritance', 'testator', 'will', 'property', 'easement'
-                ]
-                doc_text_sample = " ".join([d.get('content', '') for d in doc_results]).lower()
-                is_doc_legal = any(marker in doc_text_sample for marker in DOC_LEGAL_MARKERS)
+                doc_text_sample = " ".join([d.get('content', '') for d in doc_results])
+                doc_domain = classify_document_domain(doc_text_sample)
+                is_doc_legal = doc_domain['category'] == 'in_domain_civil'
 
                 # Has user explicitly referenced an article by number (e.g. "Article 1181")?
                 has_explicit_article = bool(re.search(r'(?:article|art\.?)\s*\d+', query, re.IGNORECASE))
 
                 # Check if legal provisions or jurisprudence are genuinely relevant to the document inquiry
-                legal_terms = ['civil code', 'article', 'statute', 'law', 'violate', 'void', 'liability', 'obligation', 'breach', 'risk', 'remedy', 'damages', 'jurisprudence', 'case', 'compliance', 'legal', 'action', 'contract']
+                legal_terms = [
+                    'civil code', 'article', 'statute', 'law', 'violate', 'void', 'liability', 
+                    'obligation', 'breach', 'risk', 'remedy', 'damages', 'jurisprudence', 
+                    'case', 'compliance', 'legal', 'action', 'contract', 'agreement', 'lease',
+                    'terms', 'clause', 'provisions', 'stipulation', 'rights', 'summary', 
+                    'summarize', 'overview', 'about', 'valid', 'validity', 'ano ito', 'tungkol'
+                ]
                 query_lower = query.lower()
 
                 needs_statutory = (is_doc_legal and any(term in query_lower for term in legal_terms)) or has_explicit_article
@@ -1251,8 +1390,9 @@ async def search_documents(request: SearchRequest, raw_req: Request = None):
 
                 logging.info("Starting SSE stream with granular RAG stages and context memory...")
 
-                # Resolve document filename if analyzing an uploaded document
+                # Resolve document filename and sample content if analyzing an uploaded document
                 doc_filename = request.document_name
+                doc_sample_text = ""
                 if request.document_id:
                     try:
                         conn_doc = get_db_connection()
@@ -1270,14 +1410,212 @@ async def search_documents(request: SearchRequest, raw_req: Request = None):
                                 if count_row and count_row[0] > 0:
                                     break
                                 await asyncio.sleep(0.5)
+
+                            # Fetch representative text chunks from the active document for domain gating
+                            cur_doc.execute("""
+                                SELECT content FROM document_chunks 
+                                WHERE parent_id = %s 
+                                ORDER BY chunk_id ASC 
+                                LIMIT 15;
+                            """, (request.document_id,))
+                            chunk_rows = cur_doc.fetchall()
+                            if chunk_rows:
+                                doc_sample_text = " ".join([cr[0] for cr in chunk_rows if cr and cr[0]])
                         conn_doc.close()
                     except Exception as e:
                         logging.warning(f"Could not fetch document info for {request.document_id}: {e}")
 
-                # Stage 0: Intent Classification & Domain Boundary Gating
+                history_dicts = [{"role": msg.role, "content": msg.content} for msg in request.history]
+
+                # Stage 0: Document Domain Classification (Guardrail for Document Analysis)
+                if request.document_id:
+                    doc_domain_info = classify_document_domain(doc_sample_text, doc_filename)
+                    logging.info(f"Document domain classification for '{doc_filename}': {doc_domain_info}")
+                    doc_display_name = doc_filename or "Uploaded Document"
+
+                    # Branch Doc-Refusal: Uploaded document is entirely non-legal / has no civil law concepts
+                    if doc_domain_info['category'] == 'out_of_domain_non_legal':
+                        yield f"data: {dumps({'type': 'status', 'stage': 'embedding', 'message': 'Evaluating document content & legal domain boundaries...'})}\n\n"
+                        await asyncio.sleep(0.3)
+                        yield f"data: {dumps({'type': 'status', 'stage': 'thinking', 'message': 'Document contains non-legal material; formulating civil scope boundary refusal...'})}\n\n"
+                        await asyncio.sleep(0.3)
+
+                        analytics_payload = {
+                            'nli_score': None,
+                            'nli_status': 'Out of Domain',
+                            'top_article_score': 0.0,
+                            'is_document_legal': False,
+                            'is_out_of_domain': True,
+                            'domain_category': 'non_legal',
+                            'target_domain': None,
+                        }
+
+                        system_prompt = f"""You are CIVIL-LEX, a specialized Philippine Legal AI Assistant dedicated exclusively to the Philippine Civil Code (Republic Act No. 386) and civil jurisprudence.
+
+ACTIVE DOCUMENT: "{doc_display_name}"
+USER QUERY: "{request.query}"
+
+DOCUMENT STATUS: NON-LEGAL / OUT-OF-DOMAIN.
+The uploaded document "{doc_display_name}" contains non-legal technical, academic, scientific, or general content (such as computer science, information security, authentication protocols, math, engineering, natural sciences, recipes, creative writing, or general notes).
+It contains NO contracts, obligations, property rights, succession/wills, family relations, or legal stipulations governed by the Philippine Civil Code (Republic Act No. 386).
+
+YOUR MANDATORY REFUSAL RULES:
+1. STRICT REFUSAL: You MUST refuse to answer questions about the contents of this non-legal document, and refuse to provide technical explanations, code summaries, or security protocols. Do NOT summarize or explain Kerberos, CHAP, MFA, biometrics, or other non-legal subjects.
+2. CLEAR NOTICE: State clearly and politely that "{doc_display_name}" is a technical or non-legal document that does not contain any legal provisions or civil obligations under Philippine law.
+3. EXCLUSIVE MISSION: Explain that CIVIL-LEX is exclusively dedicated and strictly calibrated for the Philippine Civil Code (Republic Act No. 386) and civil jurisprudence.
+4. SCOPE OF CIVIL-LEX: Inform the user of the civil legal instruments CIVIL-LEX CAN analyze:
+   - Contracts & Leases (e.g., Contracts of Lease, Tenancy Agreements, Service Contracts, MOA)
+   - Sales & Conveyances (e.g., Deeds of Absolute Sale, Contracts to Sell, Deeds of Donation)
+   - Loans & Mortgages (e.g., Promissory Notes, Real Estate/Chattel Mortgages, Loan Agreements)
+   - Succession & Wills (e.g., Last Wills and Testaments, Extrajudicial Settlements of Estate)
+   - Family Law Documents (e.g., Marriage Settlements, Custody & Support Agreements)
+   - Affidavits & Civil Claims (e.g., Affidavits of Loss/Undertaking, Compromise Agreements, Quasi-Delicts/Damages under RA 386).
+5. CALL TO ACTION: Invite the user to upload a valid Philippine civil law contract or legal document to proceed with statutory cross-examination and compliance analysis.
+6. NO CITATIONS: Do NOT cite any Civil Code articles or court cases, as no statutory provisions apply to this non-legal material.
+7. LANGUAGE: If the user's query is in Filipino/Tagalog, provide this refusal response in professional, respectful Filipino/Tagalog.
+"""
+                        full_text = ""
+                        is_first_chunk = True
+
+                        async for chunk in generate_response_stream(system_prompt, request.query, history_dicts):
+                            if is_first_chunk:
+                                is_first_chunk = False
+                                yield f"data: {dumps({'type': 'status', 'stage': 'streaming', 'message': 'Streaming domain boundary notice...'})}\n\n"
+                                yield f"data: {dumps({'type': 'citations', 'data': []})}\n\n"
+                                yield f"data: {dumps({'type': 'accumulated_citations', 'data': []})}\n\n"
+                                yield f"data: {dumps({'type': 'legal_analytics', 'data': analytics_payload})}\n\n"
+                            full_text += chunk
+                            yield f"data: {dumps({'type': 'text', 'text': chunk})}\n\n"
+
+                        if is_first_chunk:
+                            fallback_refusal = f"""### ⚠️ Scope Boundary Refusal: Non-Civil Law Material
+
+I am unable to analyze or provide legal assessments for **"{doc_display_name}"**.
+
+#### Reason for Refusal
+The uploaded document contains non-legal technical, academic, or general content (such as information security, computer science, or technical specifications). It contains no contracts, civil obligations, property rights, or legal stipulations governed by the **Philippine Civil Code (Republic Act No. 386)** or the **Family Code of the Philippines (Executive Order No. 209)**.
+
+CIVIL-LEX is an AI assistant exclusively specialized in Philippine Civil Law. Its analytical models, statutory indexing, and NLI verification pipelines are strictly calibrated for civil legal matters.
+
+#### Document Types Supported by CIVIL-LEX
+You may upload and analyze valid legal documents within the scope of Philippine Civil Law, including:
+- **Contracts & Leases**: Contracts of Lease, Tenancy Agreements, Service Contracts, Memoranda of Agreement (MOA).
+- **Sales & Conveyances**: Deeds of Absolute Sale, Contracts to Sell, Deeds of Donation, Deeds of Assignment.
+- **Loans & Security Instruments**: Loan Agreements, Promissory Notes, Real Estate Mortgages, Chattel Mortgages.
+- **Succession & Estate Settlements**: Last Wills and Testaments, Extrajudicial Settlements of Estate.
+- **Family Law Agreements**: Marriage Settlements, Custody and Support Agreements.
+- **Affidavits & Civil Claims**: Affidavits of Loss/Undertaking, Compromise Agreements, Tort/Damage settlements under RA 386.
+
+Please upload a legal document falling under Philippine Civil Law to proceed with statutory analysis."""
+                            yield f"data: {dumps({'type': 'status', 'stage': 'streaming', 'message': 'Streaming domain boundary notice...'})}\n\n"
+                            yield f"data: {dumps({'type': 'citations', 'data': []})}\n\n"
+                            yield f"data: {dumps({'type': 'accumulated_citations', 'data': []})}\n\n"
+                            yield f"data: {dumps({'type': 'legal_analytics', 'data': analytics_payload})}\n\n"
+                            yield f"data: {dumps({'type': 'text', 'text': fallback_refusal})}\n\n"
+                            full_text = fallback_refusal
+
+                        logging.info("Finished streaming non-legal document refusal.")
+                        yield f"data: {dumps({'type': 'done'})}\n\n"
+                        save_assistant_message_to_db(request.session_id, full_text, [], analytics_payload)
+                        return
+
+                    # Branch Doc-Redirection: Uploaded document is legal, but outside Civil Code jurisdiction
+                    if doc_domain_info['category'] == 'out_of_domain_legal':
+                        target_domain = doc_domain_info.get('target_domain', 'Specialized Philippine Law')
+                        yield f"data: {dumps({'type': 'status', 'stage': 'embedding', 'message': f'Analyzing legal jurisdiction for {doc_display_name}...'})}\n\n"
+                        await asyncio.sleep(0.3)
+                        yield f"data: {dumps({'type': 'status', 'stage': 'thinking', 'message': f'Identifying governing statutory framework for {target_domain}...'})}\n\n"
+                        await asyncio.sleep(0.3)
+
+                        analytics_payload = {
+                            'nli_score': None,
+                            'nli_status': 'Out of Domain',
+                            'top_article_score': 0.0,
+                            'is_document_legal': True,
+                            'is_out_of_domain': True,
+                            'domain_category': 'other_legal',
+                            'target_domain': target_domain,
+                        }
+
+                        system_prompt = f"""You are CIVIL-LEX, a specialized Philippine Legal AI Assistant dedicated exclusively to the Philippine Civil Code (Republic Act No. 386) and civil jurisprudence.
+
+ACTIVE DOCUMENT: "{doc_display_name}"
+USER QUERY: "{request.query}"
+
+DOCUMENT STATUS: SPECIALIZED PHILIPPINE LEGAL DOCUMENT OUTSIDE CIVIL CODE.
+The uploaded document "{doc_display_name}" is a formal legal document, but its subject matter primarily falls under another specialized branch of Philippine law: {target_domain}.
+
+YOUR MANDATORY REDIRECTION RULES:
+1. REFUSE CIVIL CODE ANALYSIS: Explain constructively that while "{doc_display_name}" is a legal document, its subject matter is governed under {target_domain} rather than the Philippine Civil Code (Republic Act No. 386).
+2. GOVERNING STATUTE & REGULATORY FRAMEWORK:
+   - Explicitly cite the governing Philippine statute, code, or law governing this document:
+     * If Criminal Law: Cite the Revised Penal Code (Act No. 3815) and applicable Special Penal Laws.
+     * If Labor Law: Cite the Labor Code of the Philippines (Presidential Decree No. 442) and DOLE Department Orders.
+     * If Tax Law: Cite the National Internal Revenue Code (NIRC - Republic Act No. 8424 as amended by TRAIN and CREATE).
+     * If Data Privacy & Cybercrime: Cite the Data Privacy Act of 2012 (Republic Act No. 10173) and Cybercrime Prevention Act of 2012 (Republic Act No. 10175).
+     * If Corporate & Commercial: Cite the Revised Corporation Code (Republic Act No. 11232) and Securities Regulation Code (RA 8799).
+     * If Intellectual Property: Cite the Intellectual Property Code of the Philippines (Republic Act No. 8293).
+     * If Immigration: Cite the Philippine Immigration Act of 1940 (Commonwealth Act No. 613).
+     * If Election Law: Cite the Omnibus Election Code (Batas Pambansa Blg. 881).
+     * If Administrative/Public Accountability: Cite the Ombudsman Act of 1989 (RA 6770) or RA 6713.
+3. COMPETENT TRIBUNAL / REGULATORY AGENCY / FORUM:
+   - Clearly name the appropriate government agency, commission, or court with primary jurisdiction:
+     * Criminal: Department of Justice (DOJ) / Office of the City or Provincial Prosecutor (for inquest or preliminary investigation), Philippine National Police (PNP), National Bureau of Investigation (NBI).
+     * Labor: Department of Labor and Employment (DOLE), National Labor Relations Commission (NLRC), Single Entry Approach (SEnA), Labor Arbiter.
+     * Tax: Bureau of Internal Revenue (BIR), Court of Tax Appeals (CTA).
+     * Data Privacy & Cybercrime: National Privacy Commission (NPC), Cybercrime Investigation and Coordinating Center (CICC), PNP Anti-Cybercrime Group (PNP-ACG).
+     * Corporate: Securities and Exchange Commission (SEC).
+     * IP: Intellectual Property Office of the Philippines (IPOPHL) / Bureau of Legal Affairs (BLA).
+4. CIVIL CODE CONCURRENT REMEDIES:
+   - Clarify any potential concurrent civil liability or independent civil action under the Civil Code (such as civil liability ex delicto under Art. 100 RPC, or independent civil actions under Arts. 32, 33, 34 of the Civil Code, or quasi-delict/contractual claims), while reiterating that primary administrative or criminal jurisdiction rests with the specialized governing body.
+5. NO ARBITRARY CIVIL CODE CITATIONS: Do NOT cite arbitrary Civil Code articles as controlling authority for this non-civil matter.
+6. CALL TO ACTION: Conclude by welcoming the user to upload Philippine civil law contracts, deeds, leases, wills, or damage settlements for Civil Code analysis.
+7. LANGUAGE: If the user's query is in Filipino/Tagalog, provide this redirection in professional, respectful Filipino/Tagalog.
+"""
+                        full_text = ""
+                        is_first_chunk = True
+
+                        async for chunk in generate_response_stream(system_prompt, request.query, history_dicts):
+                            if is_first_chunk:
+                                is_first_chunk = False
+                                yield f"data: {dumps({'type': 'status', 'stage': 'streaming', 'message': 'Streaming statutory redirection...'})}\n\n"
+                                yield f"data: {dumps({'type': 'citations', 'data': []})}\n\n"
+                                yield f"data: {dumps({'type': 'accumulated_citations', 'data': []})}\n\n"
+                                yield f"data: {dumps({'type': 'legal_analytics', 'data': analytics_payload})}\n\n"
+                            full_text += chunk
+                            yield f"data: {dumps({'type': 'text', 'text': chunk})}\n\n"
+
+                        if is_first_chunk:
+                            fallback_redirection = f"""### ⚖️ Statutory Redirection: {target_domain}
+
+The uploaded document **"{doc_display_name}"** is a formal legal document, but its subject matter falls outside the jurisdiction of the **Philippine Civil Code (Republic Act No. 386)**.
+
+#### Governing Statutory Framework
+- **Specialized Domain**: {target_domain}
+- **Primary Statutory Basis**: Please refer to the governing specialized Philippine code or statute referenced above.
+
+#### Competent Regulatory Agency / Forum
+For formal complaints, regulatory compliance, preliminary investigations, or administrative relief, this matter must be submitted to the competent specialized government agency or tribunal having primary jurisdiction.
+
+#### Philippine Civil Code Relationship
+While the primary legal framework is {target_domain}, any independent civil action for restitution or damages arising from this matter (such as civil liability ex delicto under Art. 100 of the Revised Penal Code or independent civil actions under Arts. 32, 33, and 34 of the Civil Code) must be instituted separately before the regular trial courts.
+
+CIVIL-LEX is strictly specialized in Philippine Civil Law (RA 386). Please upload Philippine civil law contracts, deeds, leases, or property agreements for Civil Code analysis."""
+                            yield f"data: {dumps({'type': 'status', 'stage': 'streaming', 'message': 'Streaming statutory redirection...'})}\n\n"
+                            yield f"data: {dumps({'type': 'citations', 'data': []})}\n\n"
+                            yield f"data: {dumps({'type': 'accumulated_citations', 'data': []})}\n\n"
+                            yield f"data: {dumps({'type': 'legal_analytics', 'data': analytics_payload})}\n\n"
+                            yield f"data: {dumps({'type': 'text', 'text': fallback_redirection})}\n\n"
+                            full_text = fallback_redirection
+
+                        logging.info("Finished streaming legal document redirection.")
+                        yield f"data: {dumps({'type': 'done'})}\n\n"
+                        save_assistant_message_to_db(request.session_id, full_text, [], analytics_payload)
+                        return
+
+                # Stage 0.5: Query Intent Classification & Domain Boundary Gating (for General Chat or In-Domain Civil Documents)
                 intent_info = classify_query_intent(request.query, request.history, request.document_id, doc_filename)
                 logging.info(f"Query intent classification: {intent_info}")
-                history_dicts = [{"role": msg.role, "content": msg.content} for msg in request.history]
 
                 # Branch A: Completely Non-Legal Inquiries (Bypass vector retrieval & suppress citations)
                 if intent_info['category'] == 'out_of_domain_non_legal':
@@ -1475,30 +1813,11 @@ YOUR MANDATORY REDIRECTION RULES:
                 yield f"data: {dumps({'type': 'status', 'stage': 'retrieving_done', 'message': ret_done_msg, 'count': len(results)})}\n\n"
                 await asyncio.sleep(0.45)
 
-                # Pre-generation: determine document legality, but defer real NLI
-                # to post-generation (symbolic NLI needs the full generated answer).
-                DOC_LEGAL_MARKERS = [
-                    'contract', 'agreement', 'lease', 'lessor', 'lessee', 'party', 'parties', 
-                    'obligat', 'liability', 'liable', 'breach', 'stipulat', 'hereby', 'whereas', 
-                    'covenant', 'undertak', 'remedy', 'damages', 'severability', 'jurisdiction', 
-                    'court', 'civil code', 'statute', 'employment', 'employee', 'employer', 
-                    'affidavit', 'deed', 'mortgage', 'promissory', 'loan', 'waiver', 'quitclaim',
-                    'tenant', 'landlord', 'buyer', 'seller', 'vendor', 'vendee', 'donor', 'donee',
-                    'heir', 'inheritance', 'testator', 'will', 'property', 'easement'
-                ]
-                doc_sample = " ".join([c.get('content', '') for c in results if c.get('parent_type') == 'user_document']).lower()
-                is_doc_legal_flag = any(m in doc_sample for m in DOC_LEGAL_MARKERS) if is_doc_analysis else True
-
-                if is_doc_analysis and not is_doc_legal_flag:
-                    # Non-legal document: skip NLI entirely
-                    nli_score_val = None
-                    nli_status = 'Out of Domain'
-                    is_out_of_domain = True
-                else:
-                    # Placeholder: real NLI is computed post-generation
-                    nli_score_val = None
-                    nli_status = 'Pending'
-                    is_out_of_domain = False
+                # Pre-generation: set initial analytics state (real NLI is computed post-generation)
+                nli_score_val = None
+                nli_status = 'Pending'
+                is_out_of_domain = False
+                is_doc_legal_flag = True if is_doc_analysis else None
 
                 top_display = max([float(c.get('display_suitability', 0.0)) for c in results], default=0.0)
 
@@ -1506,9 +1825,9 @@ YOUR MANDATORY REDIRECTION RULES:
                     'nli_score': nli_score_val,
                     'nli_status': nli_status,
                     'top_article_score': top_display,
-                    'is_document_legal': is_doc_legal_flag if is_doc_analysis else None,
-                    'is_out_of_domain': is_out_of_domain,
-                    'domain_category': 'civil' if not is_out_of_domain else 'non_legal_document',
+                    'is_document_legal': is_doc_legal_flag,
+                    'is_out_of_domain': False,
+                    'domain_category': 'civil',
                     'target_domain': None,
                 }
 
@@ -1582,18 +1901,16 @@ YOUR MANDATORY REDIRECTION RULES:
 
                 if request.document_id:
                     doc_display_name = doc_filename or "Uploaded Legal Document"
-                    system_prompt = f"""You are CIVIL-LEX, a specialized Philippine Legal AI Assistant analyzing the uploaded document: "{doc_display_name}".
+                    system_prompt = f"""You are CIVIL-LEX, a specialized Philippine Legal AI Assistant analyzing the uploaded civil document: "{doc_display_name}".
 
 YOUR TASK IN THIS ACTIVE SESSION:
 1. Examine the user's questions in direct relation to the uploaded document "{doc_display_name}".
 2. Use the provided DOCUMENT EXCERPTS to identify and explain specific contents, clauses, stipulations, terms, or subject matter in the document.
-3. NON-LEGAL DOCUMENT HANDLING: If the document is non-legal (such as an academic assignment, computer science/math homework, technical manual, or non-legal notes):
-   - Explicitly describe what the document contains based on the DOCUMENT EXCERPTS (specifying the author, course, topics, questions, and answers found in the excerpt).
-   - Clearly state that the document is non-legal and contains no contracts, obligations, property rights, or legal stipulations governed by the Philippine Civil Code (Republic Act No. 386).
-   - In the Legal Action Summary, state "None applicable" for Civil Code Articles, Court Jurisdiction, and Legal Actions.
-4. LEGAL DOCUMENT HANDLING: If the document is a legal agreement or contract (sales, leases, loans, employment, deeds, etc.):
-   - PRIMARY STATUTORY GROUNDING: Cross-examine the document's provisions PRIMARILY against the statutory provisions of the Philippine Civil Code (Republic Act No. 386). Ground all legal assessments, rights, obligations, validity, or void stipulations directly on specific Civil Code Articles first, using Supreme Court jurisprudence only as secondary supporting doctrine.
-   - If a specific fact or term is stated in the document excerpts, state it clearly.
+3. PRIMARY STATUTORY GROUNDING & ANCHORED CITATIONS:
+   - The Philippine Civil Code (RA 386) and Family Code (EO 209) are your CONTROLLING STATUTORY AUTHORITIES.
+   - Cross-examine the document's provisions PRIMARILY against the statutory provisions of the Philippine Civil Code. Ground all legal assessments, rights, obligations, validity, or void stipulations directly on specific Civil Code Articles provided in CONTEXT, using Supreme Court jurisprudence only as secondary supporting doctrine.
+   - Anchor every substantive legal rule or finding with its bracketed citation (e.g. [Art. 1654] or [Art. 1191]).
+4. FACTUAL INTEGRITY: If a specific fact or term is stated in the document excerpts, state it clearly. Do not assume or hallucinate clauses not found in the excerpts.
 
 5. MANDATORY RESPONSE FORMATTING & MARKDOWN STRUCTURE:
    Your output MUST be formatted using standard GitHub-flavored Markdown. Structure your response into clear, distinct sections:
@@ -1615,10 +1932,10 @@ YOUR TASK IN THIS ACTIVE SESSION:
    [Detailed analysis applying statutory provisions to the document. If the user requested a Tagalog explanation ("explain in tagalog" / "paliwanag sa tagalog"), provide this analysis in clear, professional Tagalog while preserving statutory Article numbers.]
 
    ### 📋 Legal Action Summary
-   - **Governing Civil Code Article(s)**: [List specific RA 386 articles, e.g., Article 1191, or "None (Non-Legal Document)"]
-   - **Competent Court / Jurisdiction**: [Specify court based on RA 11576 thresholds, or "None"]
-   - **Pre-filing Requirement**: [State whether Barangay Conciliation is mandatory or exempt, or "None"]
-   - **Possible Cause of Action to File**: [Exact technical legal title, or "None"]
+   - **Governing Civil Code Article(s)**: [List specific RA 386 articles, e.g., Article 1191, Article 1654]
+   - **Competent Court / Jurisdiction**: [Specify court based on RA 11576 thresholds: MTC (<= 2M), RTC (> 2M or incapable of pecuniary estimation), Family Court, etc.]
+   - **Pre-filing Requirement**: [State whether Katarungang Pambarangay / Barangay Conciliation is mandatory or exempt]
+   - **Possible Cause of Action to File**: [Exact technical legal title, e.g., Action for Specific Performance, Judicial Rescission, Unlawful Detainer, Sum of Money, Damages]
 
 ACTIVE DOCUMENT:
 Filename: {doc_display_name}

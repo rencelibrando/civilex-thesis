@@ -30,26 +30,95 @@ function Avatar({
   )
 }
 
-function AvatarImage({ className, src, ...props }: AvatarPrimitive.Image.Props) {
-  // Normalize localhost / 127.0.0.1 Supabase storage URLs so browser cross-origin blocks never break images
-  const normalizedSrc = React.useMemo(() => {
-    if (!src || typeof src !== "string") return src;
-    if (typeof window !== "undefined" && src.includes(":54321")) {
+export function normalizeAvatarSrc(rawSrc?: string | Blob | null | undefined): string | undefined {
+  if (!rawSrc) return undefined;
+  if (typeof rawSrc !== "string") {
+    if (typeof window !== "undefined" && typeof Blob !== "undefined" && rawSrc instanceof Blob) {
       try {
-        const parsed = new URL(src);
-        if (parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost") {
-          parsed.hostname = window.location.hostname;
-          return parsed.toString();
-        }
-      } catch (_) {}
+        return URL.createObjectURL(rawSrc);
+      } catch (_) {
+        return undefined;
+      }
     }
-    return src;
-  }, [src]);
+    return undefined;
+  }
+  const trimmed = rawSrc.trim();
+  if (!trimmed || trimmed === "null" || trimmed === "undefined") return undefined;
+
+  if (typeof window !== "undefined") {
+    const isLocalhostHost =
+      window.location.hostname === "localhost" ||
+      window.location.hostname === "127.0.0.1";
+
+    // In production (non-localhost)
+    if (!isLocalhostHost) {
+      // If URL contains localhost:54321 or 127.0.0.1:54321
+      if (trimmed.includes("localhost:54321") || trimmed.includes("127.0.0.1:54321")) {
+        const pubSupabase = process.env.NEXT_PUBLIC_SUPABASE_URL;
+        if (
+          pubSupabase &&
+          !pubSupabase.includes("localhost") &&
+          !pubSupabase.includes("127.0.0.1")
+        ) {
+          return trimmed.replace(
+            /http:\/\/(localhost|127\.0\.0\.1):54321/,
+            pubSupabase
+          );
+        }
+        // Extract userId from /avatars/:userId/avatar... to route via backend proxy
+        const match = trimmed.match(/\/avatars\/([^/?#]+)/);
+        if (match && match[1]) {
+          return `/api/profiles/avatar/${match[1]}`;
+        }
+      }
+
+      // Upgrade http:// to https:// on HTTPS pages (prevent mixed content)
+      if (
+        window.location.protocol === "https:" &&
+        trimmed.startsWith("http://") &&
+        !trimmed.includes("localhost")
+      ) {
+        return trimmed.replace(/^http:\/\//i, "https://");
+      }
+    } else {
+      // In local development: map 127.0.0.1 to current window hostname
+      if (trimmed.includes(":54321")) {
+        try {
+          const parsed = new URL(trimmed);
+          if (parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost") {
+            parsed.hostname = window.location.hostname;
+            return parsed.toString();
+          }
+        } catch (_) {}
+      }
+    }
+  }
+
+  return trimmed;
+}
+
+function AvatarImage({ className, src, ...props }: AvatarPrimitive.Image.Props) {
+  const normalizedSrc = React.useMemo(() => normalizeAvatarSrc(src), [src]);
+  const [currentSrc, setCurrentSrc] = React.useState<string | undefined>(normalizedSrc);
+
+  React.useEffect(() => {
+    setCurrentSrc(normalizedSrc);
+  }, [normalizedSrc]);
+
+  const handleError = React.useCallback(() => {
+    if (!currentSrc) return;
+    // If direct Supabase storage URL failed, attempt proxy fallback once
+    const match = currentSrc.match(/\/avatars\/([^/?#]+)/);
+    if (match && match[1] && !currentSrc.includes("/api/profiles/avatar/")) {
+      setCurrentSrc(`/api/profiles/avatar/${match[1]}`);
+    }
+  }, [currentSrc]);
 
   return (
     <AvatarPrimitive.Image
       data-slot="avatar-image"
-      src={normalizedSrc}
+      src={currentSrc}
+      onError={handleError}
       className={cn(
         "aspect-square size-full rounded-full object-cover",
         className

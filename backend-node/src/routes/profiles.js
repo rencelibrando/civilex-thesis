@@ -27,11 +27,95 @@ const supabaseAdmin = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY || 'dummy'
 );
 
+// Ensure 'avatars' storage bucket exists and is public
+async function ensureAvatarsBucket() {
+  try {
+    const { data: buckets, error } = await supabaseAdmin.storage.listBuckets();
+    if (error) {
+      console.warn('[Storage] listBuckets error:', error.message);
+      return;
+    }
+    const bucket = buckets?.find((b) => b.name === 'avatars');
+    if (!bucket) {
+      await supabaseAdmin.storage.createBucket('avatars', {
+        public: true,
+        fileSizeLimit: 5 * 1024 * 1024,
+        allowedMimeTypes: ['image/png', 'image/jpeg', 'image/webp', 'image/gif'],
+      });
+      console.log("[Storage] Created 'avatars' bucket with public access.");
+    } else if (!bucket.public) {
+      await supabaseAdmin.storage.updateBucket('avatars', { public: true });
+      console.log("[Storage] Updated 'avatars' bucket to public access.");
+    }
+  } catch (e) {
+    console.warn('[Storage] ensureAvatarsBucket note:', e.message);
+  }
+}
+// Auto-verify bucket
+ensureAvatarsBucket();
+
+// Public route to retrieve avatar bytes directly (bypasses browser CORS & storage RLS in production)
+router.get('/avatar/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    if (!userId || typeof userId !== 'string' || userId.includes('..') || userId.includes('/')) {
+      return res.status(400).send('Invalid user ID');
+    }
+
+    // Try finding the file in Supabase storage via service-role
+    const { data: files } = await supabaseAdmin.storage
+      .from('avatars')
+      .list(userId, { limit: 5 });
+
+    if (files && files.length > 0) {
+      const avatarFile = files.find(f => f.name.startsWith('avatar.')) || files[0];
+      if (avatarFile) {
+        const filePath = `${userId}/${avatarFile.name}`;
+        const { data: blob, error: downloadError } = await supabaseAdmin.storage
+          .from('avatars')
+          .download(filePath);
+
+        if (!downloadError && blob) {
+          const buffer = Buffer.from(await blob.arrayBuffer());
+          res.setHeader('Content-Type', blob.type || 'image/png');
+          res.setHeader('Cache-Control', 'public, max-age=3600');
+          return res.send(buffer);
+        }
+      }
+    }
+
+    // Check profiles table for external avatar URL (e.g. Google OAuth)
+    const { data: profile } = await supabaseAdmin
+      .from('profiles')
+      .select('avatar_url')
+      .eq('id', userId)
+      .maybeSingle();
+
+    if (profile?.avatar_url && !profile.avatar_url.includes('localhost') && !profile.avatar_url.includes('127.0.0.1')) {
+      return res.redirect(302, profile.avatar_url);
+    }
+
+    // Check auth user metadata
+    try {
+      const { data: authUser } = await supabaseAdmin.auth.admin.getUserById(userId);
+      const metaUrl = authUser?.user?.user_metadata?.avatar_url || authUser?.user?.user_metadata?.picture;
+      if (metaUrl && !metaUrl.includes('localhost') && !metaUrl.includes('127.0.0.1')) {
+        return res.redirect(302, metaUrl);
+      }
+    } catch (_) {}
+
+    return res.status(404).send('Avatar not found');
+  } catch (err) {
+    console.error('Error streaming avatar:', err);
+    return res.status(500).send('Error streaming avatar');
+  }
+});
+
 // Get current user's profile
 router.get('/me', requireAuth, async (req, res) => {
   try {
     const userId = req.user.id;
-    const { data, error } = await req.supabase
+    let { data, error } = await req.supabase
       .from('profiles')
       .select('*')
       .eq('id', userId)
@@ -39,6 +123,11 @@ router.get('/me', requireAuth, async (req, res) => {
 
     if (error && error.code !== 'PGRST116') throw error;
     
+    const metaAvatar =
+      req.user.user_metadata?.avatar_url ||
+      req.user.user_metadata?.picture ||
+      null;
+
     // If profile doesn't exist yet, return a default skeleton populated from user_metadata
     if (!data) {
        return res.json({
@@ -48,11 +137,26 @@ router.get('/me', requireAuth, async (req, res) => {
          organization: req.user.user_metadata?.organization || '',
          practice_area: req.user.user_metadata?.practice_area || '',
          phone_number: req.user.user_metadata?.phone_number || '',
-         avatar_url: req.user.user_metadata?.avatar_url || null,
+         avatar_url: metaAvatar,
          notification_preferences: { email: true, push: false },
          theme_preferences: 'system',
          created_at: new Date().toISOString()
        });
+    }
+
+    // If profile exists but avatar_url is empty/null, fall back to auth metadata
+    if (!data.avatar_url && metaAvatar) {
+      data.avatar_url = metaAvatar;
+    }
+
+    // If avatar_url points to localhost:54321 in prod, normalize using configured SUPABASE_URL
+    if (data.avatar_url && (data.avatar_url.includes('localhost:54321') || data.avatar_url.includes('127.0.0.1:54321'))) {
+      const configuredSupabase = process.env.SUPABASE_URL;
+      if (configuredSupabase && !configuredSupabase.includes('localhost') && !configuredSupabase.includes('127.0.0.1')) {
+        data.avatar_url = data.avatar_url
+          .replace('http://localhost:54321', configuredSupabase)
+          .replace('http://127.0.0.1:54321', configuredSupabase);
+      }
     }
 
     res.json(data);
@@ -68,6 +172,8 @@ router.post('/me/avatar', requireAuth, avatarUpload.single('avatar'), async (req
     if (!req.file) {
       return res.status(400).json({ error: 'No image file uploaded' });
     }
+
+    await ensureAvatarsBucket();
 
     const userId = req.user.id;
     const ext = req.file.originalname.split('.').pop() || 'png';
@@ -90,7 +196,17 @@ router.post('/me/avatar', requireAuth, avatarUpload.single('avatar'), async (req
       .from('avatars')
       .getPublicUrl(filePath);
 
-    const newAvatarUrl = `${urlData.publicUrl}?t=${Date.now()}`;
+    let newAvatarUrl = `${urlData.publicUrl}?t=${Date.now()}`;
+
+    // If publicUrl generated is localhost but server knows real SUPABASE_URL
+    if (newAvatarUrl.includes('localhost:54321') || newAvatarUrl.includes('127.0.0.1:54321')) {
+      const configuredSupabase = process.env.SUPABASE_URL;
+      if (configuredSupabase && !configuredSupabase.includes('localhost') && !configuredSupabase.includes('127.0.0.1')) {
+        newAvatarUrl = newAvatarUrl
+          .replace('http://localhost:54321', configuredSupabase)
+          .replace('http://127.0.0.1:54321', configuredSupabase);
+      }
+    }
 
     // Upsert into profiles table
     const { data: profile, error: profileError } = await supabaseAdmin

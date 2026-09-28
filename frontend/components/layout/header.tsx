@@ -42,24 +42,42 @@ export function Header() {
       if (session.user.user_metadata?.organization) {
         setUserOrg(session.user.user_metadata.organization);
       }
-      if (session.user.user_metadata?.avatar_url) {
-        setAvatarUrl(session.user.user_metadata.avatar_url);
+      const metaAvatar =
+        session.user.user_metadata?.avatar_url ||
+        session.user.user_metadata?.picture ||
+        null;
+      if (metaAvatar) {
+        setAvatarUrl(metaAvatar);
       }
 
       const authToken = token || session.access_token;
       if (!authToken) return;
 
-      const res = await fetch(`${BACKEND_URL}/api/profiles/me`, {
+      // Try direct backend or relative /api/profiles/me (Next.js proxy fallback)
+      let res = await fetch(`${BACKEND_URL}/api/profiles/me`, {
         headers: {
           Authorization: `Bearer ${authToken}`
         }
-      });
-      if (res.ok) {
+      }).catch(() => null);
+
+      if (!res || !res.ok) {
+        res = await fetch('/api/profiles/me', {
+          headers: {
+            Authorization: `Bearer ${authToken}`
+          }
+        }).catch(() => null);
+      }
+
+      if (res && res.ok) {
         const data = await res.json();
         if (data.full_name) setUserName(data.full_name);
         if (data.role) setUserRole(data.role);
         if (data.organization) setUserOrg(data.organization);
-        if (data.avatar_url !== undefined) setAvatarUrl(data.avatar_url);
+        if (data.avatar_url) {
+          setAvatarUrl(data.avatar_url);
+        } else if (metaAvatar) {
+          setAvatarUrl(metaAvatar);
+        }
       }
     } catch (err) {
       console.error("Failed to fetch header user profile", err);

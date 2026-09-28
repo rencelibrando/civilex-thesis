@@ -1,11 +1,19 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { User, Shield, Save, Loader2, Camera, Trash2, KeyRound } from "lucide-react";
+import { User, Shield, Save, Loader2, Camera, Trash2, KeyRound, Eye } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from "@/components/ui/dialog";
 import { supabase } from "@/lib/supabase";
 import { BACKEND_URL } from "@/lib/config";
 
@@ -42,6 +50,8 @@ export default function SettingsPage() {
   const [practiceArea, setPracticeArea] = useState("");
   const [phoneNumber, setPhoneNumber] = useState("");
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
+  const [userId, setUserId] = useState<string | null>(null);
+  const [isPreviewOpen, setIsPreviewOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
   const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
@@ -60,29 +70,43 @@ export default function SettingsPage() {
         const { data: { session } } = await supabase.auth.getSession();
         if (!session) return;
         
+        setUserId(session.user.id);
         setEmail(session.user.email || "");
 
-        const res = await fetch(`${BACKEND_URL}/api/profiles/me`, {
+        const metaAvatar =
+          session.user.user_metadata?.avatar_url ||
+          session.user.user_metadata?.picture ||
+          null;
+
+        let res = await fetch(`${BACKEND_URL}/api/profiles/me`, {
           headers: {
             "Authorization": `Bearer ${session.access_token}`
           }
-        });
+        }).catch(() => null);
+
+        if (!res || !res.ok) {
+          res = await fetch('/api/profiles/me', {
+            headers: {
+              "Authorization": `Bearer ${session.access_token}`
+            }
+          }).catch(() => null);
+        }
         
-        if (res.ok) {
+        if (res && res.ok) {
           const data = await res.json();
           setName(data.full_name || session.user.user_metadata?.full_name || "");
           setRole(data.role || session.user.user_metadata?.role || "");
           setOrganization(data.organization || session.user.user_metadata?.organization || "");
           setPracticeArea(data.practice_area || session.user.user_metadata?.practice_area || "");
           setPhoneNumber(data.phone_number || session.user.user_metadata?.phone_number || "");
-          setAvatarUrl(data.avatar_url || session.user.user_metadata?.avatar_url || null);
+          setAvatarUrl(data.avatar_url || metaAvatar);
         } else {
           setName(session.user.user_metadata?.full_name || "");
           setRole(session.user.user_metadata?.role || "");
           setOrganization(session.user.user_metadata?.organization || "");
           setPracticeArea(session.user.user_metadata?.practice_area || "");
           setPhoneNumber(session.user.user_metadata?.phone_number || "");
-          setAvatarUrl(session.user.user_metadata?.avatar_url || null);
+          setAvatarUrl(metaAvatar);
         }
       } catch (err) {
         console.error("Failed to load profile", err);
@@ -123,15 +147,25 @@ export default function SettingsPage() {
         const formData = new FormData();
         formData.append("avatar", file);
 
-        const res = await fetch(`${BACKEND_URL}/api/profiles/me/avatar`, {
+        let res = await fetch(`${BACKEND_URL}/api/profiles/me/avatar`, {
           method: "POST",
           headers: {
             Authorization: `Bearer ${session.access_token}`,
           },
           body: formData,
-        });
+        }).catch(() => null);
 
-        if (res.ok) {
+        if (!res || !res.ok) {
+          res = await fetch('/api/profiles/me/avatar', {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${session.access_token}`,
+            },
+            body: formData,
+          }).catch(() => null);
+        }
+
+        if (res && res.ok) {
           const data = await res.json();
           if (data.avatar_url) {
             newAvatarUrl = data.avatar_url;
@@ -169,7 +203,14 @@ export default function SettingsPage() {
             Authorization: `Bearer ${session.access_token}`,
           },
           body: JSON.stringify({ avatar_url: newAvatarUrl }),
-        });
+        }).catch(() => fetch('/api/profiles/me', {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${session.access_token}`,
+          },
+          body: JSON.stringify({ avatar_url: newAvatarUrl }),
+        }));
       }
 
       if (newAvatarUrl) {
@@ -201,16 +242,27 @@ export default function SettingsPage() {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) return;
 
-      const res = await fetch(`${BACKEND_URL}/api/profiles/me`, {
+      let res = await fetch(`${BACKEND_URL}/api/profiles/me`, {
         method: "PATCH",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${session.access_token}`,
         },
         body: JSON.stringify({ avatar_url: null }),
-      });
+      }).catch(() => null);
 
-      if (res.ok) {
+      if (!res || !res.ok) {
+        res = await fetch('/api/profiles/me', {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${session.access_token}`,
+          },
+          body: JSON.stringify({ avatar_url: null }),
+        }).catch(() => null);
+      }
+
+      if (res && res.ok) {
         setAvatarUrl(null);
         await supabase.auth.updateUser({
           data: { avatar_url: null },
@@ -232,7 +284,7 @@ export default function SettingsPage() {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) return;
 
-      const res = await fetch(`${BACKEND_URL}/api/profiles/me`, {
+      let res = await fetch(`${BACKEND_URL}/api/profiles/me`, {
         method: "PATCH",
         headers: {
           "Content-Type": "application/json",
@@ -245,9 +297,26 @@ export default function SettingsPage() {
           practice_area: practiceArea,
           phone_number: phoneNumber
         })
-      });
+      }).catch(() => null);
 
-      if (res.ok) {
+      if (!res || !res.ok) {
+        res = await fetch('/api/profiles/me', {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${session.access_token}`
+          },
+          body: JSON.stringify({
+            full_name: name,
+            role: role,
+            organization: organization,
+            practice_area: practiceArea,
+            phone_number: phoneNumber
+          })
+        }).catch(() => null);
+      }
+
+      if (res && res.ok) {
         await supabase.auth.updateUser({
           data: {
             full_name: name,
@@ -335,14 +404,29 @@ export default function SettingsPage() {
           <CardContent className="p-4 sm:p-6 space-y-5 sm:space-y-6">
             <div className="flex flex-col sm:flex-row items-center gap-6 pb-6 border-b border-border">
               <div className="relative group shrink-0">
-                <Avatar className="size-24 border-2 border-border shadow-sm ring-4 ring-card overflow-hidden">
-                  <AvatarImage src={avatarUrl || undefined} alt={name || "User"} />
-                  <AvatarFallback className="text-2xl font-semibold bg-accent text-accent-foreground">
-                    {name ? name.charAt(0).toUpperCase() : 'U'}
-                  </AvatarFallback>
-                </Avatar>
+                <button
+                  type="button"
+                  onClick={() => setIsPreviewOpen(true)}
+                  className="relative block rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 transition-transform active:scale-95 cursor-pointer group/avatarBtn"
+                  title="Click to preview your profile photo"
+                  aria-label="Click to preview your profile photo"
+                >
+                  <Avatar className="size-24 border-2 border-border shadow-sm ring-4 ring-card overflow-hidden group-hover/avatarBtn:ring-primary/40 transition-all duration-300">
+                    <AvatarImage src={avatarUrl || undefined} alt={name || "User"} />
+                    <AvatarFallback className="text-2xl font-semibold bg-accent text-accent-foreground">
+                      {name ? name.charAt(0).toUpperCase() : 'U'}
+                    </AvatarFallback>
+                  </Avatar>
+
+                  {/* Hover preview overlay */}
+                  <div className="absolute inset-0 rounded-full bg-black/45 opacity-0 group-hover/avatarBtn:opacity-100 transition-opacity duration-200 flex flex-col items-center justify-center text-white backdrop-blur-[1.5px]">
+                    <Eye className="w-5 h-5 text-white drop-shadow-sm mb-0.5" />
+                    <span className="text-[10px] font-semibold tracking-wider uppercase text-white/90 drop-shadow-xs">Preview</span>
+                  </div>
+                </button>
+
                 {isUploadingAvatar && (
-                  <div className="absolute inset-0 flex items-center justify-center bg-background/60 rounded-full backdrop-blur-xs">
+                  <div className="absolute inset-0 flex items-center justify-center bg-background/60 rounded-full backdrop-blur-xs pointer-events-none z-10">
                     <Loader2 className="w-6 h-6 animate-spin text-primary" />
                   </div>
                 )}
@@ -387,7 +471,7 @@ export default function SettingsPage() {
                   </p>
                 )}
                 <p className="text-xs text-muted-foreground">
-                  Supported formats: JPG, PNG, WEBP, GIF. Max file size: 5MB.
+                  Click your photo to preview. Supported formats: JPG, PNG, WEBP, GIF (Max 5MB).
                 </p>
               </div>
             </div>
@@ -554,6 +638,103 @@ export default function SettingsPage() {
             </form>
           </CardContent>
         </Card>
+
+        {/* Profile Picture Pop-Up Preview Modal */}
+        <Dialog open={isPreviewOpen} onOpenChange={setIsPreviewOpen}>
+          <DialogContent className="sm:max-w-md p-0 overflow-hidden bg-card/95 backdrop-blur-md border-border shadow-2xl rounded-2xl">
+            <DialogHeader className="p-4 sm:p-5 pb-3 border-b border-border/60">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-xl bg-primary/10 text-primary">
+                  <User className="w-4 h-4" />
+                </div>
+                <div>
+                  <DialogTitle className="text-base font-semibold text-foreground">Profile Picture Preview</DialogTitle>
+                  <DialogDescription className="text-xs text-muted-foreground">
+                    {name ? name : "Your profile avatar"}
+                  </DialogDescription>
+                </div>
+              </div>
+            </DialogHeader>
+
+            <div className="p-6 flex flex-col items-center justify-center bg-muted/20">
+              <div className="relative group/modalAvatar w-60 h-60 sm:w-72 sm:h-72 rounded-2xl overflow-hidden border-2 border-border/80 shadow-md bg-background flex items-center justify-center">
+                {avatarUrl ? (
+                  <img
+                    src={avatarUrl}
+                    alt={name || "Profile Picture"}
+                    className="w-full h-full object-cover transition-transform duration-300 group-hover/modalAvatar:scale-105"
+                    onError={(e) => {
+                      if (userId && !e.currentTarget.src.includes('/api/profiles/avatar')) {
+                        e.currentTarget.src = `/api/profiles/avatar/${userId}`;
+                      }
+                    }}
+                  />
+                ) : (
+                  <div className="flex flex-col items-center justify-center text-center p-6 space-y-3">
+                    <div className="w-24 h-24 rounded-full bg-primary/10 text-primary flex items-center justify-center text-4xl font-bold border border-primary/20 shadow-sm">
+                      {name ? name.charAt(0).toUpperCase() : 'U'}
+                    </div>
+                    <div>
+                      <p className="text-sm font-semibold text-foreground">{name || "Default Avatar"}</p>
+                      <p className="text-xs text-muted-foreground mt-0.5">No custom profile photo uploaded yet.</p>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="mt-4 text-center">
+                <h3 className="text-sm font-semibold text-foreground">{name || "CIVIL-LEX User"}</h3>
+                {email && <p className="text-xs text-muted-foreground mt-0.5">{email}</p>}
+                {role && (
+                  <span className="inline-block mt-2 text-[11px] font-medium text-primary bg-primary/10 border border-primary/20 px-2.5 py-0.5 rounded-full">
+                    {role}
+                  </span>
+                )}
+              </div>
+            </div>
+
+            <DialogFooter className="p-3.5 sm:p-4 bg-muted/40 border-t border-border flex flex-row items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="rounded-xl text-xs h-9 cursor-pointer"
+                  onClick={() => {
+                    fileInputRef.current?.click();
+                    setIsPreviewOpen(false);
+                  }}
+                  disabled={isUploadingAvatar}
+                >
+                  <Camera className="w-3.5 h-3.5 mr-1.5" />
+                  Change Photo
+                </Button>
+                {avatarUrl && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="rounded-xl text-xs h-9 text-destructive hover:text-destructive hover:bg-destructive/10 cursor-pointer"
+                    onClick={async () => {
+                      await handleRemoveAvatar();
+                      setIsPreviewOpen(false);
+                    }}
+                    disabled={isUploadingAvatar}
+                  >
+                    <Trash2 className="w-3.5 h-3.5 mr-1.5" />
+                    Remove
+                  </Button>
+                )}
+              </div>
+              <Button
+                variant="secondary"
+                size="sm"
+                className="rounded-xl text-xs h-9 px-4 cursor-pointer"
+                onClick={() => setIsPreviewOpen(false)}
+              >
+                Close
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </div>
     </div>
   );

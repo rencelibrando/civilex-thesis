@@ -28,6 +28,8 @@ import {
   AlertTriangle,
   PanelLeftClose,
   PanelLeftOpen,
+  PanelRightClose,
+  PanelRightOpen,
   ArrowRight,
   Plus,
   UploadCloud,
@@ -58,7 +60,6 @@ import { useDocChat } from "@/context/doc-chat-context";
 import { RagStatus } from "@/context/chat-context";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import mammoth from "mammoth";
 import { cn } from "@/lib/utils";
 
 function cleanCaseSummary(text?: string): string {
@@ -409,44 +410,97 @@ function RagPipelineStepper({ status, isLive }: { status: RagStatus | null; isLi
 
 // DOCX Viewer Component
 
-const DocxViewer = ({ fileUrl }: { fileUrl: string }) => {
+const DocxViewer = ({ fileUrl, fileName }: { fileUrl: string; fileName?: string }) => {
   const [html, setHtml] = useState<string>('');
   const [loading, setLoading] = useState(true);
+  const [renderError, setRenderError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     let isMounted = true;
     const fetchAndRender = async () => {
       try {
         setLoading(true);
+        setRenderError(null);
         const response = await fetch(fileUrl);
+        if (!response.ok) {
+          throw new Error(`Preview fetch failed (HTTP ${response.status})`);
+        }
         const arrayBuffer = await response.arrayBuffer();
-        const result = await mammoth.convertToHtml({ arrayBuffer });
-        if (isMounted) setHtml(result.value);
+        // Dynamically import mammoth in the browser so its Node-oriented
+        // entry point is never evaluated during SSR/prerender.
+        const { default: mammothLib } = await import("mammoth");
+        const result = await mammothLib.convertToHtml({ arrayBuffer });
+        if (isMounted) setHtml(result.value || '');
       } catch (err) {
         console.error("Error rendering docx:", err);
-        if (isMounted) setHtml('<p class="text-red-500">Error rendering document preview.</p>');
+        if (isMounted) {
+          setHtml('');
+          setRenderError(err instanceof Error ? err.message : "Error rendering document preview.");
+        }
       } finally {
         if (isMounted) setLoading(false);
       }
     };
     if (fileUrl) fetchAndRender();
     return () => { isMounted = false; };
-  }, [fileUrl]);
+  }, [fileUrl, attempt]);
 
   if (loading) {
     return (
-      <div className="flex flex-col items-center justify-center h-full w-full bg-card rounded-xl shadow-sm border border-border">
+      <div className="flex flex-col items-center justify-center h-full w-full min-w-0 bg-card rounded-xl shadow-sm border border-border">
         <Loader2 className="w-8 h-8 animate-spin text-primary" />
         <p className="mt-4 text-sm text-muted-foreground">Rendering document preview...</p>
       </div>
     );
   }
 
+  if (renderError) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full w-full min-w-0 bg-card rounded-xl shadow-sm border border-border p-6 text-center">
+        <FileText className="w-10 h-10 mb-3 opacity-20" />
+        <p className="text-sm font-semibold text-foreground">Preview unavailable for this Word document</p>
+        <p className="mt-1 text-xs text-muted-foreground max-w-md break-words">{renderError}</p>
+        <div className="mt-4 flex items-center gap-2 flex-wrap justify-center">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => setAttempt((a) => a + 1)}
+            className="h-8 text-xs gap-1.5 cursor-pointer"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+            <span>Retry preview</span>
+          </Button>
+          <a href={fileUrl} download={fileName} target="_blank" rel="noopener noreferrer">
+            <Button type="button" size="sm" className="h-8 text-xs gap-1.5 cursor-pointer">
+              <Download className="w-3.5 h-3.5" />
+              <span>Download original</span>
+            </Button>
+          </a>
+        </div>
+        <p className="mt-3 text-[11px] text-muted-foreground">
+          Chat analysis still works once extraction completes.
+        </p>
+      </div>
+    );
+  }
+
+  // The outer wrapper owns scrolling (both axes) and clips wide Word tables
+  // inside the preview so they can never push the chat panel off-screen.
+  // min-w-0 is required: without it this flex item refuses to shrink below
+  // the intrinsic width of wide docx tables (flex min-width:auto).
   return (
-    <div
-      className="w-full h-full bg-white text-black p-8 overflow-y-auto rounded-xl prose prose-sm max-w-none shadow-sm border border-border"
-      dangerouslySetInnerHTML={{ __html: html }}
-    />
+    <div className="w-full h-full min-w-0 overflow-auto bg-white rounded-xl shadow-sm border border-border">
+      <div
+        className="p-4 sm:p-8 text-black prose prose-sm max-w-none break-words
+          [&_table]:max-w-full [&_table]:w-full [&_table]:table-auto [&_table]:break-words
+          [&_th]:break-words [&_td]:break-words [&_p]:break-words [&_li]:break-words
+          [&_img]:max-w-full [&_img]:h-auto
+          [&_pre]:max-w-full [&_pre]:overflow-x-auto [&_pre]:whitespace-pre-wrap"
+        dangerouslySetInnerHTML={{ __html: html }}
+      />
+    </div>
   );
 };
 
@@ -516,6 +570,7 @@ export default function ResearchPage() {
   const [docListWidth, setDocListWidth] = useState<number>(230);
   const [chatPanelWidth, setChatPanelWidth] = useState<number>(400);
   const [isDocListCollapsed, setIsDocListCollapsed] = useState(false);
+  const [isChatCollapsed, setIsChatCollapsed] = useState(false);
   const [isDocSheetOpen, setIsDocSheetOpen] = useState(false);
   const [mobileActiveTab, setMobileActiveTab] = useState<'document' | 'chat'>('document');
   const [isDraggingDocList, setIsDraggingDocList] = useState(false);
@@ -709,6 +764,8 @@ export default function ResearchPage() {
       if (doc) {
         setActiveDocument(doc);
         setPendingDocId(null);
+        // Guarantee the chat panel is visible for the newly uploaded document
+        setIsChatCollapsed(false);
         ensureDocSession(doc.id, doc.filename);
       }
     }
@@ -1250,9 +1307,11 @@ export default function ResearchPage() {
         </div>
       )}
 
-      {/* Center Pane - Document Viewer / Dropzone (Mobile-responsive) */}
+      {/* Center Pane - Document Viewer / Dropzone (Mobile-responsive).
+          NOTE: lg:flex-1 is required so the center pane always grows on desktop
+          regardless of mobileActiveTab (which must only affect below-lg). */}
       <div className={`${mobileActiveTab === 'document' ? 'flex flex-1' : 'hidden'
-        } lg:flex flex-col bg-card rounded-2xl border border-border shadow-sm overflow-hidden relative min-h-0 mx-0 lg:mx-1.5 w-full lg:w-auto`}>
+        } lg:flex lg:flex-1 flex-col bg-card rounded-2xl border border-border shadow-sm overflow-hidden relative min-h-0 min-w-0 mx-0 lg:mx-1.5 w-full lg:w-auto`}>
         {activeDocument ? (
           <>
             {/* Toolbar */}
@@ -1376,10 +1435,34 @@ export default function ResearchPage() {
                 <Button variant="ghost" size="icon" className="hidden sm:inline-flex h-8 w-8 text-muted-foreground hover:text-foreground">
                   <Maximize2 className="w-4 h-4" />
                 </Button>
+                {/* Desktop: Toggle button to collapse/expand the AI Assistant chat panel */}
+                <Button
+                  type="button"
+                  variant={isChatCollapsed ? "outline" : "ghost"}
+                  size="sm"
+                  onClick={() => setIsChatCollapsed(!isChatCollapsed)}
+                  className={`hidden lg:inline-flex h-8 gap-1.5 px-2 text-xs font-medium cursor-pointer transition-all duration-200 shrink-0 ${isChatCollapsed
+                    ? "bg-card hover:bg-accent text-foreground border-border/80 shadow-2xs"
+                    : "text-muted-foreground hover:text-foreground hover:bg-accent/60"
+                    }`}
+                  title={isChatCollapsed ? "Expand AI Assistant chat panel" : "Collapse AI Assistant chat panel"}
+                >
+                  {isChatCollapsed ? (
+                    <>
+                      <PanelRightOpen className="w-3.5 h-3.5 text-primary shrink-0" />
+                      <span className="hidden sm:inline">Chat</span>
+                    </>
+                  ) : (
+                    <>
+                      <PanelRightClose className="w-3.5 h-3.5 shrink-0" />
+                      <span className="hidden sm:inline text-muted-foreground">Hide Chat</span>
+                    </>
+                  )}
+                </Button>
               </div>
             </div>
 
-            <div className="flex-1 bg-muted/30 p-2 sm:p-4 flex flex-col relative overflow-hidden min-h-0">
+            <div className="flex-1 bg-muted/30 p-2 sm:p-4 flex flex-col relative overflow-hidden min-h-0 min-w-0">
               {/* Extraction Alert Banner */}
               {activeDocument.status === 'rejected_unrelated' && (
                 <div className="shrink-0 mb-3 p-3 sm:p-3.5 rounded-xl bg-amber-500/10 dark:bg-amber-500/15 border border-amber-500/30 text-amber-900 dark:text-amber-200 flex items-start gap-3 shadow-xs animate-fade-in">
@@ -1435,18 +1518,18 @@ export default function ResearchPage() {
                 </div>
               )}
 
-              <div className="flex-1 min-h-0 relative overflow-hidden">
+              <div className="flex-1 min-h-0 min-w-0 w-full relative overflow-hidden">
                 {activeDocument.file_url ? (
-                  activeDocument.filename.match(/\.(jpeg|jpg|png)$/i) ? (
-                    <div className="w-full h-full flex items-center justify-center bg-card shadow-sm border border-border rounded-xl overflow-hidden p-2 sm:p-4">
+                  (activeDocument.filename || '').match(/\.(jpeg|jpg|png)$/i) ? (
+                    <div className="w-full h-full min-w-0 flex items-center justify-center bg-card shadow-sm border border-border rounded-xl overflow-hidden p-2 sm:p-4">
                       <img
                         src={activeDocument.file_url}
                         alt={activeDocument.filename}
                         className="max-w-full max-h-full object-contain"
                       />
                     </div>
-                  ) : activeDocument.filename.match(/\.(doc|docx)$/i) ? (
-                    <DocxViewer fileUrl={activeDocument.file_url} />
+                  ) : (activeDocument.filename || '').match(/\.(doc|docx)$/i) ? (
+                    <DocxViewer fileUrl={activeDocument.file_url} fileName={activeDocument.filename} />
                   ) : (
                     <iframe
                       src={activeDocument.file_url}
@@ -1547,6 +1630,30 @@ export default function ResearchPage() {
                     {isTyping && <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse ml-0.5" />}
                   </button>
                 </div>
+                {/* Desktop: Toggle button to collapse/expand the AI Assistant chat panel */}
+                <Button
+                  type="button"
+                  variant={isChatCollapsed ? "outline" : "ghost"}
+                  size="sm"
+                  onClick={() => setIsChatCollapsed(!isChatCollapsed)}
+                  className={`hidden lg:inline-flex h-8 gap-1.5 px-2 text-xs font-medium cursor-pointer transition-all duration-200 shrink-0 ${isChatCollapsed
+                    ? "bg-card hover:bg-accent text-foreground border-border/80 shadow-2xs"
+                    : "text-muted-foreground hover:text-foreground hover:bg-accent/60"
+                    }`}
+                  title={isChatCollapsed ? "Expand AI Assistant chat panel" : "Collapse AI Assistant chat panel"}
+                >
+                  {isChatCollapsed ? (
+                    <>
+                      <PanelRightOpen className="w-3.5 h-3.5 text-primary shrink-0" />
+                      <span className="hidden sm:inline">Chat</span>
+                    </>
+                  ) : (
+                    <>
+                      <PanelRightClose className="w-3.5 h-3.5 shrink-0" />
+                      <span className="hidden sm:inline text-muted-foreground">Hide Chat</span>
+                    </>
+                  )}
+                </Button>
               </div>
             </div>
 
@@ -1705,34 +1812,44 @@ export default function ResearchPage() {
         )}
       </div>
 
-      {/* Resize Handle 2: Between Center Pane and AI Assistant */}
-      <div
-        onMouseDown={startDraggingChat}
-        role="separator"
-        tabIndex={0}
-        title="Drag to resize AI Assistant chat panel (Double-click to reset)"
-        onDoubleClick={() => {
-          setChatPanelWidth(480);
-          try {
-            localStorage.setItem("civilex_chat_panel_width", "480");
-          } catch (e) { }
-        }}
-        className={`hidden lg:flex w-3.5 -mx-1.5 z-20 items-center justify-center cursor-col-resize group relative select-none touch-none shrink-0 ${isDraggingChat ? "opacity-100" : "opacity-40 hover:opacity-100"
-          } transition-opacity`}
-      >
+      {/* Resize Handle 2: Between Center Pane and AI Assistant (hidden when chat collapsed) */}
+      {!isChatCollapsed && (
         <div
-          className={`w-1 rounded-full transition-all duration-150 ${isDraggingChat
-            ? "bg-primary w-1.5 h-16 shadow-sm"
-            : "bg-border group-hover:bg-primary/70 h-10 group-hover:h-14"
-            }`}
-        />
-      </div>
+          onMouseDown={startDraggingChat}
+          role="separator"
+          tabIndex={0}
+          title="Drag to resize AI Assistant chat panel (Double-click to reset)"
+          onDoubleClick={() => {
+            setChatPanelWidth(480);
+            try {
+              localStorage.setItem("civilex_chat_panel_width", "480");
+            } catch (e) { }
+          }}
+          className={`hidden lg:flex w-3.5 -mx-1.5 z-20 items-center justify-center cursor-col-resize group relative select-none touch-none shrink-0 ${isDraggingChat ? "opacity-100" : "opacity-40 hover:opacity-100"
+            } transition-opacity`}
+        >
+          <div
+            className={`w-1 rounded-full transition-all duration-150 ${isDraggingChat
+              ? "bg-primary w-1.5 h-16 shadow-sm"
+              : "bg-border group-hover:bg-primary/70 h-10 group-hover:h-14"
+              }`}
+          />
+        </div>
+      )}
 
-      {/* Right Pane - AI Assistant (Dynamically resizable, full-width on mobile chat tab) */}
+      {/* Right Pane - AI Assistant (Dynamically resizable, full-width on mobile chat tab).
+          NOTE: lg:flex-none pins the desktop width to the inline chatPanelWidth.
+          Without it, the mobile tab's `flex flex-1` leaks onto desktop after
+          sending (flex-basis:0% overrides the inline width) and the wide docx
+          preview squeezes this pane to zero. */}
       <div
-        style={{ width: typeof window !== "undefined" && window.innerWidth >= 1024 ? `${chatPanelWidth}px` : "100%" }}
+        style={{ width: typeof window !== "undefined" && window.innerWidth >= 1024 ? (isChatCollapsed ? 0 : chatPanelWidth) : "100%" }}
         className={`${mobileActiveTab === 'chat' ? 'flex flex-1' : 'hidden'
-          } lg:flex flex-col bg-card/80 backdrop-blur-xl rounded-2xl border border-border shadow-sm overflow-hidden flex-shrink-0 min-h-0 w-full lg:w-auto`}
+          } lg:flex lg:flex-none flex-col bg-card/80 backdrop-blur-xl rounded-2xl border border-border shadow-sm overflow-hidden min-h-0 min-w-0 w-full lg:w-auto ${isDraggingDocList || isDraggingChat
+            ? "transition-none"
+            : "transition-[width,opacity,margin,border-color] duration-300 ease-in-out"
+          } ${isChatCollapsed ? "lg:!w-0 lg:p-0 lg:opacity-0 lg:pointer-events-none lg:-ml-1 lg:border-transparent" : "opacity-100"
+          }`}
       >
         {/* Panel Header with Mobile Navigation & Desktop Resizer */}
         <div className="p-3 sm:p-4 border-b border-border bg-card/50 flex items-center justify-between shrink-0 gap-2">
@@ -1791,6 +1908,16 @@ export default function ResearchPage() {
             >
               {chatPanelWidth}px
             </button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              onClick={() => setIsChatCollapsed(true)}
+              className="hidden lg:inline-flex h-7 w-7 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent cursor-pointer shrink-0"
+              title="Collapse AI Assistant chat panel"
+            >
+              <PanelRightClose className="w-4 h-4" />
+            </Button>
           </div>
         </div>
 
@@ -1946,7 +2073,7 @@ export default function ResearchPage() {
           );
         })()}
 
-        <div className="flex-1 overflow-y-auto p-4 custom-scrollbar min-h-0">
+        <div className="flex-1 overflow-y-auto p-4 custom-scrollbar min-h-0 min-w-0">
           <div className="flex flex-col gap-4">
             {/* Retained Citations Section for Active Document Chat */}
             {retainedCitations.length > 0 && (
@@ -2467,7 +2594,7 @@ export default function ResearchPage() {
         )}
 
         {/* Input */}
-        <div className="p-2.5 sm:p-3 2xl:p-4 border-t border-border bg-card/50 shrink-0">
+        <div className="p-2.5 sm:p-3 2xl:p-4 border-t border-border bg-card/50 shrink-0 min-w-0">
           {isDocProcessing && (
             <div className="flex items-center gap-2 px-3 py-1.5 bg-blue-500/10 dark:bg-blue-500/20 text-blue-700 dark:text-blue-300 text-xs font-medium rounded-xl border border-blue-500/25 animate-pulse mb-2">
               <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0 text-blue-600 dark:text-blue-400" />

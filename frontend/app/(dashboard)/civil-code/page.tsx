@@ -302,7 +302,7 @@ function CivilCodeContent() {
                             Table of Contents
                         </h2>
                         <Badge variant="secondary" className="text-[10px] bg-indigo-500/10 dark:bg-indigo-500/20 text-indigo-700 dark:text-indigo-300 border border-indigo-500/20 font-semibold">
-                            2,268 Articles
+                            2,270 Articles
                         </Badge>
                     </div>
 

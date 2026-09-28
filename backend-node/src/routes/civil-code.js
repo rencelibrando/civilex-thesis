@@ -21,12 +21,12 @@ router.get('/stats', async (req, res) => {
 
     res.json({
       total_cases: casesRes.count ?? 11879,
-      total_articles: artsRes.count ?? 2268,
+      total_articles: artsRes.count ?? 2270,
       total_relations: relsRes.count ?? 11639
     });
   } catch (err) {
     console.error("Error fetching stats:", err);
-    res.json({ total_cases: 11879, total_articles: 2268, total_relations: 11639 });
+    res.json({ total_cases: 11879, total_articles: 2270, total_relations: 11639 });
   }
 });
 

@@ -931,7 +931,7 @@ def rank_and_stratify_citations(
     # Sort all retrieved items by accuracy score descending
     unique_items.sort(key=calculate_sort_score, reverse=True)
 
-    # Assign rank, calibrated suitability percentage, and 70k context stratification
+    # Assign rank, calibrated suitability percentage, and 80k context stratification
     prev_suitability = 100.0
     for idx, item in enumerate(unique_items):
         item['rank'] = idx + 1
@@ -954,7 +954,7 @@ def rank_and_stratify_citations(
         item['suitability_percent'] = suitability
         item['display_suitability'] = suitability
 
-        # Context stratification: top context_budget items enter the 70k prompt context
+        # Context stratification: top context_budget items enter the 80k prompt context
         if idx < context_budget:
             item['is_in_context'] = True
             item['rank_status'] = 'primary'
@@ -1848,7 +1848,7 @@ YOUR MANDATORY REDIRECTION RULES:
                 # Combine results and retained prior citations
                 all_citations = results + retained_prior
                 for item in all_citations:
-                    # In a 70k context window, prioritize in-context authorities for the model prompt
+                    # In a 80k context window, prioritize in-context authorities for the model prompt
                     if item.get('is_in_context') is False:
                         continue
                     ptype = item.get('parent_type', 'source')
@@ -1879,9 +1879,9 @@ YOUR MANDATORY REDIRECTION RULES:
                         context_str += f"\n[Supporting Case {idx}]\n" + format_context_item(row, doc_filename)
                     context_str += "\n"
 
-                # Bounded context safety for 70k token context window (180,000 characters safety threshold)
+                # Bounded context safety for 80k token context window (205,000 characters safety threshold)
                 # NEVER truncate the primary Civil Code statutory provisions
-                if len(context_str) > 180000:
+                if len(context_str) > 205000:
                     context_str = ""
                     if statutory_items:
                         context_str += "=== PRIMARY STATUTORY AUTHORITY: PHILIPPINE CIVIL CODE (REPUBLIC ACT NO. 386) ===\n"

@@ -11,12 +11,18 @@ function Avatar({
 }: AvatarPrimitive.Root.Props & {
   size?: "default" | "sm" | "lg"
 }) {
+  const hasCustomSize =
+    typeof className === "string" &&
+    (className.includes("size-") || className.includes("w-") || className.includes("h-"));
+
   return (
     <AvatarPrimitive.Root
       data-slot="avatar"
       data-size={size}
       className={cn(
-        "group/avatar relative flex size-8 shrink-0 rounded-full select-none after:absolute after:inset-0 after:rounded-full after:border after:border-border after:mix-blend-darken data-[size=lg]:size-10 data-[size=sm]:size-6 dark:after:mix-blend-lighten",
+        "group/avatar relative flex shrink-0 rounded-full select-none overflow-hidden border border-border/80 bg-muted",
+        !hasCustomSize && "size-8",
+        !hasCustomSize && "data-[size=lg]:size-10 data-[size=sm]:size-6",
         className
       )}
       {...props}
@@ -24,10 +30,26 @@ function Avatar({
   )
 }
 
-function AvatarImage({ className, ...props }: AvatarPrimitive.Image.Props) {
+function AvatarImage({ className, src, ...props }: AvatarPrimitive.Image.Props) {
+  // Normalize localhost / 127.0.0.1 Supabase storage URLs so browser cross-origin blocks never break images
+  const normalizedSrc = React.useMemo(() => {
+    if (!src || typeof src !== "string") return src;
+    if (typeof window !== "undefined" && src.includes(":54321")) {
+      try {
+        const parsed = new URL(src);
+        if (parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost") {
+          parsed.hostname = window.location.hostname;
+          return parsed.toString();
+        }
+      } catch (_) {}
+    }
+    return src;
+  }, [src]);
+
   return (
     <AvatarPrimitive.Image
       data-slot="avatar-image"
+      src={normalizedSrc}
       className={cn(
         "aspect-square size-full rounded-full object-cover",
         className
@@ -45,7 +67,7 @@ function AvatarFallback({
     <AvatarPrimitive.Fallback
       data-slot="avatar-fallback"
       className={cn(
-        "flex size-full items-center justify-center rounded-full bg-muted text-sm text-muted-foreground group-data-[size=sm]/avatar:text-xs",
+        "flex size-full items-center justify-center rounded-full bg-muted text-sm font-medium text-muted-foreground group-data-[size=sm]/avatar:text-xs select-none",
         className
       )}
       {...props}

@@ -155,7 +155,7 @@ function LoginFormContent() {
 
       {/* Brute force lockout banner */}
       {lockoutSeconds > 0 && (
-        <div className="flex items-start gap-3 p-3.5 rounded-xl bg-destructive/10 border border-destructive/20 text-destructive text-sm animate-pulse">
+        <div className="flex items-start gap-3 p-3.5 rounded-xl bg-destructive/10 border border-destructive/20 text-destructive text-sm">
           <Clock className="w-4 h-4 mt-0.5 shrink-0" />
           <div>
             <span className="font-semibold block">Authentication Throttled</span>

@@ -16,9 +16,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "CIVIL-LEX — AI Legal Assistant",
+  title: "CIVIL-LEX : Philippine Civil Law Intelligence Platform",
   description:
-    "AI-assisted legal guidance grounded in the Civil Code of the Philippines.",
+    "Statutory analysis and Supreme Court jurisprudence research grounded in the Civil Code of the Philippines (R.A. 386).",
 };
 
 export default function RootLayout({

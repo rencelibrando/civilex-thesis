@@ -34,11 +34,40 @@ interface ThemeProviderProps {
   disableTransitionOnChange?: boolean;
 }
 
+const disableTransitions = () => {
+  if (typeof document === "undefined") return () => {};
+  const css = document.createElement("style");
+  css.setAttribute("type", "text/css");
+  css.appendChild(
+    document.createTextNode(
+      `*,*::before,*::after{-webkit-transition:none!important;-moz-transition:none!important;-o-transition:none!important;-ms-transition:none!important;transition:none!important}`
+    )
+  );
+  document.head.appendChild(css);
+
+  return () => {
+    // Force DOM reflow so color changes snap immediately without transition delay
+    (() => window.getComputedStyle(document.body))();
+
+    // Re-enable transitions after the repaint completes
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        try {
+          if (document.head.contains(css)) {
+            document.head.removeChild(css);
+          }
+        } catch (_) {}
+      });
+    });
+  };
+};
+
 export function ThemeProvider({
   children,
   defaultTheme = "light",
   storageKey = "theme",
   enableSystem = false,
+  disableTransitionOnChange = true,
 }: ThemeProviderProps) {
   const [theme, setThemeState] = useState<string>(() => {
     if (typeof window !== "undefined") {
@@ -55,22 +84,44 @@ export function ThemeProvider({
   const [mounted, setMounted] = useState(false);
 
 
-  // Apply theme class and style to documentElement
-  const applyThemeToDOM = useCallback((targetTheme: ResolvedTheme) => {
-    if (typeof document === "undefined") return;
-    const root = document.documentElement;
-    if (targetTheme === "dark") {
-      root.classList.remove("light");
-      root.classList.add("dark");
-      root.style.colorScheme = "dark";
-      root.setAttribute("data-theme", "dark");
-    } else {
-      root.classList.remove("dark");
-      root.classList.add("light");
-      root.style.colorScheme = "light";
-      root.setAttribute("data-theme", "light");
-    }
-  }, []);
+  // Apply theme class and style to documentElement with instant snap
+  const applyThemeToDOM = useCallback(
+    (targetTheme: ResolvedTheme) => {
+      if (typeof document === "undefined") return;
+      const root = document.documentElement;
+      const isCurrentlyDark = root.classList.contains("dark");
+      const isCurrentlyLight = root.classList.contains("light");
+
+      if (
+        (targetTheme === "dark" && isCurrentlyDark && !isCurrentlyLight) ||
+        (targetTheme === "light" && isCurrentlyLight && !isCurrentlyDark)
+      ) {
+        return;
+      }
+
+      let enableTransitions: (() => void) | null = null;
+      if (disableTransitionOnChange) {
+        enableTransitions = disableTransitions();
+      }
+
+      if (targetTheme === "dark") {
+        root.classList.remove("light");
+        root.classList.add("dark");
+        root.style.colorScheme = "dark";
+        root.setAttribute("data-theme", "dark");
+      } else {
+        root.classList.remove("dark");
+        root.classList.add("light");
+        root.style.colorScheme = "light";
+        root.setAttribute("data-theme", "light");
+      }
+
+      if (enableTransitions) {
+        enableTransitions();
+      }
+    },
+    [disableTransitionOnChange]
+  );
 
   // Fetch actual OS system theme from host API
   const syncHostSystemTheme = useCallback(async () => {

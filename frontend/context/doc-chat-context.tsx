@@ -19,7 +19,7 @@ export function generateDocFollowUpPrompts(lastAnswer: string, citations: any[] 
 
   const addPrompt = (p: string) => {
     const clean = p.trim();
-    if (!seen.has(clean.toLowerCase()) && suggestions.length < 3) {
+    if (!seen.has(clean.toLowerCase()) && suggestions.length < 2) {
       seen.add(clean.toLowerCase());
       suggestions.push(clean);
     }
@@ -45,11 +45,11 @@ export function generateDocFollowUpPrompts(lastAnswer: string, citations: any[] 
     "What competent court has jurisdiction if a civil action is filed?",
   ];
   for (const fb of docFallbacks) {
-    if (suggestions.length >= 3) break;
+    if (suggestions.length >= 2) break;
     addPrompt(fb);
   }
 
-  return suggestions.slice(0, 3);
+  return suggestions.slice(0, 2);
 }
 
 export interface DocChatMessage {

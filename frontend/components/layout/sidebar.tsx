@@ -66,10 +66,7 @@ export function SidebarNav({ className }: { className?: string }) {
 
   return (
     <div className={cn("flex flex-col h-full", className)}>
-      <div className="py-6 px-4 flex flex-col gap-2 flex-grow overflow-y-auto">
-        <div className="mb-4 px-4 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-          Menu
-        </div>
+      <div className="py-3 px-2 sm:px-2.5 xl:py-4 xl:px-3 flex flex-col flex-grow overflow-y-auto custom-scrollbar">
         <nav className="flex flex-col gap-1">
           {sidebarNavItems.map((item) => {
             const isActive =
@@ -81,21 +78,21 @@ export function SidebarNav({ className }: { className?: string }) {
                 key={item.href}
                 href={item.href}
                 className={cn(
-                  "flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 group focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:outline-none",
+                  "flex items-center gap-2.5 xl:gap-3 px-3 py-2 xl:px-3.5 xl:py-2.5 2xl:py-2.5 rounded-xl transition-all duration-200 group focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:outline-none text-[13px] sm:text-[13.5px] xl:text-sm 2xl:text-[15px] leading-snug",
                   isActive
-                    ? "bg-accent text-primary font-medium"
-                    : "text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+                    ? "bg-accent/80 text-primary font-semibold shadow-2xs"
+                    : "text-muted-foreground hover:bg-accent/40 hover:text-foreground font-medium"
                 )}
               >
                 <item.icon
                   className={cn(
-                    "w-5 h-5",
+                    "w-4 h-4 xl:w-4.5 xl:h-4.5 2xl:w-5 2xl:h-5 shrink-0 transition-colors",
                     isActive ? "text-primary" : "text-muted-foreground group-hover:text-foreground"
                   )}
                 />
-                <span className="flex-1">{item.title}</span>
+                <span className="flex-1 truncate">{item.title}</span>
                 {isChatRunning && (
-                  <span className="flex items-center gap-1 text-[10px] font-medium text-primary bg-primary/10 px-2 py-0.5 rounded-full border border-primary/20">
+                  <span className="flex items-center gap-1 text-[10px] font-medium text-primary bg-primary/10 px-2 py-0.5 rounded-full border border-primary/20 shrink-0">
                     <span className="relative flex h-1.5 w-1.5">
                       <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-primary"></span>
                     </span>
@@ -103,7 +100,7 @@ export function SidebarNav({ className }: { className?: string }) {
                   </span>
                 )}
                 {isActive && !isChatRunning && (
-                  <div className="ml-auto w-1 h-5 bg-primary rounded-full" />
+                  <div className="ml-auto w-1 h-3.5 xl:h-4 2xl:h-4.5 bg-primary rounded-full shrink-0" />
                 )}
               </Link>
             );
@@ -111,26 +108,26 @@ export function SidebarNav({ className }: { className?: string }) {
         </nav>
       </div>
 
-      <div className="p-4 border-t border-border">
+      <div className="p-2 sm:p-2.5 xl:p-3 border-t border-border flex flex-col gap-0.5">
         <Link
           href="/settings"
           className={cn(
-            "flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 group focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:outline-none",
+            "flex items-center gap-2.5 xl:gap-3 px-3 py-2 xl:px-3.5 xl:py-2.5 rounded-xl transition-all duration-200 group focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:outline-none text-[13px] sm:text-[13.5px] xl:text-sm 2xl:text-[15px] leading-snug",
             pathname === "/settings"
-              ? "bg-accent text-primary font-medium"
-              : "text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+              ? "bg-accent/80 text-primary font-semibold shadow-2xs"
+              : "text-muted-foreground hover:bg-accent/40 hover:text-foreground font-medium"
           )}
         >
-          <Settings className={cn("w-5 h-5", pathname === "/settings" ? "text-primary" : "text-muted-foreground")} />
-          <span>Settings</span>
+          <Settings className={cn("w-4 h-4 xl:w-4.5 xl:h-4.5 2xl:w-5 2xl:h-5 shrink-0 transition-colors", pathname === "/settings" ? "text-primary" : "text-muted-foreground group-hover:text-foreground")} />
+          <span className="truncate">Settings</span>
         </Link>
         <button
           type="button"
           onClick={handleLogout}
-          className="w-full flex items-center gap-3 px-4 py-3 mt-1 rounded-xl text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-all duration-200 focus-visible:ring-2 focus-visible:ring-destructive focus-visible:ring-offset-2 focus-visible:outline-none cursor-pointer text-left"
+          className="w-full flex items-center gap-2.5 xl:gap-3 px-3 py-2 xl:px-3.5 xl:py-2.5 rounded-xl text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-all duration-200 focus-visible:ring-2 focus-visible:ring-destructive focus-visible:ring-offset-2 focus-visible:outline-none cursor-pointer text-left text-[13px] sm:text-[13.5px] xl:text-sm 2xl:text-[15px] font-medium leading-snug group"
         >
-          <LogOut className="w-5 h-5 text-muted-foreground group-hover:text-destructive" />
-          <span>Sign Out</span>
+          <LogOut className="w-4 h-4 xl:w-4.5 xl:h-4.5 2xl:w-5 2xl:h-5 text-muted-foreground group-hover:text-destructive shrink-0 transition-colors" />
+          <span className="truncate">Sign Out</span>
         </button>
       </div>
     </div>
@@ -139,7 +136,7 @@ export function SidebarNav({ className }: { className?: string }) {
 
 export function Sidebar() {
   return (
-    <aside className="w-64 flex-shrink-0 border-r border-border bg-sidebar h-[calc(100dvh-4rem)] flex flex-col justify-between hidden md:flex">
+    <aside className="w-56 xl:w-60 2xl:w-64 flex-shrink-0 border-r border-border bg-sidebar h-[calc(100dvh-3.5rem)] 2xl:h-[calc(100dvh-4rem)] flex flex-col justify-between hidden lg:flex transition-[width] duration-200">
       <SidebarNav />
     </aside>
   );

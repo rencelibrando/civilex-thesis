@@ -352,7 +352,7 @@ generate_frame() {
   frame+="${BOX_MID}"
 
   # Section 1: LLM Inference & Concurrency Queue
-  frame+="${BOLD}${BLUE}║${RESET} ${BOLD}${MAGENTA}⚡ LLM INFERENCE & CONCURRENCY QUEUE (STRICT 6GB VRAM LIMITER)${RESET}${CLEAR_LINE}\n"
+  frame+="${BOLD}${BLUE}║${RESET} ${BOLD}${MAGENTA} LLM INFERENCE & CONCURRENCY QUEUE (STRICT 6GB VRAM LIMITER)${RESET}${CLEAR_LINE}\n"
   frame+="${BOLD}${BLUE}║${RESET}  ${DIM}Server:${RESET} ${WHITE}${lm_url}${RESET} -> ${st_lm}${CLEAR_LINE}\n"
   frame+="${BOLD}${BLUE}║${RESET}  ${DIM}Model :${RESET} ${CYAN}${active_model}${RESET}  ${DIM}│ Limit:${RESET} ${YELLOW}${max_concurrent} Query Concurrency (VRAM Safety)${RESET}${CLEAR_LINE}\n"
 
@@ -375,7 +375,7 @@ generate_frame() {
       local as_id_str="${BOLD}${WHITE}${as_display}${RESET}"
       [ -n "$as_mail" ] && [ "$as_mail" != "$as_display" ] && as_id_str+=" ${DIM}<${as_mail}>${RESET}"
       [ -n "$as_role" ] && as_id_str+=" ${CYAN}[${as_role}]${RESET}"
-      frame+="${BOLD}${BLUE}║${RESET}  ${MAGENTA}↳ Current:${RESET} ${YELLOW}⚡ #${as_ticket}${RESET} │ ${as_id_str} ${DIM}(${as_sec}s running)${RESET}${CLEAR_LINE}\n"
+      frame+="${BOLD}${BLUE}║${RESET}  ${MAGENTA}↳ Current:${RESET} ${YELLOW} #${as_ticket}${RESET} │ ${as_id_str} ${DIM}(${as_sec}s running)${RESET}${CLEAR_LINE}\n"
     done
   else
     frame+="${BOLD}${BLUE}║${RESET}  ${MAGENTA}↳ Current:${RESET} ${DIM}No active query running (GPU Idle & Available)${RESET}${CLEAR_LINE}\n"
@@ -395,6 +395,7 @@ generate_frame() {
       IFS=$'\t' read -r w_pos w_ticket w_display w_mail w_role w_sec <<< "$w_line"
       local w_id_str="${BOLD}${WHITE}${w_display}${RESET}"
       [ -n "$w_mail" ] && [ "$w_mail" != "$w_display" ] && w_id_str+=" ${DIM}<${w_mail}>${RESET}"
+      [ -n "$w_role" ] && w_id_str+=" ${CYAN}[${w_role}]${RESET}"
       frame+="${BOLD}${BLUE}║${RESET}  ${YELLOW}↳ Line #${w_pos}:${RESET} ${YELLOW}⏳ #${w_ticket}${RESET} │ ${w_id_str} ${DIM}(${w_sec}s wait)${RESET}${CLEAR_LINE}\n"
     done
   fi
@@ -404,7 +405,7 @@ generate_frame() {
   # Section 2: Online Users
   local online_badge="${GREEN}● ${online_count} Online${RESET}"
   [ "$online_count" -eq 0 ] && online_badge="${DIM}○ 0 Online${RESET}"
-  frame+="${BOLD}${BLUE}║${RESET} ${BOLD}${CYAN}👥 ONLINE PLATFORM USERS (${online_badge}${BOLD}${CYAN})${RESET}${CLEAR_LINE}\n"
+  frame+="${BOLD}${BLUE}║${RESET} ${BOLD}${CYAN} ONLINE PLATFORM USERS (${online_badge}${BOLD}${CYAN})${RESET}${CLEAR_LINE}\n"
 
   if [ "$online_count" -gt 0 ]; then
     local max_u=2
@@ -459,7 +460,7 @@ generate_frame() {
   swap_bar=$(draw_bar "$swap_pct" 14 "$YELLOW")
   disk_bar=$(draw_bar "$disk_pct" 14 "$BLUE")
 
-  frame+="${BOLD}${BLUE}║${RESET} ${BOLD}${CYAN}💻 HOST HARDWARE & SYSTEM UTILIZATION${RESET} ${DIM}(${CPU_MODEL}, ${CPU_CORES}T)${RESET}${CLEAR_LINE}\n"
+  frame+="${BOLD}${BLUE}║${RESET} ${BOLD}${CYAN} HOST HARDWARE & SYSTEM UTILIZATION${RESET} ${DIM}(${CPU_MODEL}, ${CPU_CORES}T)${RESET}${CLEAR_LINE}\n"
   frame+="${BOLD}${BLUE}║${RESET}  ${BOLD}CPU Load :${RESET} [${cpu_bar}]  ${DIM}Load Avg:${RESET} ${WHITE}${load_avg}${RESET}${CLEAR_LINE}\n"
   frame+="${BOLD}${BLUE}║${RESET}  ${BOLD}RAM      :${RESET} [${ram_bar}]  ${WHITE}${mem_used_gb}G/${mem_total_gb}G${RESET} ${DIM}(Avail: ${mem_avail_gb}G)${RESET}${CLEAR_LINE}\n"
   frame+="${BOLD}${BLUE}║${RESET}  ${BOLD}Swap/Disk:${RESET} [${swap_bar}] ${WHITE}${swap_used_gb}G/${swap_total_gb}G${RESET} │ ${DIM}Disk (/):${RESET} ${WHITE}${disk_info}${RESET}${CLEAR_LINE}\n"
@@ -467,7 +468,7 @@ generate_frame() {
   frame+="${BOX_MID}"
 
   # Section 4: Service Health Grid (2 items per line for compact density)
-  frame+="${BOLD}${BLUE}║${RESET} ${BOLD}${GREEN}🌐 SERVICE INFRASTRUCTURE STATUS${RESET}${CLEAR_LINE}\n"
+  frame+="${BOLD}${BLUE}║${RESET} ${BOLD}${GREEN} SERVICE INFRASTRUCTURE STATUS${RESET}${CLEAR_LINE}\n"
   frame+="${BOLD}${BLUE}║${RESET}  Frontend (3000): ${st_fe}   │ Backend Node (4000)  : ${st_be}${CLEAR_LINE}\n"
   frame+="${BOLD}${BLUE}║${RESET}  Python RAG (8000): ${st_py}   │ Supabase DB (54322)  : ${st_db}${CLEAR_LINE}\n"
   frame+="${BOLD}${BLUE}║${RESET}  Supabase API(54321): ${st_sb} │ Azure Tunnel         : ${st_tu}${CLEAR_LINE}\n"

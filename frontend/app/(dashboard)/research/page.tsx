@@ -505,14 +505,21 @@ const DocxViewer = ({ fileUrl, fileName }: { fileUrl: string; fileName?: string 
   );
 };
 
-// Helper to guarantee previews stream from backend avoiding Microsoft Dev Tunnel warning interstitials
+// Helper to guarantee previews stream via same-origin Next.js proxy avoiding Microsoft Dev Tunnel warning interstitials
 function getFilePreviewUrl(doc: UserDocument | null | undefined): string {
   if (!doc) return '';
   if (doc.id) {
-    return apiUrl(`/api/documents/${doc.id}/file`);
+    return `/api/documents/${doc.id}/file`;
   }
   const url = doc.file_url || '';
-  return url.startsWith('/') ? apiUrl(url) : url;
+  if (url.startsWith('/api/documents/')) {
+    return url;
+  }
+  const match = url.match(/\/documents\/[^/]+\/([a-f0-9-]+)/i);
+  if (match && match[1]) {
+    return `/api/documents/${match[1]}/file`;
+  }
+  return url;
 }
 
 const CircularProgress = ({ progress = 0 }: { progress?: number }) => {

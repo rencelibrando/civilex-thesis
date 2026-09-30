@@ -77,6 +77,16 @@ class QueryQueueManager:
                 logger.warning(f"Queue rejected ticket {ticket}: Queue full ({len(self._waiters)}/{self.max_queue_size})")
                 return False, -1, "QUEUE_FULL"
 
+            # Auto-prune stale / abandoned active slots (e.g. hung client or orphaned stream > 300s)
+            now = time.time()
+            stale_tickets = [
+                t for t, s in self._active_slots.items()
+                if (now - s.get("started_at", now)) > 300.0
+            ]
+            for st in stale_tickets:
+                logger.warning(f"[Queue] Auto-evicting stale/orphaned ticket #{st} (ran > 300s)")
+                self._active_slots.pop(st, None)
+
             # Check if execution slot is immediately available
             if len(self._active_slots) < self.max_concurrent:
                 self._active_slots[ticket] = {

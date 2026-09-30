@@ -54,6 +54,11 @@ export function normalizeAvatarSrc(rawSrc?: string | Blob | null | undefined): s
     if (!isLocalhostHost) {
       // If URL contains localhost:54321 or 127.0.0.1:54321
       if (trimmed.includes("localhost:54321") || trimmed.includes("127.0.0.1:54321")) {
+        // Extract userId from /avatars/:userId/avatar... to route via backend proxy directly
+        const match = trimmed.match(/\/avatars\/([^/?#]+)/);
+        if (match && match[1]) {
+          return `/api/profiles/avatar/${match[1]}`;
+        }
         const pubSupabase = process.env.NEXT_PUBLIC_SUPABASE_URL;
         if (
           pubSupabase &&
@@ -64,11 +69,6 @@ export function normalizeAvatarSrc(rawSrc?: string | Blob | null | undefined): s
             /http:\/\/(localhost|127\.0\.0\.1):54321/,
             pubSupabase
           );
-        }
-        // Extract userId from /avatars/:userId/avatar... to route via backend proxy
-        const match = trimmed.match(/\/avatars\/([^/?#]+)/);
-        if (match && match[1]) {
-          return `/api/profiles/avatar/${match[1]}`;
         }
       }
 
@@ -119,6 +119,8 @@ function AvatarImage({ className, src, ...props }: AvatarPrimitive.Image.Props) 
       data-slot="avatar-image"
       src={currentSrc}
       onError={handleError}
+      loading="eager"
+      decoding="async"
       className={cn(
         "aspect-square size-full rounded-full object-cover",
         className

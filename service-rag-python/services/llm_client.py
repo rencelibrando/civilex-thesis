@@ -64,17 +64,17 @@ async def generate_response_stream(
         return
 
     except (httpx.TimeoutException, httpx.ConnectError, httpx.HTTPStatusError) as e:
-        logging.error(f"LM Studio connection error at {LM_STUDIO_URL}: {type(e).__name__} - {e}")
+        logging.error(f"LM Studio connection error: {type(e).__name__} - {e}")
         yield (
-            "> **Local LLM Service Notice**\n>\n"
-            "> CIVIL-LEX is unable to connect to the local Gemma 4 (E4B) model via LM Studio. "
-            f"Please verify that LM Studio is running and accessible at `{LM_STUDIO_URL}`."
+            "> ⚠️ **Model Service Offline**\n>\n"
+            "> Unable to connect to the language model. LM Studio is currently offline or unreachable. "
+            "Please ensure LM Studio is running and try again."
         )
     except Exception as e:
         logging.error(f"Unexpected error during LM Studio streaming: {type(e).__name__} - {e}")
         yield (
-            "> **Service Temporarily Unavailable**\n>\n"
-            "> An error occurred while communicating with the Gemma 4 (E4B) language model. "
+            "> ⚠️ **Service Temporarily Unavailable**\n>\n"
+            "> An unexpected error occurred while communicating with the language model service. "
             "Please try submitting your question again."
         )
 

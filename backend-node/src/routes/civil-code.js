@@ -155,7 +155,7 @@ router.get('/toc', async (req, res) => {
     res.json({ toc: resultTree });
   } catch (err) {
     console.error("Error fetching TOC:", err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "Failed to load table of contents" });
   }
 });
 
@@ -202,7 +202,7 @@ router.get('/article/:id', async (req, res) => {
     res.json(article);
   } catch (err) {
     console.error("Error fetching article:", err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "Failed to load article details" });
   }
 });
 
@@ -221,7 +221,7 @@ router.get('/case/:uid', async (req, res) => {
     res.json(caseRows[0]);
   } catch (err) {
     console.error("Error fetching jurisprudence case:", err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "Failed to load jurisprudence case details" });
   }
 });
 

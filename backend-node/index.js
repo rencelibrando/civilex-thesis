@@ -59,6 +59,11 @@ app.get('/health', (req, res) => {
   res.status(200).json({ status: 'ok', service: 'civilex-backend-gateway' });
 });
 
-app.listen(port, () => {
+const server = app.listen(port, () => {
   console.log(`Backend Node Gateway running on port ${port}`);
 });
+
+// Configure robust HTTP socket timeouts for reverse proxies and tunnels
+server.keepAliveTimeout = 65000; // Keep-alive exceeds typical proxy timeout (60s)
+server.headersTimeout = 66000;
+server.requestTimeout = 300000; // 5-minute request timeout for deep legal reasoning streams

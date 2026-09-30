@@ -15,7 +15,8 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { supabase } from "@/lib/supabase";
-import { BACKEND_URL } from "@/lib/config";
+import { BACKEND_URL, apiUrl } from "@/lib/config";
+import { getCachedProfile, saveCachedProfile } from "@/lib/auth-storage";
 
 type SaveStatus = "idle" | "saving" | "saved" | "error";
 
@@ -78,17 +79,36 @@ export default function SettingsPage() {
           session.user.user_metadata?.picture ||
           null;
 
-        let res = await fetch(`${BACKEND_URL}/api/profiles/me`, {
-          headers: {
-            "Authorization": `Bearer ${session.access_token}`
-          }
-        }).catch(() => null);
+        // Step 1: 0ms instant hydration from device cache
+        const cached = getCachedProfile(session.user.id);
+        if (cached) {
+          setName(cached.full_name || session.user.user_metadata?.full_name || "");
+          setRole(cached.role || session.user.user_metadata?.role || "");
+          setOrganization(cached.organization || session.user.user_metadata?.organization || "");
+          setPracticeArea(cached.practice_area || session.user.user_metadata?.practice_area || "");
+          setPhoneNumber(cached.phone_number || session.user.user_metadata?.phone_number || "");
+          setAvatarUrl(cached.avatar_url || metaAvatar);
+          setIsLoading(false);
+        }
 
-        if (!res || !res.ok) {
-          res = await fetch('/api/profiles/me', {
+        // Step 2: Background revalidation
+        const primaryUrl = apiUrl("/api/profiles/me");
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 3500);
+
+        let res = await fetch(primaryUrl, {
+          headers: {
+            Authorization: `Bearer ${session.access_token}`,
+          },
+          signal: controller.signal,
+        }).catch(() => null);
+        clearTimeout(timeoutId);
+
+        if (!res?.ok && primaryUrl !== "/api/profiles/me") {
+          res = await fetch("/api/profiles/me", {
             headers: {
-              "Authorization": `Bearer ${session.access_token}`
-            }
+              Authorization: `Bearer ${session.access_token}`,
+            },
           }).catch(() => null);
         }
         
@@ -99,8 +119,20 @@ export default function SettingsPage() {
           setOrganization(data.organization || session.user.user_metadata?.organization || "");
           setPracticeArea(data.practice_area || session.user.user_metadata?.practice_area || "");
           setPhoneNumber(data.phone_number || session.user.user_metadata?.phone_number || "");
-          setAvatarUrl(data.avatar_url || metaAvatar);
-        } else {
+          const resolvedAvatar = data.avatar_url || metaAvatar;
+          setAvatarUrl(resolvedAvatar);
+
+          saveCachedProfile(session.user.id, {
+            id: session.user.id,
+            full_name: data.full_name,
+            role: data.role,
+            organization: data.organization,
+            practice_area: data.practice_area,
+            phone_number: data.phone_number,
+            avatar_url: resolvedAvatar,
+            email: session.user.email,
+          });
+        } else if (!cached) {
           setName(session.user.user_metadata?.full_name || "");
           setRole(session.user.user_metadata?.role || "");
           setOrganization(session.user.user_metadata?.organization || "");
@@ -147,15 +179,21 @@ export default function SettingsPage() {
         const formData = new FormData();
         formData.append("avatar", file);
 
-        let res = await fetch(`${BACKEND_URL}/api/profiles/me/avatar`, {
+        const uploadUrl = apiUrl("/api/profiles/me/avatar");
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 6000);
+
+        let res = await fetch(uploadUrl, {
           method: "POST",
           headers: {
             Authorization: `Bearer ${session.access_token}`,
           },
           body: formData,
+          signal: controller.signal,
         }).catch(() => null);
+        clearTimeout(timeoutId);
 
-        if (!res || !res.ok) {
+        if (!res?.ok && uploadUrl !== "/api/profiles/me/avatar") {
           res = await fetch('/api/profiles/me/avatar', {
             method: "POST",
             headers: {
@@ -196,7 +234,8 @@ export default function SettingsPage() {
         newAvatarUrl = `${urlData.publicUrl}?t=${Date.now()}`;
 
         // Save to backend profiles
-        await fetch(`${BACKEND_URL}/api/profiles/me`, {
+        const patchUrl = apiUrl("/api/profiles/me");
+        await fetch(patchUrl, {
           method: "PATCH",
           headers: {
             "Content-Type": "application/json",
@@ -215,6 +254,7 @@ export default function SettingsPage() {
 
       if (newAvatarUrl) {
         setAvatarUrl(newAvatarUrl);
+        saveCachedProfile(session.user.id, { avatar_url: newAvatarUrl });
         await supabase.auth.updateUser({
           data: { avatar_url: newAvatarUrl },
         });
@@ -242,7 +282,8 @@ export default function SettingsPage() {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) return;
 
-      let res = await fetch(`${BACKEND_URL}/api/profiles/me`, {
+      const removeUrl = apiUrl("/api/profiles/me");
+      let res = await fetch(removeUrl, {
         method: "PATCH",
         headers: {
           "Content-Type": "application/json",
@@ -251,7 +292,7 @@ export default function SettingsPage() {
         body: JSON.stringify({ avatar_url: null }),
       }).catch(() => null);
 
-      if (!res || !res.ok) {
+      if (!res?.ok && removeUrl !== "/api/profiles/me") {
         res = await fetch('/api/profiles/me', {
           method: "PATCH",
           headers: {
@@ -264,6 +305,7 @@ export default function SettingsPage() {
 
       if (res && res.ok) {
         setAvatarUrl(null);
+        saveCachedProfile(session.user.id, { avatar_url: null });
         await supabase.auth.updateUser({
           data: { avatar_url: null },
         });
@@ -284,7 +326,11 @@ export default function SettingsPage() {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) return;
 
-      let res = await fetch(`${BACKEND_URL}/api/profiles/me`, {
+      const saveUrl = apiUrl("/api/profiles/me");
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 4000);
+
+      let res = await fetch(saveUrl, {
         method: "PATCH",
         headers: {
           "Content-Type": "application/json",
@@ -296,10 +342,12 @@ export default function SettingsPage() {
           organization: organization,
           practice_area: practiceArea,
           phone_number: phoneNumber
-        })
+        }),
+        signal: controller.signal,
       }).catch(() => null);
+      clearTimeout(timeoutId);
 
-      if (!res || !res.ok) {
+      if (!res?.ok && saveUrl !== "/api/profiles/me") {
         res = await fetch('/api/profiles/me', {
           method: "PATCH",
           headers: {
@@ -317,6 +365,13 @@ export default function SettingsPage() {
       }
 
       if (res && res.ok) {
+        saveCachedProfile(session.user.id, {
+          full_name: name,
+          role: role,
+          organization: organization,
+          practice_area: practiceArea,
+          phone_number: phoneNumber
+        });
         await supabase.auth.updateUser({
           data: {
             full_name: name,

@@ -101,15 +101,18 @@ router.get('/theme', (req, res) => {
 router.get('/queue', async (req, res) => {
   const ragUrl = process.env.RAG_SERVICE_URL || 'http://localhost:8000';
   try {
-    const response = await fetch(`${ragUrl}/system/queue-status`);
+    const response = await fetch(`${ragUrl}/system/queue-status`, {
+      signal: AbortSignal.timeout(3000),
+    });
     if (!response.ok) {
-      return res.status(502).json({ error: 'RAG Service returned non-200' });
+      return res.status(502).json({ error: 'The AI service returned an unexpected response. Please try again shortly.' });
     }
     const data = await response.json();
     return res.json(data);
   } catch (err) {
+    console.error('[Queue Status Error]:', err.message);
     return res.status(503).json({
-      error: 'RAG Service offline or unreachable',
+      error: 'The AI legal engine is currently offline or unreachable.',
       max_concurrent: parseInt(process.env.MAX_CONCURRENT_QUERIES || '1', 10),
       active_queries: 0,
       queued_queries: 0,
@@ -123,7 +126,8 @@ router.get('/online-users', async (req, res) => {
     const data = await PresenceService.getOnlineUsers();
     res.json(data);
   } catch (err) {
-    res.status(500).json({ error: err.message, onlineCount: 0, users: [] });
+    console.error('[Online Users Error]:', err.message);
+    res.status(500).json({ error: 'Failed to retrieve active users.', onlineCount: 0, users: [] });
   }
 });
 
@@ -136,7 +140,8 @@ router.post('/heartbeat', async (req, res) => {
     const data = await PresenceService.getOnlineUsers();
     res.json({ status: 'ok', onlineCount: data.onlineCount });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error('[Heartbeat Error]:', err.message);
+    res.status(500).json({ error: 'Failed to process heartbeat.' });
   }
 });
 
@@ -150,7 +155,8 @@ router.post('/offline', async (req, res) => {
     }
     res.json({ status: 'ok' });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error('[Offline Error]:', err.message);
+    res.status(500).json({ error: 'Failed to update presence status.' });
   }
 });
 
@@ -164,7 +170,9 @@ router.get('/status', async (req, res) => {
   const ragUrl = process.env.RAG_SERVICE_URL || 'http://localhost:8000';
   let ragQueue = null;
   try {
-    const qResp = await fetch(`${ragUrl}/system/queue-status`);
+    const qResp = await fetch(`${ragUrl}/system/queue-status`, {
+      signal: AbortSignal.timeout(3000),
+    });
     if (qResp.ok) {
       ragQueue = await qResp.json();
     }

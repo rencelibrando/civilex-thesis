@@ -776,6 +776,16 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                   // Stop typing state: user needs to interact
                   stopCharStream();
                   setIsTyping(false);
+                } else if (data.type === "error") {
+                  const errorMsg = data.message || "An error occurred while generating the legal response.";
+                  fullResponseAccumulator = `> ⚠️ **Service Notice**\n>\n> ${errorMsg}`;
+                  enqueueText(fullResponseAccumulator);
+                  setRagStatus({
+                    stage: "error",
+                    message: errorMsg,
+                  });
+                  stopCharStream();
+                  setIsTyping(false);
                 } else if (data.type === "done") {
                   setRagStatus({
                     stage: "completed",
@@ -839,7 +849,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                 ...msg,
                 content:
                   msg.content ||
-                  "> ⚠️ **Connection Notice**\n>\n> Unable to connect to the CIVIL-LEX legal service. Please check your network connection and try again.",
+                  "> ⚠️ **Connection Notice**\n>\n> Unable to connect to the legal service. The model service (LM Studio) may be offline. Please verify that LM Studio is running and try again.",
               }
               : msg
           )
@@ -1012,6 +1022,16 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                 } else if (data.type === "text") {
                   fullResponseAccumulator += data.text;
                   enqueueText(data.text);
+                } else if (data.type === "error") {
+                  const errorMsg = data.message || "An error occurred while generating the legal response.";
+                  fullResponseAccumulator = `> ⚠️ **Service Notice**\n>\n> ${errorMsg}`;
+                  enqueueText(fullResponseAccumulator);
+                  setRagStatus({
+                    stage: "error",
+                    message: errorMsg,
+                  });
+                  stopCharStream();
+                  setIsTyping(false);
                 } else if (data.type === "done") {
                   setRagStatus({
                     stage: "completed",
@@ -1065,7 +1085,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                 ...msg,
                 content:
                   msg.content ||
-                  "> ⚠️ **Connection Notice**\n>\n> Unable to connect to the CIVIL-LEX legal service. Please check your network connection and try again.",
+                  "> ⚠️ **Connection Notice**\n>\n> Unable to connect to the legal service. The model service (LM Studio) may be offline. Please verify that LM Studio is running and try again.",
               }
               : msg
           )

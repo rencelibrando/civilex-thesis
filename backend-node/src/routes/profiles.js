@@ -2,11 +2,45 @@ import express from 'express';
 import multer from 'multer';
 import { createClient } from '@supabase/supabase-js';
 import dotenv from 'dotenv';
+import crypto from 'crypto';
 import { requireAuth } from '../middleware/auth.js';
 
 dotenv.config();
 
 const router = express.Router();
+
+// High-speed In-Memory Avatar Cache for Client Latency Optimization
+// Prevents redundant round-trips to Supabase storage on every page navigation
+const avatarMemoryCache = new Map(); // userId -> { buffer, contentType, etag, expiresAt }
+const AVATAR_CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes TTL
+const MAX_AVATAR_CACHE_ENTRIES = 200;
+
+function getCachedAvatar(userId) {
+  const item = avatarMemoryCache.get(userId);
+  if (!item) return null;
+  if (Date.now() > item.expiresAt) {
+    avatarMemoryCache.delete(userId);
+    return null;
+  }
+  return item;
+}
+
+function setCachedAvatar(userId, buffer, contentType, etag) {
+  if (avatarMemoryCache.size >= MAX_AVATAR_CACHE_ENTRIES) {
+    const oldestKey = avatarMemoryCache.keys().next().value;
+    if (oldestKey) avatarMemoryCache.delete(oldestKey);
+  }
+  avatarMemoryCache.set(userId, {
+    buffer,
+    contentType,
+    etag,
+    expiresAt: Date.now() + AVATAR_CACHE_TTL_MS,
+  });
+}
+
+function invalidateCachedAvatar(userId) {
+  if (userId) avatarMemoryCache.delete(userId);
+}
 
 // Memory storage for avatar images (max 5MB, images only)
 const avatarUpload = multer({
@@ -62,7 +96,19 @@ router.get('/avatar/:userId', async (req, res) => {
       return res.status(400).send('Invalid user ID');
     }
 
-    // Try finding the file in Supabase storage via service-role
+    // Step 1: Check high-speed in-memory avatar cache (<1ms response time)
+    const cached = getCachedAvatar(userId);
+    if (cached) {
+      if (req.headers['if-none-match'] === cached.etag) {
+        return res.status(304).end();
+      }
+      res.setHeader('Content-Type', cached.contentType);
+      res.setHeader('ETag', cached.etag);
+      res.setHeader('Cache-Control', 'public, max-age=86400, stale-while-revalidate=604800');
+      return res.send(cached.buffer);
+    }
+
+    // Step 2: Try finding the file in Supabase storage via service-role
     const { data: files } = await supabaseAdmin.storage
       .from('avatars')
       .list(userId, { limit: 5 });
@@ -77,8 +123,19 @@ router.get('/avatar/:userId', async (req, res) => {
 
         if (!downloadError && blob) {
           const buffer = Buffer.from(await blob.arrayBuffer());
-          res.setHeader('Content-Type', blob.type || 'image/png');
-          res.setHeader('Cache-Control', 'public, max-age=3600');
+          const contentType = blob.type || 'image/png';
+          const etag = `"${crypto.createHash('md5').update(buffer).digest('hex')}"`;
+
+          // Store in fast memory cache
+          setCachedAvatar(userId, buffer, contentType, etag);
+
+          if (req.headers['if-none-match'] === etag) {
+            return res.status(304).end();
+          }
+
+          res.setHeader('Content-Type', contentType);
+          res.setHeader('ETag', etag);
+          res.setHeader('Cache-Control', 'public, max-age=86400, stale-while-revalidate=604800');
           return res.send(buffer);
         }
       }
@@ -92,6 +149,7 @@ router.get('/avatar/:userId', async (req, res) => {
       .maybeSingle();
 
     if (profile?.avatar_url && !profile.avatar_url.includes('localhost') && !profile.avatar_url.includes('127.0.0.1')) {
+      res.setHeader('Cache-Control', 'public, max-age=86400, stale-while-revalidate=604800');
       return res.redirect(302, profile.avatar_url);
     }
 
@@ -100,6 +158,7 @@ router.get('/avatar/:userId', async (req, res) => {
       const { data: authUser } = await supabaseAdmin.auth.admin.getUserById(userId);
       const metaUrl = authUser?.user?.user_metadata?.avatar_url || authUser?.user?.user_metadata?.picture;
       if (metaUrl && !metaUrl.includes('localhost') && !metaUrl.includes('127.0.0.1')) {
+        res.setHeader('Cache-Control', 'public, max-age=86400, stale-while-revalidate=604800');
         return res.redirect(302, metaUrl);
       }
     } catch (_) {}
@@ -159,6 +218,8 @@ router.get('/me', requireAuth, async (req, res) => {
       }
     }
 
+    // Set client browser caching headers: fresh for 60 seconds, background revalidation for 5 minutes
+    res.setHeader('Cache-Control', 'private, max-age=60, stale-while-revalidate=300');
     res.json(data);
   } catch (err) {
     console.error("Error fetching profile:", err);
@@ -178,6 +239,9 @@ router.post('/me/avatar', requireAuth, avatarUpload.single('avatar'), async (req
     const userId = req.user.id;
     const ext = req.file.originalname.split('.').pop() || 'png';
     const filePath = `${userId}/avatar.${ext}`;
+
+    // Invalidate any existing cached avatar in memory
+    invalidateCachedAvatar(userId);
 
     // Upload with supabaseAdmin (service role, always works)
     const { error: uploadError } = await supabaseAdmin.storage
@@ -257,6 +321,11 @@ router.patch('/me', requireAuth, async (req, res) => {
       theme_preferences
     } = req.body;
     
+    // Invalidate avatar cache if avatar is being changed or deleted
+    if (avatar_url !== undefined) {
+      invalidateCachedAvatar(userId);
+    }
+
     const updates = { id: userId };
     if (full_name !== undefined) updates.full_name = full_name;
     if (role !== undefined) updates.role = role;

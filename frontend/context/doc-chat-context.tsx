@@ -564,6 +564,29 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
                         },
                       };
                     });
+                  } else if (data.type === "error") {
+                    const errorMsg = data.message || "An error occurred while generating the legal analysis.";
+                    setDocChats((prev) => {
+                      const cur = prev[docId] || INITIAL_STATE;
+                      return {
+                        ...prev,
+                        [docId]: {
+                          ...cur,
+                          ragStatus: { stage: "error", message: errorMsg },
+                          messages: cur.messages.map((m) =>
+                            m.id === assistantId
+                              ? {
+                                  ...m,
+                                  content: m.content
+                                    ? `${m.content}\n\n> ⚠️ **Service Notice**\n>\n> ${errorMsg}`
+                                    : `> ⚠️ **Service Notice**\n>\n> ${errorMsg}`,
+                                  ragStatus: { stage: "error", message: errorMsg },
+                                }
+                              : m
+                          ),
+                        },
+                      };
+                    });
                   } else if (data.type === "done") {
                     commitDocCitations();
                     const followUps = generateDocFollowUpPrompts(fullResponseAccumulator, receivedCitations, filename);
@@ -622,7 +645,7 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
                       ...m,
                       content:
                         m.content ||
-                        "> ⚠️ **Analysis Notice**\n>\n> Unable to connect to the legal analysis service. Please try again.",
+                        "> ⚠️ **Analysis Notice**\n>\n> Unable to connect to the legal analysis service. The model service (LM Studio) may be offline. Please verify that the service is running and try again.",
                     }
                     : m
                 ),

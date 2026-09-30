@@ -29,7 +29,7 @@ router.get('/', requireAuth, async (req, res) => {
     res.json(data);
   } catch (err) {
     console.error("Error fetching sessions:", err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "Failed to fetch chat sessions" });
   }
 });
 
@@ -57,7 +57,7 @@ router.post('/', requireAuth, async (req, res) => {
     res.status(201).json(data);
   } catch (err) {
     console.error("Error creating session:", err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "Failed to create chat session" });
   }
 });
 
@@ -77,7 +77,7 @@ router.get('/:id', requireAuth, async (req, res) => {
     res.json(data);
   } catch (err) {
     console.error("Error fetching session:", err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "Failed to fetch session details" });
   }
 });
 
@@ -106,7 +106,7 @@ router.get('/:id/messages', requireAuth, async (req, res) => {
     res.json(data);
   } catch (err) {
     console.error("Error fetching messages:", err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "Failed to fetch session messages" });
   }
 });
 
@@ -143,7 +143,7 @@ router.post('/:id/messages', requireAuth, async (req, res) => {
     res.status(201).json(data);
   } catch (err) {
     console.error("Error appending message:", err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "Failed to save message" });
   }
 });
 
@@ -179,7 +179,7 @@ router.patch('/:id', requireAuth, async (req, res) => {
     res.json(data);
   } catch (err) {
     console.error("Error updating session:", err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "Failed to update session title" });
   }
 });
 
@@ -208,7 +208,7 @@ router.delete('/:id', requireAuth, async (req, res) => {
     res.status(200).json({ message: 'Session deleted successfully' });
   } catch (err) {
     console.error("Error deleting session:", err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "Failed to delete session" });
   }
 });
 

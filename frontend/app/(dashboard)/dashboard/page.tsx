@@ -22,7 +22,8 @@ import { buttonVariants, Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { supabase } from "@/lib/supabase";
-import { BACKEND_URL } from "@/lib/config";
+import { BACKEND_URL, apiUrl } from "@/lib/config";
+import { getCachedProfile } from "@/lib/auth-storage";
 
 interface SessionItem {
   id: string;
@@ -94,7 +95,7 @@ export default function DashboardPage() {
     async function loadDashboardData() {
       try {
         // Fetch jurisprudence & article counts dynamically
-        fetch(`${BACKEND_URL}/api/civil-code/stats`)
+        fetch(apiUrl("/api/civil-code/stats"))
           .then((res) => (res.ok ? res.json() : null))
           .then((stats) => {
             if (stats?.total_cases) setJurisprudenceCount(stats.total_cases);
@@ -112,8 +113,16 @@ export default function DashboardPage() {
 
         const token = session.access_token;
 
+        // Instant hydration of user name
+        const cached = getCachedProfile(session.user.id);
+        if (cached?.full_name) {
+          setUserName(cached.full_name);
+        } else if (session.user.user_metadata?.full_name) {
+          setUserName(session.user.user_metadata.full_name);
+        }
+
         // Fetch user profile
-        fetch(`${BACKEND_URL}/api/profiles/me`, {
+        fetch(apiUrl("/api/profiles/me"), {
           headers: {
             Authorization: `Bearer ${token}`,
           },
@@ -127,7 +136,7 @@ export default function DashboardPage() {
           .catch((err) => console.error("Failed to load profile:", err));
 
         // Fetch real sessions
-        const sessionsRes = await fetch(`${BACKEND_URL}/api/sessions`, {
+        const sessionsRes = await fetch(apiUrl("/api/sessions"), {
           headers: {
             Authorization: `Bearer ${token}`,
           },
@@ -141,7 +150,7 @@ export default function DashboardPage() {
         }
 
         // Fetch user documents count
-        const docsRes = await fetch(`${BACKEND_URL}/api/documents`, {
+        const docsRes = await fetch(apiUrl("/api/documents"), {
           headers: {
             Authorization: `Bearer ${token}`,
           },

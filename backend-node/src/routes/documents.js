@@ -105,7 +105,7 @@ router.get('/', requireAuth, async (req, res) => {
     res.json(mapped);
   } catch (err) {
     console.error("Error fetching documents:", err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "Failed to fetch user documents" });
   }
 });
 
@@ -183,7 +183,7 @@ router.post('/upload', requireAuth, upload.single('file'), async (req, res) => {
           console.error(`Python /extract ping failed for ${docId}: ${pingRes.status} ${text}`);
           await supabaseStorage.from('user_documents').update({
             status: 'error',
-            error_message: `Extraction service rejected the job (HTTP ${pingRes.status}). Is the Python RAG service running on port 8000?`,
+            error_message: 'Document extraction failed. Please ensure the analysis service is available and try again.',
           }).eq('id', docId);
         }
       })
@@ -192,7 +192,7 @@ router.post('/upload', requireAuth, upload.single('file'), async (req, res) => {
         console.error(`Error pinging python service for ${docId}:`, err?.message || err);
         await supabaseStorage.from('user_documents').update({
           status: 'error',
-          error_message: 'Could not reach the extraction service. Ensure the Python RAG service is running and RAG_SERVICE_URL is correct.',
+          error_message: 'Could not connect to the extraction service. Please ensure the analysis service is running and try again.',
         }).eq('id', docId);
       });
 
@@ -203,7 +203,7 @@ router.post('/upload', requireAuth, upload.single('file'), async (req, res) => {
     if (err.message && err.message.startsWith('Invalid file type')) {
       return res.status(400).json({ error: err.message });
     }
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "Failed to upload document" });
   }
 });
 
@@ -255,7 +255,7 @@ router.delete('/:id', requireAuth, async (req, res) => {
     res.status(200).json({ message: 'Document deleted successfully' });
   } catch (err) {
     console.error("Error deleting document:", err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "Failed to delete document" });
   }
 });
 

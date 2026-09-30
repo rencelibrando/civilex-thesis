@@ -151,7 +151,7 @@ async def get_system_queue_status():
 
     status_data["llm_provider"] = "lmstudio"
     status_data["lm_studio"] = {
-        "url": LM_STUDIO_URL,
+        "configured": bool(LM_STUDIO_URL),
         "online": lm_online,
         "latency_ms": latency_ms,
         "models": loaded_models,
@@ -1285,6 +1285,7 @@ def save_assistant_message_to_db(
     except (ValueError, AttributeError):
         return
 
+    conn = None
     try:
         conn = get_db_connection()
         with conn.cursor() as cur:
@@ -1293,9 +1294,14 @@ def save_assistant_message_to_db(
                 VALUES (%s, 'assistant', %s, %s, %s);
             """, (session_id, content, dumps(citations), dumps(legal_analytics) if legal_analytics else None))
             conn.commit()
-        conn.close()
     except Exception as db_err:
         logging.error(f"Failed to save message to DB: {db_err}")
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 @app.post("/search")
 async def search_documents(request: SearchRequest, raw_req: Request = None):
@@ -1394,6 +1400,7 @@ async def search_documents(request: SearchRequest, raw_req: Request = None):
                 doc_filename = request.document_name
                 doc_sample_text = ""
                 if request.document_id:
+                    conn_doc = None
                     try:
                         conn_doc = get_db_connection()
                         with conn_doc.cursor() as cur_doc:
@@ -1421,9 +1428,14 @@ async def search_documents(request: SearchRequest, raw_req: Request = None):
                             chunk_rows = cur_doc.fetchall()
                             if chunk_rows:
                                 doc_sample_text = " ".join([cr[0] for cr in chunk_rows if cr and cr[0]])
-                        conn_doc.close()
                     except Exception as e:
                         logging.warning(f"Could not fetch document info for {request.document_id}: {e}")
+                    finally:
+                        if conn_doc:
+                            try:
+                                conn_doc.close()
+                            except Exception:
+                                pass
 
                 history_dicts = [{"role": msg.role, "content": msg.content} for msg in request.history]
 
@@ -2098,13 +2110,21 @@ CONTEXT:
                 save_assistant_message_to_db(request.session_id, full_text, results, analytics_payload)
 
             except Exception as stream_err:
-                logging.error(f"Error in SSE stream generation: {stream_err}")
-                yield f"data: {dumps({'type': 'error', 'message': str(stream_err)})}\n\n"
-            finally:
-                if ticket in queue_manager._active_slots:
-                    await queue_manager.release_slot(ticket)
+                logging.error(f"Error in SSE stream generation: {stream_err}", exc_info=True)
+                err_lower = str(stream_err).lower()
+                if any(k in err_lower for k in ["connect", "refused", "timeout", "1234", "lm_studio", "lmstudio"]):
+                    clean_msg = "Unable to connect to the language model. LM Studio is currently offline or unreachable."
                 else:
-                    await queue_manager.cancel_waiter(ticket)
+                    clean_msg = "An error occurred while generating the legal analysis. Please try again."
+                yield f"data: {dumps({'type': 'error', 'message': clean_msg})}\n\n"
+            finally:
+                try:
+                    if ticket in queue_manager._active_slots:
+                        await asyncio.shield(queue_manager.release_slot(ticket))
+                    else:
+                        await asyncio.shield(queue_manager.cancel_waiter(ticket))
+                except Exception as clean_err:
+                    logging.error(f"Error releasing queue slot for ticket #{ticket}: {clean_err}")
 
         return StreamingResponse(
             sse_generator(),
@@ -2114,8 +2134,11 @@ CONTEXT:
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Error in search endpoint: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logging.error(f"Error in search endpoint: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail="An error occurred while processing your legal query. Please try again."
+        )
 
 if __name__ == "__main__":
     import uvicorn

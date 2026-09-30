@@ -1,6 +1,7 @@
 import type { NextConfig } from "next";
 
 const backendUrl =
+  process.env.BACKEND_URL ||
   process.env.NEXT_PUBLIC_API_URL ||
   process.env.NEXT_PUBLIC_BACKEND_URL ||
   "http://localhost:4000";
@@ -31,6 +32,10 @@ const nextConfig: NextConfig = {
       {
         source: "/api/profiles/:path*",
         destination: `${backendUrl}/api/profiles/:path*`,
+      },
+      {
+        source: "/api/system/:path*",
+        destination: `${backendUrl}/api/system/:path*`,
       },
       {
         source: "/api/chat",

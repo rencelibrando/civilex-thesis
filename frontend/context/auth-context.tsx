@@ -20,8 +20,9 @@ import {
   recordFailedLoginAttempt,
   getRemainingLockoutSeconds,
   consumeLogoutReason,
+  saveCachedProfile,
 } from "@/lib/auth-storage";
-import { BACKEND_URL } from "@/lib/config";
+import { BACKEND_URL, apiUrl } from "@/lib/config";
 
 interface AuthContextType {
   user: User | null;
@@ -59,7 +60,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const activeToken = token || session?.access_token;
     if (!activeToken) return;
     try {
-      await fetch(`${BACKEND_URL}/api/system/heartbeat`, {
+      await fetch(apiUrl("/api/system/heartbeat"), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -253,7 +254,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
         // Sync backend profile record
         try {
-          await fetch(`${BACKEND_URL}/api/profiles/me`, {
+          const userId = data.user?.id || data.session.user.id;
+          if (userId) {
+            saveCachedProfile(userId, {
+              id: userId,
+              full_name: payload.fullName.trim(),
+              role: payload.role,
+              organization: payload.organization?.trim() || "",
+              practice_area: payload.practiceArea || "",
+              phone_number: payload.phoneNumber?.trim() || "",
+              avatar_url: null,
+              email: cleanEmail,
+            });
+          }
+
+          await fetch(apiUrl("/api/profiles/me"), {
             method: "PATCH",
             headers: {
               "Content-Type": "application/json",
@@ -288,7 +303,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setIsLoading(true);
     try {
       if (session?.access_token) {
-        fetch(`${BACKEND_URL}/api/system/offline`, {
+        fetch(apiUrl("/api/system/offline"), {
           method: "POST",
           headers: {
             "Content-Type": "application/json",

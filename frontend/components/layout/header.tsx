@@ -17,7 +17,8 @@ import {
 import { ThemeToggle } from "@/components/theme-toggle";
 import { useAuth } from "@/context/auth-context";
 import { useRouter } from "next/navigation";
-import { BACKEND_URL } from "@/lib/config";
+import { BACKEND_URL, apiUrl } from "@/lib/config";
+import { getCachedProfile, saveCachedProfile } from "@/lib/auth-storage";
 
 export function Header() {
   const router = useRouter();
@@ -28,43 +29,63 @@ export function Header() {
   const [userOrg, setUserOrg] = useState<string>("");
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
 
-  const fetchProfile = async () => {
+  const fetchProfile = async (silent = false) => {
     try {
       if (!session) return;
+      const userId = session.user.id;
 
-      setUserEmail(session.user.email || "");
-      if (session.user.user_metadata?.full_name) {
-        setUserName(session.user.user_metadata.full_name);
-      }
-      if (session.user.user_metadata?.role) {
-        setUserRole(session.user.user_metadata.role);
-      }
-      if (session.user.user_metadata?.organization) {
-        setUserOrg(session.user.user_metadata.organization);
-      }
+      // Step 1: Instant 0ms Hydration from client device cache
+      const cached = getCachedProfile(userId);
       const metaAvatar =
         session.user.user_metadata?.avatar_url ||
         session.user.user_metadata?.picture ||
         null;
-      if (metaAvatar) {
-        setAvatarUrl(metaAvatar);
+
+      if (cached) {
+        if (cached.full_name) setUserName(cached.full_name);
+        if (cached.role) setUserRole(cached.role);
+        if (cached.organization) setUserOrg(cached.organization);
+        if (cached.avatar_url !== undefined) {
+          setAvatarUrl(cached.avatar_url || metaAvatar);
+        }
+      } else {
+        setUserEmail(session.user.email || "");
+        if (session.user.user_metadata?.full_name) {
+          setUserName(session.user.user_metadata.full_name);
+        }
+        if (session.user.user_metadata?.role) {
+          setUserRole(session.user.user_metadata.role);
+        }
+        if (session.user.user_metadata?.organization) {
+          setUserOrg(session.user.user_metadata.organization);
+        }
+        if (metaAvatar) {
+          setAvatarUrl(metaAvatar);
+        }
       }
 
       const authToken = token || session.access_token;
       if (!authToken) return;
 
-      // Try direct backend or relative /api/profiles/me (Next.js proxy fallback)
-      let res = await fetch(`${BACKEND_URL}/api/profiles/me`, {
-        headers: {
-          Authorization: `Bearer ${authToken}`
-        }
-      }).catch(() => null);
+      // Step 2: Background SWR revalidation with fast direct route (no 4s hang)
+      const primaryUrl = apiUrl("/api/profiles/me");
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 3500);
 
-      if (!res || !res.ok) {
-        res = await fetch('/api/profiles/me', {
+      let res = await fetch(primaryUrl, {
+        headers: {
+          Authorization: `Bearer ${authToken}`,
+        },
+        signal: controller.signal,
+      }).catch(() => null);
+      clearTimeout(timeoutId);
+
+      // Fallback to relative /api/profiles/me only if primaryUrl was external and failed
+      if (!res?.ok && primaryUrl !== "/api/profiles/me") {
+        res = await fetch("/api/profiles/me", {
           headers: {
-            Authorization: `Bearer ${authToken}`
-          }
+            Authorization: `Bearer ${authToken}`,
+          },
         }).catch(() => null);
       }
 
@@ -73,11 +94,18 @@ export function Header() {
         if (data.full_name) setUserName(data.full_name);
         if (data.role) setUserRole(data.role);
         if (data.organization) setUserOrg(data.organization);
-        if (data.avatar_url) {
-          setAvatarUrl(data.avatar_url);
-        } else if (metaAvatar) {
-          setAvatarUrl(metaAvatar);
-        }
+        const resolvedAvatar = data.avatar_url || metaAvatar;
+        setAvatarUrl(resolvedAvatar);
+
+        // Update local persistent device cache
+        saveCachedProfile(userId, {
+          id: userId,
+          full_name: data.full_name || session.user.user_metadata?.full_name || "User",
+          role: data.role || session.user.user_metadata?.role || "",
+          organization: data.organization || session.user.user_metadata?.organization || "",
+          avatar_url: resolvedAvatar,
+          email: session.user.email,
+        });
       }
     } catch (err) {
       console.error("Failed to fetch header user profile", err);
@@ -88,7 +116,16 @@ export function Header() {
     fetchProfile();
 
     const handleProfileUpdated = () => {
-      fetchProfile();
+      if (session?.user?.id) {
+        const cached = getCachedProfile(session.user.id);
+        if (cached) {
+          if (cached.full_name) setUserName(cached.full_name);
+          if (cached.role) setUserRole(cached.role);
+          if (cached.organization) setUserOrg(cached.organization);
+          if (cached.avatar_url !== undefined) setAvatarUrl(cached.avatar_url);
+        }
+      }
+      fetchProfile(true);
     };
 
     window.addEventListener("profile-updated", handleProfileUpdated);

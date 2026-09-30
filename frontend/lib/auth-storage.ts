@@ -10,10 +10,24 @@ export const SESSION_MAX_AGE_MS = SESSION_MAX_AGE_DAYS * 24 * 60 * 60 * 1000; //
 export const AUTH_STORAGE_KEYS = {
   SESSION: "civilex_auth_session",
   METADATA: "civilex_session_meta",
+  PROFILE: "civilex_user_profile",
   THROTTLE: "civilex_auth_throttle",
   LOGOUT_REASON: "civilex_logout_reason",
   JUST_LOGGED_OUT: "civilex_just_logged_out",
 } as const;
+
+export interface CachedUserProfile {
+  id: string;
+  email?: string;
+  full_name: string;
+  role: string;
+  organization: string;
+  practice_area?: string;
+  phone_number?: string;
+  avatar_url: string | null;
+  updated_at?: string;
+  cachedAt: number;
+}
 
 export interface SessionMetadata {
   loginTimestamp: number;
@@ -128,6 +142,8 @@ export function clearAllAuthStorage(reason?: string): void {
         key &&
         (key === AUTH_STORAGE_KEYS.SESSION ||
           key === AUTH_STORAGE_KEYS.METADATA ||
+          key === AUTH_STORAGE_KEYS.PROFILE ||
+          key.startsWith(`${AUTH_STORAGE_KEYS.PROFILE}_`) ||
           key.startsWith("sb-") ||
           key.includes("supabase") ||
           key.startsWith("civilex_auth_session"))
@@ -261,3 +277,65 @@ export function getRemainingLockoutSeconds(): number {
   const remaining = Math.ceil((state.lockoutUntil - Date.now()) / 1000);
   return remaining > 0 ? remaining : 0;
 }
+
+/**
+ * Retrieves the locally cached user profile for instant 0ms rendering on client devices.
+ */
+export function getCachedProfile(userId?: string): CachedUserProfile | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const key = userId ? `${AUTH_STORAGE_KEYS.PROFILE}_${userId}` : AUTH_STORAGE_KEYS.PROFILE;
+    const raw = localStorage.getItem(key);
+    if (!raw) return null;
+    return JSON.parse(raw) as CachedUserProfile;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Persists user profile to client device storage and syncs across active tabs.
+ */
+export function saveCachedProfile(userId: string, data: Partial<CachedUserProfile>): CachedUserProfile {
+  const current = getCachedProfile(userId) || {
+    id: userId,
+    full_name: "",
+    role: "",
+    organization: "",
+    avatar_url: null,
+    cachedAt: 0,
+  };
+
+  const updated: CachedUserProfile = {
+    ...current,
+    ...data,
+    id: userId,
+    cachedAt: Date.now(),
+  };
+
+  if (typeof window !== "undefined") {
+    try {
+      const userKey = `${AUTH_STORAGE_KEYS.PROFILE}_${userId}`;
+      localStorage.setItem(userKey, JSON.stringify(updated));
+      localStorage.setItem(AUTH_STORAGE_KEYS.PROFILE, JSON.stringify(updated));
+    } catch (err) {
+      console.warn("[AuthSecurity] Failed to persist profile cache:", err);
+    }
+  }
+
+  return updated;
+}
+
+/**
+ * Removes cached user profile from client storage.
+ */
+export function clearCachedProfile(userId?: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    if (userId) {
+      localStorage.removeItem(`${AUTH_STORAGE_KEYS.PROFILE}_${userId}`);
+    }
+    localStorage.removeItem(AUTH_STORAGE_KEYS.PROFILE);
+  } catch (_) {}
+}
+

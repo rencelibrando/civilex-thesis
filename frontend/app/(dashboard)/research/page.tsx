@@ -906,8 +906,8 @@ export default function ResearchPage() {
     formData.append("file", file);
 
     const controller = new AbortController();
-    // 60 seconds timeout
-    const timeoutId = setTimeout(() => controller.abort(), 60000);
+    // 180 seconds timeout (uploads go via dev tunnel in production, slower than localhost)
+    const timeoutId = setTimeout(() => controller.abort(), 180000);
 
     try {
       const { data: { session } } = await supabase.auth.getSession();
@@ -938,7 +938,7 @@ export default function ResearchPage() {
     } catch (err: any) {
       clearTimeout(timeoutId);
       if (err.name === 'AbortError') {
-        alert("Upload timed out after 60 seconds. Please try again.");
+        alert("Upload timed out after 180 seconds. The tunnel may be slow — please try again or use a smaller file.");
       } else {
         console.error("Upload error:", err);
         alert("Upload error. Please check your connection.");

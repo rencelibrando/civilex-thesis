@@ -19,6 +19,18 @@ const supabaseStorage = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY || 'dummy'
 );
 
+// Public URL base for browsers (Azure frontend cannot reach laptop localhost).
+// Internal SUPABASE_URL stays localhost for fast backend->storage calls;
+// SUPABASE_PUBLIC_URL (dev tunnel) is used for file_url stored/returned to clients.
+const toPublicFileUrl = (url) => {
+  if (!url) return url;
+  const publicBase = (process.env.SUPABASE_PUBLIC_URL || '').trim().replace(/\/$/, '');
+  if (!publicBase) return url;
+  return url
+    .replace('http://localhost:54321', publicBase)
+    .replace('http://127.0.0.1:54321', publicBase);
+};
+
 // Ensure 'documents' bucket exists with 50MB file size limit
 const ensureBucket = async () => {
   try {
@@ -85,7 +97,12 @@ router.get('/', requireAuth, async (req, res) => {
       .order('created_at', { ascending: false });
 
     if (error) throw error;
-    res.json(data);
+    // Rewrite legacy localhost file_urls to tunnel-public URLs so Azure browsers can preview.
+    const mapped = (data || []).map((d) => ({
+      ...d,
+      file_url: toPublicFileUrl(d.file_url),
+    }));
+    res.json(mapped);
   } catch (err) {
     console.error("Error fetching documents:", err);
     res.status(500).json({ error: err.message });
@@ -125,12 +142,14 @@ router.post('/upload', requireAuth, upload.single('file'), async (req, res) => {
       });
     }
 
-    // Get public URL
+    // Get public URL (internal localhost base for fast laptop-local download)
     const { data: publicUrlData } = supabaseStorage.storage
       .from('documents')
       .getPublicUrl(storagePath);
 
-    const fileUrl = publicUrlData.publicUrl; 
+    const internalFileUrl = publicUrlData.publicUrl;
+    // Public URL for browsers: Azure frontend cannot reach laptop localhost.
+    const fileUrl = toPublicFileUrl(internalFileUrl);
 
     // Insert metadata using auth-scoped client (respects RLS)
     const { error } = await req.supabase
@@ -145,13 +164,37 @@ router.post('/upload', requireAuth, upload.single('file'), async (req, res) => {
 
     if (error) throw error;
 
-    // Fire-and-forget: notify the Python extraction service
-    const ragServiceUrl = process.env.RAG_SERVICE_URL || 'http://localhost:8000';
+    // Notify the Python extraction service (same laptop: use fast internal localhost URL).
+    // Logged (not silent) so stuck-'uploading' docs are diagnosable; on ping failure
+    // mark the row as error instead of leaving it stuck forever.
+    const ragServiceUrl = (process.env.RAG_SERVICE_URL || 'http://localhost:8000').replace(/\/$/, '');
+    const pingController = new AbortController();
+    const pingTimeout = setTimeout(() => pingController.abort(), 10000);
     globalFetch(`${ragServiceUrl}/extract`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ file_url: fileUrl, document_id: docId, filename: req.file.originalname })
-    }).catch(err => console.error("Error pinging python service:", err));
+      body: JSON.stringify({ file_url: internalFileUrl, document_id: docId, filename: req.file.originalname }),
+      signal: pingController.signal,
+    })
+      .then(async (pingRes) => {
+        clearTimeout(pingTimeout);
+        if (!pingRes.ok) {
+          const text = await pingRes.text().catch(() => '');
+          console.error(`Python /extract ping failed for ${docId}: ${pingRes.status} ${text}`);
+          await supabaseStorage.from('user_documents').update({
+            status: 'error',
+            error_message: `Extraction service rejected the job (HTTP ${pingRes.status}). Is the Python RAG service running on port 8000?`,
+          }).eq('id', docId);
+        }
+      })
+      .catch(async (err) => {
+        clearTimeout(pingTimeout);
+        console.error(`Error pinging python service for ${docId}:`, err?.message || err);
+        await supabaseStorage.from('user_documents').update({
+          status: 'error',
+          error_message: 'Could not reach the extraction service. Ensure the Python RAG service is running and RAG_SERVICE_URL is correct.',
+        }).eq('id', docId);
+      });
 
     res.status(201).json({ id: docId, file_url: fileUrl, status: 'uploading' });
   } catch (err) {

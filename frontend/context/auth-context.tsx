@@ -175,6 +175,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
 
     try {
+      // Purge any lingering tokens, sessions, or profile caches from previous users
+      clearAllAuthStorage();
+
       const cleanEmail = email.trim().toLowerCase();
       const { data, error } = await supabase.auth.signInWithPassword({
         email: cleanEmail,
@@ -202,6 +205,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setSession(data.session);
       setUser(data.user);
       setLogoutReason(null);
+
+      // Pre-seed clean profile cache strictly bound to this authenticated user
+      if (data.user) {
+        saveCachedProfile(data.user.id, {
+          id: data.user.id,
+          email: data.user.email || cleanEmail,
+          full_name: data.user.user_metadata?.full_name || "",
+          role: data.user.user_metadata?.role || "",
+          organization: data.user.user_metadata?.organization || "",
+          practice_area: data.user.user_metadata?.practice_area || "",
+          phone_number: data.user.user_metadata?.phone_number || "",
+          avatar_url: data.user.user_metadata?.avatar_url || data.user.user_metadata?.picture || null,
+        });
+      }
 
       return { success: true };
     } catch (err: unknown) {

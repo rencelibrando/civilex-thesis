@@ -108,11 +108,15 @@ export default function HistoryPage() {
           headers: {
             Authorization: `Bearer ${session.access_token}`,
           },
+          cache: "no-store",
         });
 
         if (res.ok) {
           const data = await res.json();
-          setSessions(data);
+          if (Array.isArray(data)) {
+            const userSessions = data.filter((s: Session & { user_id?: string }) => !s.user_id || s.user_id === session.user.id);
+            setSessions(userSessions);
+          }
         }
       } catch (err) {
         console.error("Failed to load sessions", err);

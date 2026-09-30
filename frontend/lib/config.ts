@@ -24,8 +24,7 @@ export function getApiBaseUrl(): string {
         !configured ||
         configured.includes("localhost") ||
         configured.includes("127.0.0.1") ||
-        configured.startsWith("http://backend") ||
-        configured.includes("devtunnels.ms")
+        configured.startsWith("http://backend")
       ) {
         return "";
       }

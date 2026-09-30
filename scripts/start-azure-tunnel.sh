@@ -66,7 +66,12 @@ if [ "$TOOL" = "devtunnel" ]; then
   echo -e "  - Supabase API: https://w21xbn22-54321.asse.devtunnels.ms"
 
 
-  devtunnel host civilex-tunnel
+  while true; do
+    echo -e "${CYAN}[i] Hosting tunnel 'civilex-tunnel'...${RESET}"
+    devtunnel host civilex-tunnel || true
+    echo -e "${YELLOW}[!] Dev Tunnel disconnected or encountered an error. Reconnecting in 3 seconds...${RESET}"
+    sleep 3
+  done
 
 elif [ "$TOOL" = "cloudflared" ]; then
   echo -e "${GREEN}[✔] Using Cloudflare Quick Tunnels ('cloudflared')${RESET}"

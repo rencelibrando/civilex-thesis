@@ -21,7 +21,7 @@ export const setupProxies = (app) => {
         proxyReq: (proxyReq, req, res) => {
           // If the downstream client disconnects (tab closed, refreshed, or request aborted),
           // immediately abort the upstream request to Python RAG so it frees the GPU/queue slot!
-          req.on('close', () => {
+          res.on('close', () => {
             if (!res.writableEnded) {
               try {
                 proxyReq.destroy();
@@ -53,6 +53,10 @@ export const setupProxies = (app) => {
           req.socket.setTimeout(0);
         },
         error: (err, req, res) => {
+          // If the downstream client disconnected or aborted, this error is an expected result of proxyReq.destroy()
+          if (res.writableEnded || res.destroyed) {
+            return;
+          }
           console.error('[Chat Proxy Error]:', err.message);
           if (!res.headersSent) {
             res.writeHead(503, { 'Content-Type': 'application/json' });

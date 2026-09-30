@@ -11,6 +11,7 @@ import React, {
 } from "react";
 import { supabase } from "@/lib/supabase";
 import { BACKEND_URL } from "@/lib/config";
+import { useAuth } from "./auth-context";
 
 
 // Types & Interfaces
@@ -573,6 +574,22 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     refreshStarters();
   }, [refreshStarters]);
 
+  // Reset chat if the logged-in user changes to prevent cross-account chat bleed
+  let authUserId: string | null = null;
+  try {
+    const auth = useAuth();
+    authUserId = auth.user?.id || null;
+  } catch {}
+
+  const prevUserIdRef = useRef<string | null>(authUserId);
+
+  useEffect(() => {
+    if (prevUserIdRef.current && authUserId && prevUserIdRef.current !== authUserId) {
+      handleNewChat();
+    }
+    prevUserIdRef.current = authUserId;
+  }, [authUserId, handleNewChat]);
+
 
   // Send Message
 
@@ -660,6 +677,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
+          "X-Tunnel-Skip-AntiPhishing-Page": "true",
         },
         body: JSON.stringify({
           query: userText,
@@ -932,6 +950,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
+          "X-Tunnel-Skip-AntiPhishing-Page": "true",
         },
         body: JSON.stringify({
           query: originalQuery,

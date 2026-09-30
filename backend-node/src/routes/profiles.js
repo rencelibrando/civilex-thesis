@@ -58,7 +58,13 @@ const avatarUpload = multer({
 // Service-role client for admin operations (e.g. ensuring profile exists)
 const supabaseAdmin = createClient(
   process.env.SUPABASE_URL || 'http://localhost:54321',
-  process.env.SUPABASE_SERVICE_ROLE_KEY || 'dummy'
+  process.env.SUPABASE_SERVICE_ROLE_KEY || 'dummy',
+  {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+    },
+  }
 );
 
 // Ensure 'avatars' storage bucket exists and is public
@@ -161,7 +167,7 @@ router.get('/avatar/:userId', async (req, res) => {
         res.setHeader('Cache-Control', 'public, max-age=86400, stale-while-revalidate=604800');
         return res.redirect(302, metaUrl);
       }
-    } catch (_) {}
+    } catch (_) { }
 
     return res.status(404).send('Avatar not found');
   } catch (err) {
@@ -181,35 +187,55 @@ router.get('/me', requireAuth, async (req, res) => {
       .maybeSingle();
 
     if (error && error.code !== 'PGRST116') throw error;
-    
+
     const metaAvatar =
       req.user.user_metadata?.avatar_url ||
       req.user.user_metadata?.picture ||
       null;
 
-    // If profile doesn't exist yet, return a default skeleton populated from user_metadata
+    // If profile doesn't exist yet, auto-create and persist it for this authenticated user
     if (!data) {
-       return res.json({
-         id: userId,
-         full_name: req.user.user_metadata?.full_name || '',
-         role: req.user.user_metadata?.role || '',
-         organization: req.user.user_metadata?.organization || '',
-         practice_area: req.user.user_metadata?.practice_area || '',
-         phone_number: req.user.user_metadata?.phone_number || '',
-         avatar_url: metaAvatar,
-         notification_preferences: { email: true, push: false },
-         theme_preferences: 'system',
-         created_at: new Date().toISOString()
-       });
+      const initialProfile = {
+        id: userId,
+        full_name: req.user.user_metadata?.full_name || '',
+        role: req.user.user_metadata?.role || '',
+        organization: req.user.user_metadata?.organization || '',
+        practice_area: req.user.user_metadata?.practice_area || '',
+        phone_number: req.user.user_metadata?.phone_number || '',
+        avatar_url: metaAvatar,
+        notification_preferences: { email: true, push: false },
+        theme_preferences: 'system',
+      };
+
+      try {
+        const { data: created, error: createError } = await supabaseAdmin
+          .from('profiles')
+          .upsert(initialProfile, { onConflict: 'id' })
+          .select()
+          .maybeSingle();
+
+        if (!createError && created) {
+          data = created;
+        } else {
+          data = { ...initialProfile, created_at: new Date().toISOString() };
+        }
+      } catch (upsertErr) {
+        data = { ...initialProfile, created_at: new Date().toISOString() };
+      }
+    }
+
+    // Attach verified email from authenticated user token
+    if (data) {
+      data.email = req.user.email || '';
     }
 
     // If profile exists but avatar_url is empty/null, fall back to auth metadata
-    if (!data.avatar_url && metaAvatar) {
+    if (data && !data.avatar_url && metaAvatar) {
       data.avatar_url = metaAvatar;
     }
 
     // If avatar_url points to localhost:54321 in prod, normalize using configured SUPABASE_URL
-    if (data.avatar_url && (data.avatar_url.includes('localhost:54321') || data.avatar_url.includes('127.0.0.1:54321'))) {
+    if (data?.avatar_url && (data.avatar_url.includes('localhost:54321') || data.avatar_url.includes('127.0.0.1:54321'))) {
       const configuredSupabase = process.env.SUPABASE_URL;
       if (configuredSupabase && !configuredSupabase.includes('localhost') && !configuredSupabase.includes('127.0.0.1')) {
         data.avatar_url = data.avatar_url
@@ -218,8 +244,11 @@ router.get('/me', requireAuth, async (req, res) => {
       }
     }
 
-    // Set client browser caching headers: fresh for 60 seconds, background revalidation for 5 minutes
-    res.setHeader('Cache-Control', 'private, max-age=60, stale-while-revalidate=300');
+    // Strictly prohibit caching of user-private profile responses
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    res.setHeader('Surrogate-Control', 'no-store');
     res.json(data);
   } catch (err) {
     console.error("Error fetching profile:", err);
@@ -320,7 +349,7 @@ router.patch('/me', requireAuth, async (req, res) => {
       notification_preferences,
       theme_preferences
     } = req.body;
-    
+
     // Invalidate avatar cache if avatar is being changed or deleted
     if (avatar_url !== undefined) {
       invalidateCachedAvatar(userId);
@@ -335,7 +364,7 @@ router.patch('/me', requireAuth, async (req, res) => {
     if (avatar_url !== undefined) updates.avatar_url = avatar_url;
     if (notification_preferences !== undefined) updates.notification_preferences = notification_preferences;
     if (theme_preferences !== undefined) updates.theme_preferences = theme_preferences;
-    
+
     // Use upsert so it creates the row if missing
     const { data, error } = await req.supabase
       .from('profiles')

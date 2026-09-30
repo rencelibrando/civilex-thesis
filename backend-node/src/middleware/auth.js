@@ -10,13 +10,28 @@ if (!supabaseUrl || !supabaseAnonKey) {
   console.warn("[AuthMiddleware] WARNING: Supabase credentials are missing from .env");
 }
 
-const defaultClient = createClient(supabaseUrl || 'http://localhost:54321', supabaseAnonKey || 'dummy');
+const defaultClient = createClient(
+  supabaseUrl || 'http://localhost:54321',
+  supabaseAnonKey || 'dummy',
+  {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+    },
+  }
+);
 
 /**
  * Hardened Authentication Middleware for Backend Gateway
  * Validates JWT Bearer tokens against Supabase Auth service.
  */
 export const requireAuth = async (req, res, next) => {
+  // Prohibit browser and intermediary caching for all private authenticated endpoints
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  res.setHeader('Surrogate-Control', 'no-store');
+
   try {
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -51,7 +66,13 @@ export const requireAuth = async (req, res, next) => {
     req.supabase = createClient(
       supabaseUrl || 'http://localhost:54321',
       supabaseAnonKey || 'dummy',
-      { global: { headers: { Authorization: authHeader } } }
+      {
+        auth: {
+          persistSession: false,
+          autoRefreshToken: false,
+        },
+        global: { headers: { Authorization: authHeader } }
+      }
     );
 
     req.user = user;

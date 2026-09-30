@@ -16,7 +16,13 @@ const router = express.Router();
 // Service-role client for storage operations (bypasses RLS for uploads on behalf of users)
 const supabaseStorage = createClient(
   process.env.SUPABASE_URL || 'http://localhost:54321',
-  process.env.SUPABASE_SERVICE_ROLE_KEY || 'dummy'
+  process.env.SUPABASE_SERVICE_ROLE_KEY || 'dummy',
+  {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+    },
+  }
 );
 
 // Public file URL generator:

@@ -27,6 +27,7 @@ import { getCachedProfile } from "@/lib/auth-storage";
 
 interface SessionItem {
   id: string;
+  user_id?: string;
   title: string;
   created_at: string;
   session_type?: string;
@@ -35,6 +36,7 @@ interface SessionItem {
 
 interface UserDocItem {
   id: string;
+  user_id?: string;
   file_name?: string;
   created_at?: string;
 }
@@ -113,22 +115,27 @@ export default function DashboardPage() {
 
         const token = session.access_token;
 
-        // Instant hydration of user name
+        // Instant hydration of user name strictly for this user
         const cached = getCachedProfile(session.user.id);
-        if (cached?.full_name) {
+        if (cached && cached.id === session.user.id && cached.full_name) {
           setUserName(cached.full_name);
         } else if (session.user.user_metadata?.full_name) {
           setUserName(session.user.user_metadata.full_name);
         }
 
-        // Fetch user profile
+        // Fetch user profile (no-store to eliminate cross-user cache hits)
         fetch(apiUrl("/api/profiles/me"), {
           headers: {
             Authorization: `Bearer ${token}`,
           },
+          cache: "no-store",
         })
           .then((res) => (res.ok ? res.json() : null))
           .then((data) => {
+            if (data && data.id && data.id !== session.user.id) {
+              console.warn("[Dashboard] Cross-user profile rejected:", data.id, "expected:", session.user.id);
+              return;
+            }
             if (data?.full_name) {
               setUserName(data.full_name);
             }
@@ -140,12 +147,14 @@ export default function DashboardPage() {
           headers: {
             Authorization: `Bearer ${token}`,
           },
+          cache: "no-store",
         });
 
         if (sessionsRes.ok) {
           const sessionsData: SessionItem[] = await sessionsRes.json();
           if (Array.isArray(sessionsData)) {
-            setRecentSessions(sessionsData);
+            const userSessions = sessionsData.filter((s) => !s.user_id || s.user_id === session.user.id);
+            setRecentSessions(userSessions);
           }
         }
 
@@ -154,12 +163,14 @@ export default function DashboardPage() {
           headers: {
             Authorization: `Bearer ${token}`,
           },
+          cache: "no-store",
         });
 
         if (docsRes.ok) {
           const docsData: UserDocItem[] = await docsRes.json();
           if (Array.isArray(docsData)) {
-            setUserDocs(docsData);
+            const userDocsList = docsData.filter((d) => !d.user_id || d.user_id === session.user.id);
+            setUserDocs(userDocsList);
           }
         }
       } catch (err) {

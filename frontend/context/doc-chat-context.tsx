@@ -6,10 +6,12 @@ import React, {
   useState,
   useRef,
   useCallback,
+  useEffect,
   ReactNode,
 } from "react";
 import { supabase } from "@/lib/supabase";
 import { BACKEND_URL } from "@/lib/config";
+import { useAuth } from "./auth-context";
 import { RagStatus, RagStage, mergeCitations, getCitationKey, LegalAnalytics, generateFollowUpPrompts } from "./chat-context";
 
 export function generateDocFollowUpPrompts(lastAnswer: string, citations: any[] = [], filename?: string): string[] {
@@ -109,6 +111,22 @@ const DocChatContext = createContext<DocChatContextType | undefined>(undefined);
 export function DocChatProvider({ children }: { children: ReactNode }) {
   const [docChats, setDocChats] = useState<Record<string, DocChatState>>({});
   const abortControllersRef = useRef<Record<string, AbortController | null>>({});
+
+  // Reset document chats if the logged-in user changes to prevent cross-account chat bleed
+  let authUserId: string | null = null;
+  try {
+    const auth = useAuth();
+    authUserId = auth.user?.id || null;
+  } catch {}
+
+  const prevDocUserIdRef = useRef<string | null>(authUserId);
+
+  useEffect(() => {
+    if (prevDocUserIdRef.current && authUserId && prevDocUserIdRef.current !== authUserId) {
+      setDocChats({});
+    }
+    prevDocUserIdRef.current = authUserId;
+  }, [authUserId]);
 
   const getDocChat = useCallback(
     (docId: string): DocChatState => {
@@ -368,6 +386,7 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
           headers: {
             "Content-Type": "application/json",
             Authorization: `Bearer ${token}`,
+            "X-Tunnel-Skip-AntiPhishing-Page": "true",
           },
           body: JSON.stringify({
             query: userText,

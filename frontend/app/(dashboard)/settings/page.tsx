@@ -79,9 +79,9 @@ export default function SettingsPage() {
           session.user.user_metadata?.picture ||
           null;
 
-        // Step 1: 0ms instant hydration from device cache
+        // Step 1: 0ms instant hydration from device cache strictly for this user
         const cached = getCachedProfile(session.user.id);
-        if (cached) {
+        if (cached && cached.id === session.user.id) {
           setName(cached.full_name || session.user.user_metadata?.full_name || "");
           setRole(cached.role || session.user.user_metadata?.role || "");
           setOrganization(cached.organization || session.user.user_metadata?.organization || "");
@@ -100,6 +100,7 @@ export default function SettingsPage() {
           headers: {
             Authorization: `Bearer ${session.access_token}`,
           },
+          cache: "no-store",
           signal: controller.signal,
         }).catch(() => null);
         clearTimeout(timeoutId);
@@ -109,11 +110,18 @@ export default function SettingsPage() {
             headers: {
               Authorization: `Bearer ${session.access_token}`,
             },
+            cache: "no-store",
           }).catch(() => null);
         }
         
         if (res && res.ok) {
           const data = await res.json();
+          // Strictly reject cross-user responses
+          if (data && data.id && data.id !== session.user.id) {
+            console.warn("[Settings] Cross-user profile response rejected:", data.id, "expected:", session.user.id);
+            return;
+          }
+
           setName(data.full_name || session.user.user_metadata?.full_name || "");
           setRole(data.role || session.user.user_metadata?.role || "");
           setOrganization(data.organization || session.user.user_metadata?.organization || "");
@@ -132,7 +140,7 @@ export default function SettingsPage() {
             avatar_url: resolvedAvatar,
             email: session.user.email,
           });
-        } else if (!cached) {
+        } else if (!cached || cached.id !== session.user.id) {
           setName(session.user.user_metadata?.full_name || "");
           setRole(session.user.user_metadata?.role || "");
           setOrganization(session.user.user_metadata?.organization || "");

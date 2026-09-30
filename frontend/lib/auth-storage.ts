@@ -144,18 +144,36 @@ export function clearAllAuthStorage(reason?: string): void {
           key === AUTH_STORAGE_KEYS.METADATA ||
           key === AUTH_STORAGE_KEYS.PROFILE ||
           key.startsWith(`${AUTH_STORAGE_KEYS.PROFILE}_`) ||
+          key.startsWith("civilex_user_profile") ||
+          key.startsWith("civilex_auth_session") ||
           key.startsWith("sb-") ||
-          key.includes("supabase") ||
-          key.startsWith("civilex_auth_session"))
+          key.includes("supabase"))
       ) {
         keysToRemove.push(key);
       }
     }
     keysToRemove.forEach((k) => localStorage.removeItem(k));
 
-    // Clear session storage auth keys
-    sessionStorage.removeItem(AUTH_STORAGE_KEYS.SESSION);
-    sessionStorage.removeItem(AUTH_STORAGE_KEYS.METADATA);
+    // Clear session storage auth keys comprehensively
+    const sessionKeysToRemove: string[] = [];
+    for (let i = 0; i < sessionStorage.length; i++) {
+      const key = sessionStorage.key(i);
+      if (
+        key &&
+        (key === AUTH_STORAGE_KEYS.SESSION ||
+          key === AUTH_STORAGE_KEYS.METADATA ||
+          key === AUTH_STORAGE_KEYS.PROFILE ||
+          key.startsWith(`${AUTH_STORAGE_KEYS.PROFILE}_`) ||
+          key.startsWith("civilex_user_profile") ||
+          key.startsWith("civilex_auth_session") ||
+          key.startsWith("sb-") ||
+          key.includes("supabase"))
+      ) {
+        sessionKeysToRemove.push(key);
+      }
+    }
+    sessionKeysToRemove.forEach((k) => sessionStorage.removeItem(k));
+
     sessionStorage.setItem(AUTH_STORAGE_KEYS.JUST_LOGGED_OUT, "true");
 
     if (reason) {
@@ -280,23 +298,34 @@ export function getRemainingLockoutSeconds(): number {
 
 /**
  * Retrieves the locally cached user profile for instant 0ms rendering on client devices.
+ * Strictly verifies the requested userId to prevent cross-account profile leakage.
  */
 export function getCachedProfile(userId?: string): CachedUserProfile | null {
-  if (typeof window === "undefined") return null;
+  if (typeof window === "undefined" || !userId) return null;
   try {
-    const key = userId ? `${AUTH_STORAGE_KEYS.PROFILE}_${userId}` : AUTH_STORAGE_KEYS.PROFILE;
+    const key = `${AUTH_STORAGE_KEYS.PROFILE}_${userId}`;
     const raw = localStorage.getItem(key);
     if (!raw) return null;
-    return JSON.parse(raw) as CachedUserProfile;
+    const parsed = JSON.parse(raw) as CachedUserProfile;
+    // Strict verification: ensure the cached profile actually belongs to this userId
+    if (!parsed || parsed.id !== userId) {
+      localStorage.removeItem(key);
+      return null;
+    }
+    return parsed;
   } catch {
     return null;
   }
 }
 
 /**
- * Persists user profile to client device storage and syncs across active tabs.
+ * Persists user profile to client device storage, strictly namespaced by userId.
  */
 export function saveCachedProfile(userId: string, data: Partial<CachedUserProfile>): CachedUserProfile {
+  if (!userId) {
+    throw new Error("userId is required to persist profile cache");
+  }
+
   const current = getCachedProfile(userId) || {
     id: userId,
     full_name: "",
@@ -317,7 +346,8 @@ export function saveCachedProfile(userId: string, data: Partial<CachedUserProfil
     try {
       const userKey = `${AUTH_STORAGE_KEYS.PROFILE}_${userId}`;
       localStorage.setItem(userKey, JSON.stringify(updated));
-      localStorage.setItem(AUTH_STORAGE_KEYS.PROFILE, JSON.stringify(updated));
+      // Purge any legacy un-namespaced profile key so it never leaks across accounts
+      localStorage.removeItem(AUTH_STORAGE_KEYS.PROFILE);
     } catch (err) {
       console.warn("[AuthSecurity] Failed to persist profile cache:", err);
     }
@@ -335,6 +365,7 @@ export function clearCachedProfile(userId?: string): void {
     if (userId) {
       localStorage.removeItem(`${AUTH_STORAGE_KEYS.PROFILE}_${userId}`);
     }
+    // Also remove any un-namespaced profile key
     localStorage.removeItem(AUTH_STORAGE_KEYS.PROFILE);
   } catch (_) {}
 }

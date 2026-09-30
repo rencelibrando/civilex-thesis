@@ -70,5 +70,36 @@ export const setupProxies = (app) => {
   );
 
 
-  // (Removed /api/civil-code proxy)
+  const supabaseUrl = process.env.SUPABASE_URL || 'http://localhost:54321';
+
+  // Proxy Supabase storage public bucket requests through backend
+  // Injects X-Tunnel-Skip-AntiPhishing-Page header to automatically suppress
+  // Microsoft Dev Tunnels anti-phishing interstitial warning pages
+  app.use(
+    ['/storage', '/api/storage'],
+    createProxyMiddleware({
+      target: `${supabaseUrl}/storage`,
+      changeOrigin: true,
+      pathRewrite: {
+        '^/api/storage': '',
+        '^/storage': '',
+      },
+      on: {
+        proxyReq: (proxyReq) => {
+          proxyReq.setHeader('X-Tunnel-Skip-AntiPhishing-Page', 'true');
+        },
+        proxyRes: (proxyRes, req, res) => {
+          res.setHeader('Access-Control-Allow-Origin', '*');
+          res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+        },
+        error: (err, req, res) => {
+          console.error('[Storage Proxy Error]:', err.message);
+          if (!res.headersSent) {
+            res.writeHead(502, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Storage proxy unavailable' }));
+          }
+        },
+      },
+    })
+  );
 };

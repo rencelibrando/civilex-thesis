@@ -55,7 +55,7 @@ import {
 import { JurisprudenceModal, JurisprudenceCase } from "@/components/jurisprudence-modal";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { supabase } from "@/lib/supabase";
-import { BACKEND_URL } from "@/lib/config";
+import { BACKEND_URL, apiUrl } from "@/lib/config";
 import { useDocChat } from "@/context/doc-chat-context";
 import { RagStatus } from "@/context/chat-context";
 import ReactMarkdown from "react-markdown";
@@ -422,7 +422,8 @@ const DocxViewer = ({ fileUrl, fileName }: { fileUrl: string; fileName?: string 
       try {
         setLoading(true);
         setRenderError(null);
-        const response = await fetch(fileUrl);
+        const resolvedUrl = fileUrl.startsWith('/') ? apiUrl(fileUrl) : fileUrl;
+        const response = await fetch(resolvedUrl);
         if (!response.ok) {
           throw new Error(`Preview fetch failed (HTTP ${response.status})`);
         }
@@ -472,7 +473,7 @@ const DocxViewer = ({ fileUrl, fileName }: { fileUrl: string; fileName?: string 
             <RefreshCw className="w-3.5 h-3.5" />
             <span>Retry preview</span>
           </Button>
-          <a href={fileUrl} download={fileName} target="_blank" rel="noopener noreferrer">
+          <a href={fileUrl.startsWith('/') ? apiUrl(fileUrl) : fileUrl} download={fileName} target="_blank" rel="noopener noreferrer">
             <Button type="button" size="sm" className="h-8 text-xs gap-1.5 cursor-pointer">
               <Download className="w-3.5 h-3.5" />
               <span>Download original</span>
@@ -503,6 +504,16 @@ const DocxViewer = ({ fileUrl, fileName }: { fileUrl: string; fileName?: string 
     </div>
   );
 };
+
+// Helper to guarantee previews stream from backend avoiding Microsoft Dev Tunnel warning interstitials
+function getFilePreviewUrl(doc: UserDocument | null | undefined): string {
+  if (!doc) return '';
+  if (doc.id) {
+    return apiUrl(`/api/documents/${doc.id}/file`);
+  }
+  const url = doc.file_url || '';
+  return url.startsWith('/') ? apiUrl(url) : url;
+}
 
 const CircularProgress = ({ progress = 0 }: { progress?: number }) => {
   const radius = 6;
@@ -1420,9 +1431,9 @@ export default function ResearchPage() {
                   <span className="hidden sm:inline">New</span>
                 </Button>
 
-                {activeDocument.file_url && (
+                {getFilePreviewUrl(activeDocument) && (
                   <a
-                    href={activeDocument.file_url}
+                    href={getFilePreviewUrl(activeDocument)}
                     download={activeDocument.filename}
                     target="_blank"
                     rel="noopener noreferrer"
@@ -1519,20 +1530,20 @@ export default function ResearchPage() {
               )}
 
               <div className="flex-1 min-h-0 min-w-0 w-full relative overflow-hidden">
-                {activeDocument.file_url ? (
+                {getFilePreviewUrl(activeDocument) ? (
                   (activeDocument.filename || '').match(/\.(jpeg|jpg|png)$/i) ? (
                     <div className="w-full h-full min-w-0 flex items-center justify-center bg-card shadow-sm border border-border rounded-xl overflow-hidden p-2 sm:p-4">
                       <img
-                        src={activeDocument.file_url}
+                        src={getFilePreviewUrl(activeDocument)}
                         alt={activeDocument.filename}
                         className="max-w-full max-h-full object-contain"
                       />
                     </div>
                   ) : (activeDocument.filename || '').match(/\.(doc|docx)$/i) ? (
-                    <DocxViewer fileUrl={activeDocument.file_url} fileName={activeDocument.filename} />
+                    <DocxViewer fileUrl={getFilePreviewUrl(activeDocument)} fileName={activeDocument.filename} />
                   ) : (
                     <iframe
-                      src={activeDocument.file_url}
+                      src={getFilePreviewUrl(activeDocument)}
                       className={`w-full h-full rounded-xl bg-card shadow-sm border border-border ${isDraggingDocList || isDraggingChat ? "pointer-events-none" : ""
                         }`}
                       title={activeDocument.filename}

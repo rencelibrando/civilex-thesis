@@ -19,16 +19,21 @@ const supabaseStorage = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY || 'dummy'
 );
 
-// Public URL base for browsers (Azure frontend cannot reach laptop localhost).
-// Internal SUPABASE_URL stays localhost for fast backend->storage calls;
-// SUPABASE_PUBLIC_URL (dev tunnel) is used for file_url stored/returned to clients.
-const toPublicFileUrl = (url) => {
+// Public file URL generator:
+// Returns the backend-managed document endpoint (/api/documents/:id/file) so client browsers
+// and iframes stream documents directly from the backend without encountering Microsoft Dev Tunnel
+// anti-phishing interstitial warning notices.
+const toPublicFileUrl = (url, docId) => {
+  if (docId) {
+    return `/api/documents/${docId}/file`;
+  }
   if (!url) return url;
-  const publicBase = (process.env.SUPABASE_PUBLIC_URL || '').trim().replace(/\/$/, '');
-  if (!publicBase) return url;
-  return url
-    .replace('http://localhost:54321', publicBase)
-    .replace('http://127.0.0.1:54321', publicBase);
+  if (url.startsWith('/api/documents/')) return url;
+  const match = url.match(/\/documents\/[^/]+\/([a-f0-9-]+)/i);
+  if (match && match[1]) {
+    return `/api/documents/${match[1]}/file`;
+  }
+  return url;
 };
 
 // Ensure 'documents' bucket exists with 50MB file size limit
@@ -97,10 +102,10 @@ router.get('/', requireAuth, async (req, res) => {
       .order('created_at', { ascending: false });
 
     if (error) throw error;
-    // Rewrite legacy localhost file_urls to tunnel-public URLs so Azure browsers can preview.
+    // Map file_urls to backend document file endpoints to prevent dev tunnel notices in iframes
     const mapped = (data || []).map((d) => ({
       ...d,
-      file_url: toPublicFileUrl(d.file_url),
+      file_url: toPublicFileUrl(d.file_url, d.id),
     }));
     res.json(mapped);
   } catch (err) {
@@ -148,8 +153,8 @@ router.post('/upload', requireAuth, upload.single('file'), async (req, res) => {
       .getPublicUrl(storagePath);
 
     const internalFileUrl = publicUrlData.publicUrl;
-    // Public URL for browsers: Azure frontend cannot reach laptop localhost.
-    const fileUrl = toPublicFileUrl(internalFileUrl);
+    // Public URL for browsers: route through backend so iframes don't encounter dev tunnel notice
+    const fileUrl = toPublicFileUrl(internalFileUrl, docId);
 
     // Insert metadata using auth-scoped client (respects RLS)
     const { error } = await req.supabase
@@ -256,6 +261,130 @@ router.delete('/:id', requireAuth, async (req, res) => {
   } catch (err) {
     console.error("Error deleting document:", err);
     res.status(500).json({ error: "Failed to delete document" });
+  }
+});
+
+// Stream document file for preview or download
+// Bypasses Microsoft Dev Tunnel warning notices by streaming directly from local Supabase Storage
+router.get(['/:id/file', '/:id/preview'], async (req, res) => {
+  try {
+    const docId = req.params.id;
+    if (!docId) {
+      return res.status(400).json({ error: 'Missing document ID' });
+    }
+
+    // Fetch document metadata using service client (bypasses RLS for preview)
+    const { data: doc, error: fetchError } = await supabaseStorage
+      .from('user_documents')
+      .select('*')
+      .eq('id', docId)
+      .single();
+
+    if (fetchError || !doc) {
+      return res.status(404).json({ error: 'Document not found' });
+    }
+
+    // Optional user verification if auth token is supplied
+    const authHeader = req.headers.authorization;
+    const token = (authHeader && authHeader.startsWith('Bearer '))
+      ? authHeader.substring(7).trim()
+      : (req.query.token ? String(req.query.token).trim() : null);
+
+    if (token) {
+      try {
+        const { data: { user } } = await supabaseStorage.auth.getUser(token);
+        if (user && user.id !== doc.user_id) {
+          return res.status(403).json({ error: 'Access forbidden: unauthorized user' });
+        }
+      } catch (_) {}
+    }
+
+    const ext = path.extname(doc.filename);
+    const storagePath = `${doc.user_id}/${doc.id}${ext}`;
+
+    let buffer = null;
+    let mimeType = null;
+
+    // Fast path: Download directly from local Supabase Storage (internal fast path, no dev tunnel)
+    try {
+      const { data: fileBlob, error: downloadError } = await supabaseStorage.storage
+        .from('documents')
+        .download(storagePath);
+
+      if (!downloadError && fileBlob) {
+        const arrayBuffer = await fileBlob.arrayBuffer();
+        buffer = Buffer.from(arrayBuffer);
+        mimeType = fileBlob.type;
+      }
+    } catch (e) {
+      console.warn(`[Document Serving] Storage download failed for ${storagePath}:`, e.message);
+    }
+
+    // Fallback: If direct download failed, try parsing storage path from file_url or fetch with bypass header
+    if (!buffer && doc.file_url) {
+      const parts = doc.file_url.split('/documents/');
+      if (parts.length > 1) {
+        const altPath = decodeURIComponent(parts[1]);
+        if (altPath !== storagePath) {
+          try {
+            const { data: altBlob, error: altErr } = await supabaseStorage.storage
+              .from('documents')
+              .download(altPath);
+            if (!altErr && altBlob) {
+              const arrayBuffer = await altBlob.arrayBuffer();
+              buffer = Buffer.from(arrayBuffer);
+              mimeType = altBlob.type;
+            }
+          } catch (_) {}
+        }
+      }
+
+      if (!buffer) {
+        try {
+          const fetchRes = await globalFetch(doc.file_url, {
+            headers: {
+              'X-Tunnel-Skip-AntiPhishing-Page': 'true',
+            },
+          });
+          if (fetchRes.ok) {
+            const arrayBuffer = await fetchRes.arrayBuffer();
+            buffer = Buffer.from(arrayBuffer);
+            mimeType = fetchRes.headers.get('content-type');
+          }
+        } catch (e) {
+          console.warn(`[Document Serving] Fallback fetch failed for ${doc.file_url}:`, e.message);
+        }
+      }
+    }
+
+    if (!buffer) {
+      return res.status(404).json({ error: 'File content could not be retrieved from storage' });
+    }
+
+    // MIME type resolution
+    const mimeTypes = {
+      '.pdf': 'application/pdf',
+      '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      '.doc': 'application/msword',
+      '.txt': 'text/plain; charset=utf-8',
+      '.png': 'image/png',
+      '.jpg': 'image/jpeg',
+      '.jpeg': 'image/jpeg',
+    };
+    const resolvedMime = mimeTypes[ext.toLowerCase()] || mimeType || 'application/octet-stream';
+
+    const isDownload = req.query.download === '1' || req.query.download === 'true';
+    const disposition = isDownload ? 'attachment' : 'inline';
+
+    res.setHeader('Content-Type', resolvedMime);
+    res.setHeader('Content-Disposition', `${disposition}; filename="${encodeURIComponent(doc.filename)}"`);
+    res.setHeader('Content-Length', buffer.length);
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    res.setHeader('Accept-Ranges', 'bytes');
+    return res.send(buffer);
+  } catch (err) {
+    console.error('[Document Serving] Unexpected error:', err);
+    return res.status(500).json({ error: 'Internal server error while retrieving document' });
   }
 });
 

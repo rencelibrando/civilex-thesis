@@ -41,6 +41,10 @@ const nextConfig: NextConfig = {
         source: "/api/chat",
         destination: `${backendUrl}/api/chat`,
       },
+      {
+        source: "/storage/:path*",
+        destination: `${backendUrl}/storage/:path*`,
+      },
     ];
   },
 };

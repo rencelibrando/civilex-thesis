@@ -66,14 +66,14 @@ async def generate_response_stream(
     except (httpx.TimeoutException, httpx.ConnectError, httpx.HTTPStatusError) as e:
         logging.error(f"LM Studio connection error: {type(e).__name__} - {e}")
         yield (
-            "> ⚠️ **Model Service Offline**\n>\n"
+            ">  **Model Service Offline**\n>\n"
             "> Unable to connect to the language model. LM Studio is currently offline or unreachable. "
             "Please ensure LM Studio is running and try again."
         )
     except Exception as e:
         logging.error(f"Unexpected error during LM Studio streaming: {type(e).__name__} - {e}")
         yield (
-            "> ⚠️ **Service Temporarily Unavailable**\n>\n"
+            ">  **Service Temporarily Unavailable**\n>\n"
             "> An unexpected error occurred while communicating with the language model service. "
             "Please try submitting your question again."
         )

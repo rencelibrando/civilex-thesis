@@ -71,6 +71,7 @@ type DocumentStatus = 'uploading' | 'extracting' | 'completed' | 'rejected_unrel
 
 interface UserDocument {
   id: string;
+  user_id?: string;
   filename: string;
   file_url: string;
   status: DocumentStatus;
@@ -846,11 +847,15 @@ export default function ResearchPage() {
       const res = await fetch(`${BACKEND_URL}/api/documents`, {
         headers: {
           'Authorization': `Bearer ${token}`
-        }
+        },
+        cache: "no-store",
       });
       if (res.ok) {
         const data = await res.json();
-        setDocuments(data);
+        if (Array.isArray(data)) {
+          const userDocs = data.filter((d: UserDocument) => !d.user_id || d.user_id === session?.user?.id);
+          setDocuments(userDocs);
+        }
         setFetchError(null);
       } else {
         if (res.status === 401 || res.status === 403) {

@@ -4,7 +4,6 @@ import { useState, useRef, useEffect, useCallback, Fragment } from "react";
 import { useRouter } from "next/navigation";
 import {
   Send,
-  Paperclip,
   ChevronRight,
   Scale,
   BookOpen,
@@ -883,22 +882,13 @@ export default function ChatPage() {
             {/* 3. Unified Chat Input Box                                     */}
 
             <div className="relative flex items-center bg-card border border-border/80 dark:border-white/10 rounded-2xl overflow-hidden focus-within:ring-2 focus-within:ring-primary focus-within:border-primary transition-all shadow-sm">
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                className="text-muted-foreground hover:text-foreground hover:bg-accent/40 ml-1 shrink-0 bg-transparent border-0 h-8 w-8 sm:h-9 sm:w-9 2xl:h-10 2xl:w-10"
-                title="Attach Document"
-              >
-                <Paperclip className="w-4 h-4 2xl:w-5 2xl:h-5" />
-              </Button>
               <input
                 type="text"
                 value={inputValue}
                 onChange={(e) => setInputValue(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && handleSend()}
                 placeholder="Ask CIVIL-LEX about Philippine Civil Code articles, jurisprudence, or contracts..."
-                className="flex-1 bg-transparent dark:bg-transparent border-none shadow-none outline-none focus:outline-none focus:ring-0 text-foreground placeholder:text-muted-foreground px-2 sm:px-3 h-10 sm:h-11 2xl:h-12 text-xs sm:text-sm 2xl:text-base"
+                className="flex-1 bg-transparent dark:bg-transparent border-none shadow-none outline-none focus:outline-none focus:ring-0 text-foreground placeholder:text-muted-foreground pl-4 sm:pl-5 pr-2 sm:pr-3 h-10 sm:h-11 2xl:h-12 text-xs sm:text-sm 2xl:text-base"
               />
               {isTyping ? (
                 <Button

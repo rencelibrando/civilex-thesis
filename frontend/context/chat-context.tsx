@@ -11,6 +11,7 @@ import React, {
 } from "react";
 import { supabase } from "@/lib/supabase";
 import { BACKEND_URL } from "@/lib/config";
+import { useAuth } from "./auth-context";
 
 
 // Types & Interfaces
@@ -572,6 +573,22 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     // 4. Roll a fresh set of prompt starters for the new chat!
     refreshStarters();
   }, [refreshStarters]);
+
+  // Reset chat if the logged-in user changes to prevent cross-account chat bleed
+  let authUserId: string | null = null;
+  try {
+    const auth = useAuth();
+    authUserId = auth.user?.id || null;
+  } catch {}
+
+  const prevUserIdRef = useRef<string | null>(authUserId);
+
+  useEffect(() => {
+    if (prevUserIdRef.current && authUserId && prevUserIdRef.current !== authUserId) {
+      handleNewChat();
+    }
+    prevUserIdRef.current = authUserId;
+  }, [authUserId, handleNewChat]);
 
 
   // Send Message

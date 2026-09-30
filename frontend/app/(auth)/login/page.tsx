@@ -112,7 +112,8 @@ function LoginFormContent() {
           setLockoutSeconds(remaining);
         }
       } else {
-        router.replace(redirectUrl);
+        // Full window navigation ensures all React context trees and in-memory caches are fresh for the authenticated user
+        window.location.href = redirectUrl;
       }
     } catch (err: unknown) {
       setErrorMsg(err instanceof Error ? err.message : "Failed to sign in. Please verify your connection.");

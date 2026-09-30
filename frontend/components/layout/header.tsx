@@ -34,6 +34,9 @@ export function Header() {
       if (!session) return;
       const userId = session.user.id;
 
+      // Always guarantee current session email is reflected
+      setUserEmail(session.user.email || "");
+
       // Step 1: Instant 0ms Hydration from client device cache
       const cached = getCachedProfile(userId);
       const metaAvatar =
@@ -41,7 +44,7 @@ export function Header() {
         session.user.user_metadata?.picture ||
         null;
 
-      if (cached) {
+      if (cached && cached.id === userId) {
         if (cached.full_name) setUserName(cached.full_name);
         if (cached.role) setUserRole(cached.role);
         if (cached.organization) setUserOrg(cached.organization);
@@ -49,7 +52,6 @@ export function Header() {
           setAvatarUrl(cached.avatar_url || metaAvatar);
         }
       } else {
-        setUserEmail(session.user.email || "");
         if (session.user.user_metadata?.full_name) {
           setUserName(session.user.user_metadata.full_name);
         }
@@ -67,7 +69,7 @@ export function Header() {
       const authToken = token || session.access_token;
       if (!authToken) return;
 
-      // Step 2: Background SWR revalidation with fast direct route (no 4s hang)
+      // Step 2: Background SWR revalidation with fast direct route (no-store to eliminate cross-user cache hits)
       const primaryUrl = apiUrl("/api/profiles/me");
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 3500);
@@ -76,6 +78,7 @@ export function Header() {
         headers: {
           Authorization: `Bearer ${authToken}`,
         },
+        cache: "no-store",
         signal: controller.signal,
       }).catch(() => null);
       clearTimeout(timeoutId);
@@ -86,18 +89,25 @@ export function Header() {
           headers: {
             Authorization: `Bearer ${authToken}`,
           },
+          cache: "no-store",
         }).catch(() => null);
       }
 
       if (res && res.ok) {
         const data = await res.json();
+        // Strict guard: ensure response matches currently authenticated user ID
+        if (data && data.id && data.id !== userId) {
+          console.warn("[Header] Cross-user profile response detected and rejected:", data.id, "expected:", userId);
+          return;
+        }
+
         if (data.full_name) setUserName(data.full_name);
         if (data.role) setUserRole(data.role);
         if (data.organization) setUserOrg(data.organization);
         const resolvedAvatar = data.avatar_url || metaAvatar;
         setAvatarUrl(resolvedAvatar);
 
-        // Update local persistent device cache
+        // Update local persistent device cache strictly for this user
         saveCachedProfile(userId, {
           id: userId,
           full_name: data.full_name || session.user.user_metadata?.full_name || "User",
@@ -118,7 +128,7 @@ export function Header() {
     const handleProfileUpdated = () => {
       if (session?.user?.id) {
         const cached = getCachedProfile(session.user.id);
-        if (cached) {
+        if (cached && cached.id === session.user.id) {
           if (cached.full_name) setUserName(cached.full_name);
           if (cached.role) setUserRole(cached.role);
           if (cached.organization) setUserOrg(cached.organization);

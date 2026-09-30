@@ -109,7 +109,7 @@ export default function SignupPage() {
       }
 
       if (res.sessionCreated) {
-        router.replace("/dashboard");
+        window.location.href = "/dashboard";
       } else {
         router.replace("/login?registered=true");
       }

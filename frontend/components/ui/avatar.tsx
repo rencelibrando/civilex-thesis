@@ -46,51 +46,20 @@ export function normalizeAvatarSrc(rawSrc?: string | Blob | null | undefined): s
   if (!trimmed || trimmed === "null" || trimmed === "undefined") return undefined;
 
   if (typeof window !== "undefined") {
-    const isLocalhostHost =
-      window.location.hostname === "localhost" ||
-      window.location.hostname === "127.0.0.1";
+    // If URL contains /avatars/:userId (Supabase storage avatar path)
+    const match = trimmed.match(/\/avatars\/([^/?#]+)/);
+    if (match && match[1]) {
+      return `/api/profiles/avatar/${match[1]}`;
+    }
 
-    // In production (non-localhost)
-    if (!isLocalhostHost) {
-      // If URL contains localhost:54321 or 127.0.0.1:54321
-      if (trimmed.includes("localhost:54321") || trimmed.includes("127.0.0.1:54321")) {
-        // Extract userId from /avatars/:userId/avatar... to route via backend proxy directly
-        const match = trimmed.match(/\/avatars\/([^/?#]+)/);
-        if (match && match[1]) {
-          return `/api/profiles/avatar/${match[1]}`;
-        }
-        const pubSupabase = process.env.NEXT_PUBLIC_SUPABASE_URL;
-        if (
-          pubSupabase &&
-          !pubSupabase.includes("localhost") &&
-          !pubSupabase.includes("127.0.0.1")
-        ) {
-          return trimmed.replace(
-            /http:\/\/(localhost|127\.0\.0\.1):54321/,
-            pubSupabase
-          );
-        }
-      }
-
-      // Upgrade http:// to https:// on HTTPS pages (prevent mixed content)
-      if (
-        window.location.protocol === "https:" &&
-        trimmed.startsWith("http://") &&
-        !trimmed.includes("localhost")
-      ) {
-        return trimmed.replace(/^http:\/\//i, "https://");
-      }
-    } else {
-      // In local development: map 127.0.0.1 to current window hostname
-      if (trimmed.includes(":54321")) {
-        try {
-          const parsed = new URL(trimmed);
-          if (parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost") {
-            parsed.hostname = window.location.hostname;
-            return parsed.toString();
-          }
-        } catch (_) {}
-      }
+    // Upgrade http:// to https:// on HTTPS pages (prevent mixed content for external URLs)
+    if (
+      window.location.protocol === "https:" &&
+      trimmed.startsWith("http://") &&
+      !trimmed.includes("localhost") &&
+      !trimmed.includes("127.0.0.1")
+    ) {
+      return trimmed.replace(/^http:\/\//i, "https://");
     }
   }
 
@@ -116,6 +85,7 @@ function AvatarImage({ className, src, ...props }: AvatarPrimitive.Image.Props) 
 
   return (
     <AvatarPrimitive.Image
+      key={currentSrc}
       data-slot="avatar-image"
       src={currentSrc}
       onError={handleError}

@@ -69,26 +69,34 @@ export function normalizeAvatarSrc(rawSrc?: string | Blob | null | undefined): s
 function AvatarImage({ className, src, ...props }: AvatarPrimitive.Image.Props) {
   const normalizedSrc = React.useMemo(() => normalizeAvatarSrc(src), [src]);
   const [currentSrc, setCurrentSrc] = React.useState<string | undefined>(normalizedSrc);
+  const didFallback = React.useRef(false);
 
   React.useEffect(() => {
     setCurrentSrc(normalizedSrc);
+    didFallback.current = false;
   }, [normalizedSrc]);
 
-  const handleError = React.useCallback(() => {
-    if (!currentSrc) return;
-    // If direct Supabase storage URL failed, attempt proxy fallback once
-    const match = currentSrc.match(/\/avatars\/([^/?#]+)/);
-    if (match && match[1] && !currentSrc.includes("/api/profiles/avatar/")) {
-      setCurrentSrc(`/api/profiles/avatar/${match[1]}`);
-    }
-  }, [currentSrc]);
+  // base-ui probes the image via `new window.Image()` before mounting the DOM <img>.
+  // The DOM onError never fires when the probe fails — we must use
+  // onLoadingStatusChange to detect failures and redirect to the backend proxy.
+  const handleLoadingStatusChange = React.useCallback(
+    (status: "idle" | "loading" | "loaded" | "error") => {
+      if (status !== "error" || didFallback.current || !currentSrc) return;
+      // Extract userId from Supabase storage paths like /avatars/UUID/avatar.png
+      const match = currentSrc.match(/\/avatars\/([^/?#]+)/);
+      if (match && match[1] && !currentSrc.includes("/api/profiles/avatar/")) {
+        didFallback.current = true;
+        setCurrentSrc(`/api/profiles/avatar/${match[1]}`);
+      }
+    },
+    [currentSrc]
+  );
 
   return (
     <AvatarPrimitive.Image
-      key={currentSrc}
       data-slot="avatar-image"
       src={currentSrc}
-      onError={handleError}
+      onLoadingStatusChange={handleLoadingStatusChange}
       loading="eager"
       decoding="async"
       className={cn(

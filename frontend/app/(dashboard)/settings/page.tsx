@@ -5,7 +5,7 @@ import { User, Shield, Save, Loader2, Camera, Trash2, KeyRound, Eye } from "luci
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage, normalizeAvatarSrc } from "@/components/ui/avatar";
 import {
   Dialog,
   DialogContent,
@@ -723,7 +723,7 @@ export default function SettingsPage() {
               <div className="relative group/modalAvatar w-60 h-60 sm:w-72 sm:h-72 rounded-2xl overflow-hidden border-2 border-border/80 shadow-md bg-background flex items-center justify-center">
                 {avatarUrl ? (
                   <img
-                    src={avatarUrl}
+                    src={normalizeAvatarSrc(avatarUrl) || (userId ? `/api/profiles/avatar/${userId}` : undefined)}
                     alt={name || "Profile Picture"}
                     className="w-full h-full object-cover transition-transform duration-300 group-hover/modalAvatar:scale-105"
                     onError={(e) => {

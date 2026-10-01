@@ -601,8 +601,6 @@ async def _llm_detect_ambiguity(
     detailed bilingual follow-up questions. Rule-based patterns are only
     a fallback when the LLM is offline or returns unusable output.
     """
-    import httpx
-    from core.config import LM_STUDIO_URL
 
     # --- Increased context: feed recent conversation so the LLM does not
     # re-ask facts the user already gave ---

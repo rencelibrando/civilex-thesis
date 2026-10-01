@@ -17,8 +17,6 @@ import time
 
 from core.config import (
     LM_STUDIO_URL,
-    MAX_CONCURRENT_QUERIES,
-    LLM_PROVIDER,
 )
 from core.queue_manager import queue_manager
 

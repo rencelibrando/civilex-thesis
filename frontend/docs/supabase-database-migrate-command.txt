@@ -7,7 +7,7 @@ supabase db dump --local --data-only --use-copy -f supabase_data.sql
 
 
 //inject the schema to the new database
-supabase db query --local -f supabase_schema.sql
+docker exec -i $(docker ps -qf "name=supabase_db") psql -U postgres -d postgres < supabase_schema.sql
 
 
 //inject the data and vectors to the table 

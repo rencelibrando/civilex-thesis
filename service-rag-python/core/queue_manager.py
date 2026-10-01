@@ -1,7 +1,7 @@
 import asyncio
 import time
 import logging
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 from core.config import MAX_CONCURRENT_QUERIES, MAX_QUEUE_SIZE, QUEUE_TIMEOUT_SECONDS
 
 logger = logging.getLogger("civilex.queue")

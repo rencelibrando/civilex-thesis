@@ -3,6 +3,7 @@
 import * as React from "react"
 import { Avatar as AvatarPrimitive } from "@base-ui/react/avatar"
 import { cn } from "cn"
+import { apiUrl } from "@/lib/config"
 
 function Avatar({
   className,
@@ -46,10 +47,11 @@ export function normalizeAvatarSrc(rawSrc?: string | Blob | null | undefined): s
   if (!trimmed || trimmed === "null" || trimmed === "undefined") return undefined;
 
   if (typeof window !== "undefined") {
-    // If URL contains /avatars/:userId (Supabase storage avatar path)
+    // If URL contains /avatars/:userId (Supabase storage avatar path),
+    // route through backend avatar proxy for production accessibility
     const match = trimmed.match(/\/avatars\/([^/?#]+)/);
     if (match && match[1]) {
-      return `/api/profiles/avatar/${match[1]}`;
+      return apiUrl(`/api/profiles/avatar/${match[1]}`);
     }
 
     // Upgrade http:// to https:// on HTTPS pages (prevent mixed content for external URLs)
@@ -86,7 +88,7 @@ function AvatarImage({ className, src, ...props }: AvatarPrimitive.Image.Props) 
       const match = currentSrc.match(/\/avatars\/([^/?#]+)/);
       if (match && match[1] && !currentSrc.includes("/api/profiles/avatar/")) {
         didFallback.current = true;
-        setCurrentSrc(`/api/profiles/avatar/${match[1]}`);
+        setCurrentSrc(apiUrl(`/api/profiles/avatar/${match[1]}`));
       }
     },
     [currentSrc]

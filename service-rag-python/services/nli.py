@@ -37,9 +37,7 @@ import json
 import logging
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict
-import httpx
 
-from core.config import LM_STUDIO_URL
 
 
 # ---------------------------------------------------------------------------

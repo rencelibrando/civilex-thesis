@@ -29,9 +29,10 @@ export function getApiBaseUrl(): string {
         return "";
       }
 
-      // Upgrade/prevent mixed content if frontend is HTTPS but backend was set to HTTP
+      // Upgrade http:// to https:// when frontend is HTTPS (prevents mixed content blocking)
+      // Dev tunnels and most reverse proxies support HTTPS, so upgrading is safe.
       if (window.location.protocol === "https:" && configured.startsWith("http://")) {
-        return "";
+        return configured.replace(/^http:\/\//, "https://").replace(/\/+$/, "");
       }
 
       return configured.replace(/\/+$/, "");

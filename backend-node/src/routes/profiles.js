@@ -67,6 +67,35 @@ const supabaseAdmin = createClient(
   }
 );
 
+/**
+ * Returns the public-facing Supabase base URL for generating externally
+ * accessible asset links. Prefers SUPABASE_PUBLIC_URL (tunnel/production URL)
+ * over SUPABASE_URL (which may be localhost in local-hosted setups).
+ */
+function getPublicSupabaseUrl() {
+  return (
+    process.env.SUPABASE_PUBLIC_URL ||
+    process.env.SUPABASE_URL ||
+    'http://localhost:54321'
+  );
+}
+
+/**
+ * Rewrites any localhost:54321 / 127.0.0.1:54321 references in a URL
+ * to the public Supabase URL (tunnel). Returns the URL unchanged if
+ * the public URL is also localhost.
+ */
+function rewriteToPublicUrl(url) {
+  if (!url) return url;
+  const publicUrl = getPublicSupabaseUrl();
+  if (publicUrl.includes('localhost') || publicUrl.includes('127.0.0.1')) {
+    return url; // No useful rewrite target available
+  }
+  return url
+    .replace(/https?:\/\/localhost:54321/g, publicUrl.replace(/\/+$/, ''))
+    .replace(/https?:\/\/127\.0\.0\.1:54321/g, publicUrl.replace(/\/+$/, ''));
+}
+
 // Ensure 'avatars' storage bucket exists and is public
 async function ensureAvatarsBucket() {
   try {
@@ -234,14 +263,9 @@ router.get('/me', requireAuth, async (req, res) => {
       data.avatar_url = metaAvatar;
     }
 
-    // If avatar_url points to localhost:54321 in prod, normalize using configured SUPABASE_URL
+    // If avatar_url points to localhost:54321, rewrite using SUPABASE_PUBLIC_URL (tunnel)
     if (data?.avatar_url && (data.avatar_url.includes('localhost:54321') || data.avatar_url.includes('127.0.0.1:54321'))) {
-      const configuredSupabase = process.env.SUPABASE_URL;
-      if (configuredSupabase && !configuredSupabase.includes('localhost') && !configuredSupabase.includes('127.0.0.1')) {
-        data.avatar_url = data.avatar_url
-          .replace('http://localhost:54321', configuredSupabase)
-          .replace('http://127.0.0.1:54321', configuredSupabase);
-      }
+      data.avatar_url = rewriteToPublicUrl(data.avatar_url);
     }
 
     // Strictly prohibit caching of user-private profile responses
@@ -291,14 +315,9 @@ router.post('/me/avatar', requireAuth, avatarUpload.single('avatar'), async (req
 
     let newAvatarUrl = `${urlData.publicUrl}?t=${Date.now()}`;
 
-    // If publicUrl generated is localhost but server knows real SUPABASE_URL
+    // Rewrite localhost URLs to use SUPABASE_PUBLIC_URL (tunnel) for production accessibility
     if (newAvatarUrl.includes('localhost:54321') || newAvatarUrl.includes('127.0.0.1:54321')) {
-      const configuredSupabase = process.env.SUPABASE_URL;
-      if (configuredSupabase && !configuredSupabase.includes('localhost') && !configuredSupabase.includes('127.0.0.1')) {
-        newAvatarUrl = newAvatarUrl
-          .replace('http://localhost:54321', configuredSupabase)
-          .replace('http://127.0.0.1:54321', configuredSupabase);
-      }
+      newAvatarUrl = rewriteToPublicUrl(newAvatarUrl);
     }
 
     // Upsert into profiles table

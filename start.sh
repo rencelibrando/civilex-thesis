@@ -252,12 +252,12 @@ start_python() {
     export CLICOLOR_FORCE=1
     export PYTHONIOENCODING=utf-8
 
-    if command -v uvicorn >/dev/null 2>&1; then
-      exec uvicorn main:app --host 0.0.0.0 --port 8000 --reload --use-colors >> "${PYTHON_LOG}" 2>&1
-    elif [ -f ".venv/bin/uvicorn" ]; then
+    if [ -f ".venv/bin/uvicorn" ]; then
       exec .venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000 --reload --use-colors >> "${PYTHON_LOG}" 2>&1
     elif [ -f "venv/bin/uvicorn" ]; then
       exec venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000 --reload --use-colors >> "${PYTHON_LOG}" 2>&1
+    elif command -v uvicorn >/dev/null 2>&1; then
+      exec uvicorn main:app --host 0.0.0.0 --port 8000 --reload --use-colors >> "${PYTHON_LOG}" 2>&1
     else
       echo "Error: uvicorn executable not found in PATH or virtualenv!" >> "${PYTHON_LOG}" 2>&1
       exit 1
@@ -491,7 +491,15 @@ show_usage() {
 launch_tmux() {
   if ! command -v tmux >/dev/null 2>&1; then
     echo -e "${RED}[!] tmux is not installed on this system. Falling back to standard interactive menu.${RESET}"
-    sleep 2
+    local fe_pid be_pid py_pid
+    fe_pid=$(read_service_pid "${FRONTEND_PID_FILE}")
+    be_pid=$(read_service_pid "${BACKEND_PID_FILE}")
+    py_pid=$(read_service_pid "${PYTHON_PID_FILE}")
+    if [ -z "$fe_pid" ] || ! is_pid_alive "$fe_pid" || [ -z "$be_pid" ] || ! is_pid_alive "$be_pid" || [ -z "$py_pid" ] || ! is_pid_alive "$py_pid"; then
+      kill_existing_processes
+      start_all_services
+    fi
+    sleep 1.5
     run_controller
     return
   fi

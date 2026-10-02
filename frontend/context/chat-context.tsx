@@ -268,6 +268,25 @@ export function getRandomStarters(count: number = 2): StarterPrompt[] {
 export function generateFollowUpPrompts(lastAnswer: string, citations: any[] = []): string[] {
   if (!lastAnswer || lastAnswer.trim().length < 20) return [];
 
+  // Suppress follow-up suggestions on refusal or out-of-scope answers
+  const lowerAnswer = lastAnswer.toLowerCase();
+  const isRefusal = [
+    "cannot provide information",
+    "outside my specialized scope",
+    "outside your specialized scope",
+    "falls outside the scope",
+    "falls outside your specialized",
+    "solely to analyze and answer legal questions",
+    "dedicated exclusively to the philippine civil code",
+    "not governed by the civil code",
+    "outside the field of law",
+    "i apologize, but i cannot",
+    "apologize, but i cannot",
+    "hindi ako makakapagbigay",
+  ].some((phrase) => lowerAnswer.includes(phrase));
+
+  if (isRefusal) return [];
+
   const suggestions: string[] = [];
   const seen = new Set<string>();
 
@@ -279,7 +298,7 @@ export function generateFollowUpPrompts(lastAnswer: string, citations: any[] = [
     }
   };
 
-  const textArticleMatches = Array.from(lastAnswer.matchAll(/(?:Article|Art\.)\s*(\d+)/gi));
+  const textArticleMatches = Array.from(lastAnswer.matchAll(/(?:Article|Art\.|Artikulo)\s*(\d+)/gi));
   const citedArticles = citations
     .filter((c) => (c.parent_type === "article" || c.parent_type === "civil_code") && c.parent_id)
     .map((c) => {
@@ -309,6 +328,34 @@ export function generateFollowUpPrompts(lastAnswer: string, citations: any[] = [
   if (lowerText.includes("contract") || lowerText.includes("obligation") || lowerText.includes("breach")) {
     addPrompt("What specific remedies or damages can the aggrieved party demand?");
     addPrompt("Can you draft a sample demand letter citing these statutory provisions?");
+  }
+  if (lowerText.includes("lease") || lowerText.includes("rent") || lowerText.includes("tenant") || lowerText.includes("landlord") || lowerText.includes("paupahan") || lowerText.includes("upa")) {
+    addPrompt("What are the formal notice and demand requirements for judicial ejectment under Art. 1673?");
+    addPrompt("Can the lessor unilaterally increase rent or withhold the tenant's security deposit?");
+  }
+  if (lowerText.includes("succession") || lowerText.includes("inheritance") || lowerText.includes("will") || lowerText.includes("heir") || lowerText.includes("mana") || lowerText.includes("legitime")) {
+    addPrompt("How is the legitime computed for compulsory heirs under Philippine succession law?");
+    addPrompt("What formal execution requirements must be satisfied for a valid notarial or holographic will?");
+  }
+  if (lowerText.includes("donation") || lowerText.includes("donor") || lowerText.includes("donee") || lowerText.includes("donasyon") || lowerText.includes("kaloob")) {
+    addPrompt("What are the statutory grounds and prescriptive periods for revoking a donation?");
+    addPrompt("What formal deed and acceptance requirements apply to donations of real property?");
+  }
+  if (lowerText.includes("co-owner") || lowerText.includes("co-ownership") || lowerText.includes("partition") || lowerText.includes("undivided share") || lowerText.includes("paghahati")) {
+    addPrompt("Can any co-owner demand physical or judicial partition of the property at any time?");
+    addPrompt("What are the legal remedies if a co-owner sells their undivided share without notifying others?");
+  }
+  if (lowerText.includes("mortgage") || lowerText.includes("pledge") || lowerText.includes("foreclosure") || lowerText.includes("sangla") || lowerText.includes("collateral")) {
+    addPrompt("What is the redemption period and procedure following an extrajudicial foreclosure?");
+    addPrompt("Why is an automatic appropriation clause (pactum commissorium) void under the Civil Code?");
+  }
+  if (lowerText.includes("support") || lowerText.includes("sustento") || lowerText.includes("child support") || lowerText.includes("spousal support") || lowerText.includes("paternity")) {
+    addPrompt("How can an aggrieved party compel child or spousal support pendente lite in court?");
+    addPrompt("What are the legal consequences of wilful refusal to provide court-ordered support?");
+  }
+  if (lowerText.includes("marriage") || lowerText.includes("annulment") || lowerText.includes("nullity") || lowerText.includes("psychological incapacity") || lowerText.includes("kasal")) {
+    addPrompt("What evidence and psychological evaluations are required under the Supreme Court's Tan-Andal ruling?");
+    addPrompt("How are property regimes liquidated and partitioned upon a declaration of absolute nullity?");
   }
   if (lowerText.includes("property") || lowerText.includes("land") || lowerText.includes("prescription")) {
     addPrompt("How does the indefeasibility of a Torrens Title affect this claim?");

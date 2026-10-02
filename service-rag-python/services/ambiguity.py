@@ -1,13 +1,10 @@
 """
 Ambiguity Detection & Conversational Clarification Service for CIVIL-LEX.
 
-Analyzes in-domain Philippine civil law queries for critical factual gaps
-(citizenship, party identity, transaction type, temporal context) and
-generates targeted clarification questions before proceeding with RAG.
-
-Uses a two-tier approach:
-  1. Rule-based pattern matching (fast, zero-cost) for common ambiguity patterns
-  2. LLM-assisted analysis (optional, via local Gemma model) for nuanced edge cases
+Directly leverages the LLM (LM Studio / Gemma) to analyze in-domain Philippine
+civil law queries for critical factual gaps (e.g., missing party relationship,
+unspecified transaction type, citizenship, prescription timing) and generates
+targeted clarification questions before proceeding with RAG retrieval.
 """
 
 import re
@@ -19,18 +16,16 @@ from typing import List, Dict, Optional, Any
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Data Models
-# ---------------------------------------------------------------------------
 
+# Data Models
 @dataclass
 class ClarificationQuestion:
     """A single clarification question with selectable options."""
-    id: str                             # e.g., "citizenship_status"
-    question: str                       # "What is your citizenship status?"
-    options: List[str]                  # ["Filipino citizen", "Dual citizen", ...]
+    id: str                             # e.g., "q1"
+    question: str                       # Clarification question
+    options: List[str]                  # Selectable options
     allows_free_text: bool = True       # User can type their own answer
-    context_hint: str = ""              # Why this matters for legal analysis
+    context_hint: str = ""              # Legal context / governing Civil Code article
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -41,7 +36,7 @@ class AmbiguityResult:
     """Result of ambiguity detection on a user query."""
     is_ambiguous: bool = False
     confidence: float = 0.0             # 0.0 - 1.0
-    category: str = ""                  # e.g., "missing_party_identity"
+    category: str = ""                  # e.g., "missing_facts"
     questions: List[ClarificationQuestion] = field(default_factory=list)
     original_query: str = ""
     reasoning: str = ""                 # Brief explanation
@@ -57,789 +52,149 @@ class AmbiguityResult:
         }
 
 
-# ---------------------------------------------------------------------------
-# Rule-Based Ambiguity Patterns
-# ---------------------------------------------------------------------------
 
-# Pattern structure: (trigger_regex, exclusion_regex_or_None, category, confidence, questions_fn)
-# trigger_regex: if matched, the query *might* be ambiguous
-# exclusion_regex: if matched, the ambiguity is already resolved (e.g., user stated citizenship)
-
-def _citizenship_questions() -> List[ClarificationQuestion]:
-    return [
-        ClarificationQuestion(
-            id="citizenship_status",
-            question="What is your citizenship status?",
-            options=[
-                "Filipino citizen",
-                "Dual citizen (e.g., Filipino-American)",
-                "Former Filipino citizen (naturalized abroad)",
-                "Foreign national (non-Filipino)",
-            ],
-            allows_free_text=True,
-            context_hint="This determines which constitutional and statutory provisions apply to property ownership in the Philippines.",
-        ),
-        ClarificationQuestion(
-            id="property_type",
-            question="What type of property is involved?",
-            options=[
-                "Residential land / house and lot",
-                "Condominium unit",
-                "Agricultural land",
-                "Commercial property",
-                "Not sure",
-            ],
-            allows_free_text=True,
-            context_hint="The type of property affects foreign ownership restrictions (e.g., the Condominium Act RA 4726 allows up to 40% foreign ownership).",
-        ),
-    ]
+# LLM Ambiguity Analysis Prompt
 
 
-def _party_relationship_questions(query_lower: str) -> List[ClarificationQuestion]:
-    questions = []
+AMBIGUITY_SYSTEM_PROMPT = """You are a Philippine Civil Law query analyzer for CIVIL-LEX.
+Analyze whether the user's query is AMBIGUOUS or lacks essential facts needed to analyze rights, obligations, or remedies under the Philippine Civil Code (RA 386).
 
-    # Detect loan/debt scenarios
-    if any(w in query_lower for w in ['utang', 'borrow', 'loan', 'lend', 'pautang', 'bayad', 'pay', 'owe', 'debt']):
-        questions.append(ClarificationQuestion(
-            id="agreement_form",
-            question="Was the agreement documented in writing?",
-            options=[
-                "Yes, there is a written contract or promissory note",
-                "No, it was a verbal/oral agreement only",
-                "There are text messages / chat records as evidence",
-                "Not sure",
-            ],
-            allows_free_text=True,
-            context_hint="Whether the agreement is written or oral affects the applicable prescriptive period and evidentiary requirements.",
-        ))
-        questions.append(ClarificationQuestion(
-            id="amount_involved",
-            question="Approximately how much is the amount involved?",
-            options=[
-                "Below ₱400,000",
-                "₱400,000 to ₱2,000,000",
-                "Above ₱2,000,000",
-                "Prefer not to say / Not sure",
-            ],
-            allows_free_text=True,
-            context_hint="The amount determines whether this falls under Small Claims Court, MTC, or RTC jurisdiction under RA 11576.",
-        ))
+RESPOND ONLY WITH VALID JSON. Do not include markdown codeblocks or commentary outside the JSON.
+IMPORTANT: Never put unescaped double quotes inside JSON values; use single quotes (') for any quotes inside text.
 
-    # Detect injury/accident scenarios
-    elif any(w in query_lower for w in ['injury', 'injured', 'accident', 'aksidente', 'nabangga', 'nasagasaan', 'nasaktan', 'hurt', 'hit']):
-        questions.append(ClarificationQuestion(
-            id="accident_type",
-            question="What type of incident was involved?",
-            options=[
-                "Vehicular / traffic accident",
-                "Physical assault / battery by another person",
-                "Workplace accident / injury at work",
-                "Accident on someone else's property (slip and fall, etc.)",
-                "Other",
-            ],
-            allows_free_text=True,
-            context_hint="The type of incident determines whether this is a quasi-delict (Art. 2176), employer vicarious liability (Art. 2180), or an independent civil action (Art. 33).",
-        ))
-        questions.append(ClarificationQuestion(
-            id="party_relationship",
-            question="What is your relationship to the other party?",
-            options=[
-                "Stranger / no prior relationship",
-                "Employer / employee",
-                "Business / contractual relationship",
-                "Family member or relative",
-                "Neighbor",
-            ],
-            allows_free_text=True,
-            context_hint="The relationship between parties affects which legal doctrines and liability provisions apply.",
-        ))
+DECISION CRITERIA:
+1. NOT AMBIGUOUS (is_ambiguous: false, questions: []):
+   - Definitional, conceptual, or legal education queries (e.g., 'What is quasi-delict?').
+   - Inquiries referencing specific articles, laws, or Supreme Court decisions (e.g., 'Article 1191', 'Art. 2176', 'G.R. No. 123456').
+   - Codal structure and overview queries (e.g., total articles or books of the Civil Code).
+   - Inquiries that already provide sufficient factual circumstances to identify the governing legal framework.
+   - Non-legal queries.
 
-    return questions
+2. AMBIGUOUS (is_ambiguous: true):
+   - Queries describing an ongoing dispute, breach, loan, injury, or property conflict that omit critical facts (e.g., written vs oral contract, relationship between parties, timing for prescription, nature of damage).
+   - Ultra-vague inquiries (e.g., 'ano pwede ikaso sakin', 'can I be sued?') that provide zero facts.
+   - Provide 1 to 2 concise clarification questions with 3 to 4 concrete options each.
 
+BILINGUAL FORMATTING:
+- Questions and options should be bilingual (Tagalog / English) or match the user's language.
+- context_hint should briefly state why this matters under the Civil Code (e.g., Art. 1144, Art. 1170, or Art. 2176).
 
-def _property_transfer_questions() -> List[ClarificationQuestion]:
-    return [
-        ClarificationQuestion(
-            id="transfer_type",
-            question="How did you acquire or receive the property?",
-            options=[
-                "Purchased (contract of sale / contract to sell)",
-                "Donated / given as a gift (donation)",
-                "Inherited from a deceased relative",
-                "Verbal promise or informal agreement",
-                "Not sure / still being negotiated",
-            ],
-            allows_free_text=True,
-            context_hint="The mode of acquisition determines the governing legal framework: sale (Art. 1458), donation (Art. 725), or succession (Art. 777).",
-        ),
-        ClarificationQuestion(
-            id="documentation",
-            question="Is there a written document for this transaction?",
-            options=[
-                "Yes, a notarized deed or contract",
-                "Yes, a private written agreement (not notarized)",
-                "No, only a verbal agreement",
-                "There is a title (TCT/CCT) involved",
-                "Not sure",
-            ],
-            allows_free_text=True,
-            context_hint="Written documentation and notarization affect the validity and enforceability of property transactions under the Statute of Frauds (Art. 1403).",
-        ),
-    ]
-
-
-def _temporal_questions(query_lower: str) -> List[ClarificationQuestion]:
-    questions = []
-    questions.append(ClarificationQuestion(
-        id="when_occurred",
-        question="Approximately when did the event or breach occur?",
-        options=[
-            "Within the last 6 months",
-            "6 months to 1 year ago",
-            "1 to 4 years ago",
-            "More than 4 years ago",
-            "More than 10 years ago",
-            "Not sure / ongoing",
-        ],
-        allows_free_text=True,
-        context_hint="The timing is critical for determining whether the legal action has prescribed (e.g., 4 years for oral contracts under Art. 1145, 10 years for written contracts under Art. 1144).",
-    ))
-    return questions
-
-
-def _unmarried_couple_questions() -> List[ClarificationQuestion]:
-    return [
-        ClarificationQuestion(
-            id="relationship_status",
-            question="What is the relationship status between the parties?",
-            options=[
-                "Living together but not married (common-law / live-in)",
-                "Married under Philippine law",
-                "Separated but not legally (no court decree)",
-                "One or both parties are married to someone else",
-                "Engaged / planning to marry",
-            ],
-            allows_free_text=True,
-            context_hint="This determines whether Art. 147 (union without legal impediment) or Art. 148 (union with legal impediment) governs property relations.",
-        ),
-    ]
-
-
-def _adverse_possession_questions() -> List[ClarificationQuestion]:
-    return [
-        ClarificationQuestion(
-            id="property_titling_status",
-            question="Is the abandoned property covered by a registered Torrens Title (TCT/OCT)?",
-            options=[
-                "Yes, it has a Torrens Title (TCT/OCT)",
-                "No, it is untitled / covered only by Tax Declaration",
-                "It is public / government land",
-                "Unknown / not sure if titled",
-            ],
-            allows_free_text=True,
-            context_hint="Under PD 1529 (Property Registration Decree) Sec. 47, registered land cannot be acquired by prescription or adverse possession regardless of the length of occupation.",
-        ),
-        ClarificationQuestion(
-            id="occupation_duration",
-            question="How long has the property been occupied, and under what basis?",
-            options=[
-                "Less than 10 years",
-                "10 to 29 years (with good faith / just title)",
-                "30 years or more (adverse possession / no title)",
-                "Occupied with owner's mere tolerance or permission",
-            ],
-            allows_free_text=True,
-            context_hint="Acquisitive prescription requires 10 years in good faith with just title (Art. 1134), or 30 years without title (Art. 1137). Mere tolerance does not confer ownership (Art. 537).",
-        ),
-    ]
-
-
-def _neighbor_dispute_questions() -> List[ClarificationQuestion]:
-    return [
-        ClarificationQuestion(
-            id="dispute_nature",
-            question="Ano ang tiyak na dahilan ng problema o reklamo sa inyong kapitbahay? / What exactly is the problem with your neighbor?",
-            options=[
-                "Ingay, amoy, o perwisyo (hal. videoke, basura, usok) / Noise, smell, or nuisance (e.g., videoke, garbage, smoke) — Nuisance Art. 694",
-                "Hangganan ng lupa, bakod, o pader (hal. lumampas ang bakod) / Land boundary, fence, or wall (e.g., encroaching fence)",
-                "Sanga ng puno, ugat, drainage, o paghuhukay (hal. bumara, bumaha) / Tree branches, roots, drainage, or digging (e.g., clogging, flooding) — Easements Art. 680-684",
-                "Pinsala sa ari-arian o tao dahil sa kapabayaan (hal. nabasag, nasaktan) / Damage to property or person due to negligence (e.g., broken, injured) — Quasi-delict Art. 2176",
-            ],
-            allows_free_text=True,
-            context_hint="Ang tiyak na dahilan ang nagtatakda kung Nuisance, Easement, o Quasi-delict ang tamang batayan. / The specific cause determines whether Nuisance, Easement, or Quasi-delict applies.",
-        ),
-        ClarificationQuestion(
-            id="barangay_conciliation",
-            question="Dumaan na ba kayo sa Katarungang Pambarangay? / Have you gone through Barangay conciliation?",
-            options=[
-                "Oo, may Certificate to File Action na kami / Yes, we have a Certificate to File Action from the Barangay",
-                "Hindi pa kami nag-uusap sa Barangay / No, we have not gone to the Barangay yet",
-                "Hindi sigurado kung kailangan dumaan sa Barangay / Not sure if Barangay conciliation is required",
-            ],
-            allows_free_text=True,
-            context_hint="Sa ilalim ng RA 7160, mandatory ang Barangay conciliation para sa magkakapitbahay bago magsampa sa hukuman. / Under RA 7160, Barangay conciliation is mandatory for neighbors before filing in court.",
-        ),
-    ]
-
-
-def _liability_exposure_questions() -> List[ClarificationQuestion]:
-    """
-    Detailed bilingual follow-ups for ultra-vague liability-exposure queries
-    such as "ano ang pwede ikaso sakin" / "can I be sued?" where the user
-    states ZERO facts about what actually happened.
-    Q1 always pins down the concrete act; Q2 pins down the parties;
-    Q3 pins down timing / damage / evidence.
-    """
-    return [
-        ClarificationQuestion(
-            id="factual_narrative",
-            question="Ano ang eksaktong nangyari na pinangangambahan mong maikaso sa iyo? / What exactly happened that you fear could be filed against you?",
-            options=[
-                "Pisikal na komprontasyon o pagbabanta (hal. suntukan, pananakit, pagbabanta sa chat) / Physical confrontation or threat (e.g., fistfight, hurting someone, threats in chat)",
-                "Hindi pagbayad ng utang o hindi pagtupad sa usapan (hal. pautang, upa, bentahan, serbisyo) / Unpaid debt or unfulfilled agreement (e.g., loan, rent, sale, service)",
-                "Pagsasalita o pag-post laban sa tao (hal. tsismis, Facebook/TikTok post, paninirang-puri) / Words or posts against a person (e.g., gossip, Facebook/TikTok post, defamation)",
-                "Aksidente o pinsala (hal. nabangga sa kalsada, nasaktan sa trabaho, nasira ang gamit o bahay) / Accident or damage (e.g., road collision, hurt at work, damaged property)",
-            ],
-            allows_free_text=True,
-            context_hint="Ang tunay na nangyari ang nagtatakda kung quasi-delict (Art. 2176), breach of contract (Art. 1170), o abuse of rights (Art. 19-21) ang applicable. / What actually happened determines whether quasi-delict, breach of contract, or abuse of rights applies.",
-        ),
-        ClarificationQuestion(
-            id="other_party_relationship",
-            question="Sino ang posibleng magsampa ng kaso laban sa iyo at ano ang relasyon ninyo? / Who might file a case against you and what is your relationship?",
-            options=[
-                "Kapitbahay o kakilala, walang kontrata (hal. alitan sa ingay, hangganan, parking) / Neighbor or acquaintance, no contract (e.g., noise, boundary, parking dispute)",
-                "Kaibigan, kamag-anak, o kakilala na may utangan o kasunduan (hal. pautang, sanla, bentahan) / Friend, relative, or acquaintance with a loan or agreement (e.g., utang, sangla, sale)",
-                "Employer, negosyo, landlord, o kompanya (hal. trabaho, upa, serbisyo) / Employer, business, landlord, or company (e.g., work, lease, service)",
-                "Wala pang nagbabanta — nag-aalala lang ako kung ano ang posible / No threat yet — I'm just worried about what is possible",
-            ],
-            allows_free_text=True,
-            context_hint="Ang pagkakakilanlan at relasyon ay mahalaga sa capacity to sue, Barangay conciliation (RA 7160), at kung contract o tort ang kaso. / Identity and relationship matter for capacity to sue, Barangay conciliation, and whether it is a contract or tort case.",
-        ),
-        ClarificationQuestion(
-            id="timing_damages_evidence",
-            question="Kailan ito nangyari at may pinsala, ebidensya, o usapan na ba sa Barangay? / When did it happen and is there any injury, damage, evidence, or Barangay talk?",
-            options=[
-                "Nitong 6 buwan lang; may ebidensya (hal. chat, video, kasulatan, resibo) / Within the last 6 months; with evidence (e.g., chats, video, document, receipt)",
-                "6 buwan hanggang 1 taon na; may pinsala o hindi nabayarang pera (hal. sugat, sira, utang) / 6 months to 1 year ago; with injury or unpaid money (e.g., wound, damage, debt)",
-                "Mahigit 1 taon na o paulit-ulit; dumaan na o hindi pa sa Barangay / Over 1 year ago or repeated; with or without Barangay conciliation",
-                "Hindi sigurado sa petsa / patuloy pa rin ang problema / Not sure of the date / problem is still ongoing",
-            ],
-            allows_free_text=True,
-            context_hint="Ang petsa ay kritikal sa prescription (hal. 4 taon sa quasi-delict Art. 1146, 6 taon sa oral contract Art. 1145, 10 taon sa written Art. 1144) at sa Barangay requirement. / Timing is critical for prescription and the Barangay requirement.",
-        ),
-    ]
-
-
-# Ultra-vague liability-exposure queries: user asks what can be filed against
-# them but states ZERO facts (e.g., "ano ang pwede ikaso sakin").
-# These must bypass the generic LLM fallback and get detailed fact-seeking Qs.
-VAGUE_LIABILITY_TRIGGER = re.compile(
-    r'\b(ano\s+ang\s+pwede\s+(?:i-?kaso|idemanda|ihabla)'
-    r'|anong?\s+kaso\s+(?:ang\s+)?pwede'
-    r'|pwede\s+ba\s+ako\w*\s+(?:kasuhan|i-?kaso|makulong|makasuhan)'
-    r'|makukulong\s+ba\s+ako'
-    r'|maaari\s+ba\s+ako\w*\s+(?:kasuhan|makulong)'
-    r'|may\s+(?:ikaso|i-?kaso)\s+(?:sa\s+akin|sakin)'
-    r'|ikas[ou]\s+sakin|ikaso\s+sa\s+akin'
-    r'|what\s+(?:case|charge|complaint|cases)?\s*(?:can|vould|could|might)\s+be\s+filed\s+against\s+me'
-    r'|can\s+i\s+be\s+sued|am\s+i\s+liable|will\s+i\s+be\s+sued)',
-    re.IGNORECASE,
-)
-
-# If any of these concrete-fact markers appear, the query is NOT ultra-vague
-# (it already says what happened) — let normal LLM/rule flow handle it.
-VAGUE_LIABILITY_EXCLUSION = re.compile(
-    r'\b(utang|pautang|pera|amount|halaga|kontrata|kasulatan|kasunduan|lease|upa|bentahan|sale|donation|mana|'
-    r'aksidente|nabangga|nasagasaan|bangga|suntok|sinuntok|bugbog|sakit|nasaktan|sinaktan|injure|injur|hurt|hit|'
-    r'paninirang|tsismis|post|facebook|tiktok|chat|text|video|barangay|kapitbahay|neighbor|employer|trabaho|work|'
-    r'lupa|land|bahay|house|bakod|boundary|ingay|nuisance|sasakyan|kotse|motor|doktor|hospital|ospital)\b',
-    re.IGNORECASE,
-)
-
-
-def _check_vague_liability_exposure(
-    q_clean: str,
-    q_lower: str,
-    history: Optional[list],
-) -> Optional[AmbiguityResult]:
-    """Deterministic override for ultra-vague 'what can be filed against me' queries."""
-    if not VAGUE_LIABILITY_TRIGGER.search(q_lower):
-        return None
-    # Short query + no concrete facts = ultra-vague
-    is_short = len(q_clean.split()) <= 15
-    has_facts = bool(VAGUE_LIABILITY_EXCLUSION.search(q_lower))
-    if not is_short and has_facts:
-        return None
-    if has_facts and len(q_clean.split()) > 25:
-        return None
-    if _history_already_clarified(history, "vague_liability_exposure"):
-        return None
-    return AmbiguityResult(
-        is_ambiguous=True,
-        confidence=0.95,
-        category="vague_liability_exposure",
-        questions=_liability_exposure_questions(),
-        original_query=q_clean,
-        reasoning="Masyadong pangkalahatan ang tanong — walang sinabi kung ano ang ginawa, sino ang sangkot, o kailan nangyari — kaya hindi matukoy kung anong pananagutan ang posible. / The query is too general — it states nothing about what was done, who is involved, or when it happened — so no specific liability can be determined yet.",
-    )
-
-
-# ---------------------------------------------------------------------------
-# Rule-Based Ambiguity Detection Patterns
-# ---------------------------------------------------------------------------
-
-# Each pattern: (trigger_pattern, exclusion_pattern, category, base_confidence, questions_factory)
-
-AMBIGUITY_RULES: List[tuple] = [
-    # Category 1: Missing citizenship / cross-border property
-    (
-        r'\b(from\s+(?:the\s+)?(?:united\s+states|us|usa|canada|australia|japan|uk|abroad|overseas)|abroad|ofw|overseas\s+filipino|balikbayan|foreign(?:er)?|alien|american|japanese|korean|chinese|indian)\b.*\b(property|lupa|bahay|land|house|lot|condo|condominium|buy|bought|purchase|acquire|own)\b',
-        r'\b(filipino\s+citizen|dual\s+citizen|naturalized|former\s+filipino|foreign\s+national|i\s+am\s+a\s+filipino|filipino\s+ako|citizen\s+of\s+the\s+philippines)\b',
-        'missing_party_identity',
-        0.90,
-        lambda ql: _citizenship_questions(),
-    ),
-    # Reverse order: property first, then foreign mention
-    (
-        r'\b(property|lupa|bahay|land|house|lot|condo|condominium|buy|bought|purchase|acquire|own)\b.*\b(from\s+(?:the\s+)?(?:united\s+states|us|usa|canada|australia|japan|uk|abroad|overseas)|abroad|ofw|overseas\s+filipino|balikbayan|foreign(?:er)?|alien|american|japanese|korean|chinese|indian)\b',
-        r'\b(filipino\s+citizen|dual\s+citizen|naturalized|former\s+filipino|foreign\s+national|i\s+am\s+a\s+filipino|filipino\s+ako|citizen\s+of\s+the\s+philippines)\b',
-        'missing_party_identity',
-        0.90,
-        lambda ql: _citizenship_questions(),
-    ),
-
-    # Category 1b: Occupying abandoned / untitled property (Adverse Possession / Prescription)
-    (
-        r'\b(occup(?:y|ies|ied|ying)|okupa|inokupahan|tirahan|naninirahan|squat(?:ter|ting)?|stay(?:ing)?|lived?\s+in|stayed\s+in)\b.*\b(abandon(?:ed)?|bakante|tiniwangwang|matiwangwang|unclaimed|walang\s+nakatira|walang\s+tao)\b.*\b(property|land|lupa|house|bahay|lot|building)\b',
-        r'\b(torrens\s+title|tct|oct|tax\s+declaration|titled|good\s+faith|just\s+title|p\.?d\.?\s*1529|article\s+113[47])\b',
-        'unclear_legal_relationship',
-        0.90,
-        lambda ql: _adverse_possession_questions(),
-    ),
-    # Reverse order: abandoned property first, then occupies
-    (
-        r'\b(abandon(?:ed)?|bakante|tiniwangwang|matiwangwang|unclaimed|walang\s+nakatira|walang\s+tao)\b.*\b(property|land|lupa|house|bahay|lot|building)\b.*\b(occup(?:y|ies|ied|ying)|okupa|inokupahan|tirahan|naninirahan|squat(?:ter|ting)?|stay(?:ing)?|lived?\s+in|stayed\s+in|many\s+years|ilang\s+taon)\b',
-        r'\b(torrens\s+title|tct|oct|tax\s+declaration|titled|good\s+faith|just\s+title|p\.?d\.?\s*1529|article\s+113[47])\b',
-        'unclear_legal_relationship',
-        0.90,
-        lambda ql: _adverse_possession_questions(),
-    ),
-
-    # Category 2: Vague loan/debt without documentation detail
-    (
-        r'\b(umutang|nagpautang|pinahiram|utang|borrowed\s+money|lend\s+money|loan|pautang|nagbigay\s+ng\s+pera|hindi\s+(?:na)?(?:g)?bayad|won\'?t\s+pay|refuse[ds]?\s+to\s+pay|not\s+paying|unpaid)\b',
-        r'\b(promissory\s+note|written\s+(?:contract|agreement)|notarized|kasulatan|document|contract|small\s+claims)\b',
-        'unclear_legal_relationship',
-        0.80,
-        lambda ql: _party_relationship_questions(ql),
-    ),
-
-    # Category 3: Ambiguous property acquisition
-    (
-        r'\b(nakuha|nakuha\s+ko|got\s+(?:a\s+)?property|received?\s+(?:a\s+)?(?:property|land|house|lot)|binigay\s+(?:sa\s+akin|sa\s+amin)|gave\s+me\s+(?:a\s+)?(?:property|land|house)|property\s+from\s+(?:my\s+)?(?:parents?|lolo|lola|grandparents?|tito|tita|uncle|aunt|kapatid|sibling))\b',
-        r'\b(sale|sold|bought|purchased|donated|donation|inherited|inheritance|will|testament|deed\s+of\s+(?:sale|donation)|kasulatan\s+ng\s+(?:bilihan|donasyon)|mana|pamana)\b',
-        'ambiguous_transaction_type',
-        0.85,
-        lambda ql: _property_transfer_questions(),
-    ),
-
-    # Category 4: Filing/prescription-sensitive without temporal context
-    (
-        r'\b(can\s+i\s+(?:still\s+)?(?:file|sue|ihabla|ikaso|idemanda)|mag-?file|prescription|prescriptive|expired?|too\s+late|statute\s+of\s+limitation|lapsed|pwede\s+pa\s+ba|maaari\s+pa\s+ba)\b',
-        r'\b(\d+\s+(?:year|month|day|week|taon|buwan|araw)s?\s+ago|last\s+(?:year|month|week|\d{4})|since\s+\d{4}|noong\s+\d{4}|(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{4}|within\s+the\s+last)\b',
-        'missing_temporal_context',
-        0.85,
-        lambda ql: _temporal_questions(ql),
-    ),
-
-    # Category 5: Unmarried couple property disputes
-    (
-        r'\b(partner|live[- ]?in|karelasyon|jowa|boyfriend|girlfriend|kasama\s+sa\s+bahay|common[- ]?law|live\s+together|nagsasama|magkasama)\b.*\b(property|house|bahay|lupa|land|bought|bili|puhunan|business|negosyo|invested)\b',
-        r'\b(married|kasal|husband|wife|asawa|spouse|article\s+14[78])\b',
-        'conflicting_facts',
-        0.85,
-        lambda ql: _unmarried_couple_questions(),
-    ),
-    # Reverse: property first, then relationship
-    (
-        r'\b(property|house|bahay|lupa|land|bought|bili|puhunan|business|negosyo|invested)\b.*\b(partner|live[- ]?in|karelasyon|jowa|boyfriend|girlfriend|kasama\s+sa\s+bahay|common[- ]?law|live\s+together|nagsasama|magkasama)\b',
-        r'\b(married|kasal|husband|wife|asawa|spouse|article\s+14[78])\b',
-        'conflicting_facts',
-        0.85,
-        lambda ql: _unmarried_couple_questions(),
-    ),
-
-    # Category 2b: Injury/accident without specifying type
-    (
-        r'\b(nasaktan|na-?injure|injured|accident|aksidente|nabangga|nasagasaan|na-?hurt|sinaktan|sinugatan)\b',
-        r'\b(vehicular|sasakyan|kotse|motor|car|truck|bus|assault|suntok|punch|workplace|trabaho|sa\s+opisina|sa\s+trabaho|slip|nadulas)\b',
-        'unclear_legal_relationship',
-        0.78,
-        lambda ql: _party_relationship_questions(ql),
-    ),
-
-    # Category 6: Neighbor disputes without specifying actionable grievance
-    (
-        r'\b(kapitbahay|neighbor|kapit-bahay)\b.*\b(ikaso|idemanda|ihabla|demanda|kaso|reklamo|sue|file|action|complain)\b',
-        r'\b(artikulo|article\s+\d+|g\.?r\.?\s*no|torrens|easement|nuisance|quasi-delict)\b',
-        'unclear_legal_relationship',
-        0.90,
-        lambda ql: _neighbor_dispute_questions(),
-    ),
-    (
-        r'\b(ikaso|idemanda|ihabla|demanda|kaso|reklamo|sue|file|action|complain)\b.*\b(kapitbahay|neighbor|kapit-bahay)\b',
-        r'\b(artikulo|article\s+\d+|g\.?r\.?\s*no|torrens|easement|nuisance|quasi-delict)\b',
-        'unclear_legal_relationship',
-        0.90,
-        lambda ql: _neighbor_dispute_questions(),
-    ),
-
-    # Category 7 (fallback): Ultra-vague liability exposure without any facts
-    # e.g., "ano ang pwede ikaso sakin" — triggers only when NO concrete facts present.
-    (
-        r'\b(ikas[ou]|idemanda|ihabla|demanda|makukulong|kasuhan|kaso\s+(?:laban\s+)?sa\s+akin|sue\s+me|filed\s+against\s+me|liable|makasuhan)\b',
-        r'\b(utang|pautang|pera|halaga|kontrata|kasulatan|kasunduan|lease|upa|bentahan|sale|mana|aksidente|nabangga|nasagasaan|suntok|bugbog|nasaktan|paninirang|tsismis|facebook|tiktok|chat|video|barangay|kapitbahay|neighbor|employer|trabaho|lupa|bahay|bakod|ingay|sasakyan|kotse)\b',
-        'vague_liability_exposure',
-        0.95,
-        lambda ql: _liability_exposure_questions(),
-    ),
-]
-
-# Patterns that indicate the query is strictly a legal citation/jurisprudence lookup and should NOT trigger clarification
-CLEAR_QUERY_PATTERNS = [
-    # Explicit article / provision queries (e.g., "Article 1156", "Art. 2176")
-    r'\b(?:article|art\.?)\s*\d+\b',
-    # GR number queries (e.g., "G.R. No. 123456")
-    r'\bg\.?\s*r\.?\s*(?:no\.?|nos\.?)\s*[\w\-]+',
-    # Specific Republic Act queries (e.g., "Republic Act 386", "RA 386")
-    r'\b(?:republic\s+act|r\.?a\.?)\s*(?:no\.?)?\s*\d+\b',
-]
-
-
-# ---------------------------------------------------------------------------
-# History-Aware Check: Skip if clarification was already provided
-# ---------------------------------------------------------------------------
-
-def _history_already_clarified(
-    history: Optional[list],
-    category: str,
-) -> bool:
-    """
-    Checks if the conversation history already contains answers
-    that resolve the ambiguity, avoiding redundant re-asking.
-    """
-    if not history:
-        return False
-
-    # Map categories to keywords that, if found in recent messages, indicate resolution
-    RESOLUTION_KEYWORDS: Dict[str, List[str]] = {
-        'vague_liability_exposure': [
-            'suntukan', 'pananakit', 'pagbabanta', 'fistfight', 'threat',
-            'utang', 'pautang', 'loan', 'debt', 'hindi nagbayad', 'unpaid',
-            'tsismis', 'paninirang', 'defamation', 'facebook', 'post',
-            'nabangga', 'aksidente', 'accident', 'nasira', 'damage',
-            'kapitbahay', 'neighbor', 'employer', 'landlord', 'kontrata',
-            'barangay', 'ebidensya', 'evidence', 'kasulatan',
-        ],
-        'llm_detected': [
-            'suntukan', 'utang', 'kontrata', 'aksidente', 'paninirang',
-            'kapitbahay', 'neighbor', 'barangay', 'ebidensya',
-        ],
-        'missing_party_identity': [
-            'filipino citizen', 'dual citizen', 'foreign national', 'naturalized',
-            'ofw', 'permanent resident', 'american citizen', 'us citizen',
-            'residential', 'agricultural', 'condominium', 'condo',
-        ],
-        'unclear_legal_relationship': [
-            'written', 'oral', 'promissory note', 'contract', 'text messages',
-            'verbal', 'kasulatan', 'vehicular', 'assault', 'workplace',
-            'employer', 'stranger', 'neighbor', 'family',
-        ],
-        'ambiguous_transaction_type': [
-            'sale', 'sold', 'purchased', 'donated', 'donation', 'inherited',
-            'inheritance', 'will', 'deed', 'bilihan', 'donasyon',
-        ],
-        'missing_temporal_context': [
-            'year ago', 'years ago', 'month ago', 'months ago',
-            'last year', 'last month', 'since', 'noong',
-        ],
-        'conflicting_facts': [
-            'married', 'not married', 'live-in', 'common-law', 'kasal',
-            'hindi kasal', 'single',
-        ],
-    }
-
-    keywords = RESOLUTION_KEYWORDS.get(category, [])
-    if not keywords:
-        return False
-
-    # Check last 6 messages for resolution keywords
-    recent = history[-6:] if len(history) > 6 else history
-    combined_text = " ".join(
-        msg.content.lower() if hasattr(msg, 'content') else str(msg.get('content', '')).lower()
-        for msg in recent
-    )
-
-    matches = sum(1 for kw in keywords if kw in combined_text)
-    # If 2+ resolution keywords found, consider it already clarified
-    return matches >= 2
-
-
-# ---------------------------------------------------------------------------
-# LLM-Assisted Ambiguity Detection (via local Gemma on LM Studio)
-# ---------------------------------------------------------------------------
-
-async def _llm_detect_ambiguity(
-    query: str,
-    query_lower: str,
-    history: Optional[list] = None,
-) -> Optional[AmbiguityResult]:
-    """
-    LLM-handled ambiguity detection (primary path).
-
-    The LLM decides whether the query is ambiguous AND generates the
-    detailed bilingual follow-up questions. Rule-based patterns are only
-    a fallback when the LLM is offline or returns unusable output.
-    """
-
-    # --- Increased context: feed recent conversation so the LLM does not
-    # re-ask facts the user already gave ---
-    history_context = ""
-    if history:
-        recent = history[-6:] if len(history) > 6 else history
-        lines = []
-        for m in recent:
-            if hasattr(m, 'content'):
-                role = getattr(m, 'role', 'user')
-                lines.append(f"{role}: {m.content[:300]}")
-            elif isinstance(m, dict):
-                lines.append(f"{m.get('role', 'user')}: {str(m.get('content', ''))[:300]}")
-        if lines:
-            history_context = "\nRecent conversation:\n" + "\n".join(lines) + "\n"
-
-    system_prompt = """You are a Philippine Civil Law query analyzer. Your ONLY job is to determine whether a legal query is missing critical facts that would change the legal answer.
-
-RESPOND ONLY WITH VALID JSON. No explanations outside the JSON.
-Provide 2 to 3 targeted, fact-seeking questions with 3 to 4 detailed options each.
-Ensure the JSON is complete and valid with all closing brackets.
-
-BILINGUAL REQUIREMENT (STRICT):
-- The user may ask in Tagalog, English, or Taglish. Detect the query language.
-- EVERY question, option, context_hint, and reasoning MUST be bilingual in this exact format:
-  "Tagalog text / English text"
-- Tagalog-first if the query is Tagalog/Taglish, English-first if the query is English — but ALWAYS include both languages separated by " / ".
-- NEVER produce monolingual questions. NEVER produce generic options like "May ginawang aksyon ako", "Nagsalita lang ako", "Isang indibidwal", or "Isang grupo" WITHOUT a concrete example in parentheses.
-
-QUESTION DESIGN (FACT-SEEKING, NOT GENERIC):
-- Q1 MUST pin down WHAT EXACTLY HAPPENED (the concrete act/omission). Give detailed scenario options with parenthetical examples, e.g.:
-  "Hindi pagbayad ng utang (hal. P50,000 pautang, walang kasulatan) / Unpaid debt (e.g., P50,000 loan, no written note)"
-- Q2 MUST pin down WHO IS INVOLVED + RELATIONSHIP (neighbor, friend/relative with loan, employer/business/landlord, stranger), each with a concrete example.
-- Q3 (when relevant) MUST pin down WHEN + DAMAGE/EVIDENCE/BARANGAY STATUS (timing for prescription + injury/amount + chats/video/kasulatan + Barangay conciliation).
-- Each option must contain a parenthetical "(hal./e.g., ...)" example so the user recognizes their own situation.
-- Each context_hint must explain IN BOTH LANGUAGES which Civil Code provisions turn on that answer (e.g., quasi-delict Art. 2176 vs breach Art. 1170 vs Art. 19-21; prescription Art. 1144/1145/1146; Barangay RA 7160).
-
-SPECIAL CASE — ULTRA-VAGUE LIABILITY QUERIES (e.g., "ano ang pwede ikaso sakin", "can I be sued?", "makukulong ba ako"):
-- These state ZERO facts. You MUST ask: (1) the exact act feared, (2) who might sue + relationship, (3) when + damage/evidence/Barangay.
-- NEVER ask abstract "action vs speech" or "individual vs corporation" without concrete scenarios.
-
-Analyze the query for these specific ambiguity categories:
-1. "missing_party_identity" — Citizenship, residency, or legal capacity is unclear but essential (e.g., foreigner vs. Filipino in property queries)
-2. "unclear_legal_relationship" — The parties' relationship, agreement form (written/oral), or the type of dispute is too vague
-3. "ambiguous_transaction_type" — How property/rights were acquired is unclear (sale? donation? inheritance?)
-4. "missing_temporal_context" — When the event occurred matters for prescription but is not stated
-5. "conflicting_facts" — The stated facts suggest multiple contradictory legal theories
-6. "vague_liability_exposure" — User asks what can be filed against them but gives no facts about the act, parties, or timing
-
-RULES:
-- If the query is a DEFINITIONAL question (e.g., "What is a quasi-delict?"), it is NOT ambiguous.
-- If the query references specific Articles or GR numbers, it is NOT ambiguous.
-- If the user provides enough facts to determine the applicable legal framework, it is NOT ambiguous.
-- Only flag as ambiguous if missing facts would lead to MATERIALLY DIFFERENT legal conclusions.
-
-RESPOND WITH THIS EXACT JSON STRUCTURE (all strings bilingual Tagalog / English):
+JSON SCHEMA:
 {
-  "is_ambiguous": true/false,
-  "confidence": 0.0-1.0,
-  "category": "category_name or empty string",
-  "reasoning": "Isang pangungusap kung bakit kailangan ng paglilinaw / One sentence why clarification is needed",
+  "is_ambiguous": true or false,
+  "confidence": 0.0 to 1.0,
+  "category": "missing_facts" or "",
+  "reasoning": "Brief explanation",
   "questions": [
     {
-      "id": "short_id",
-      "question": "Tagalog question / English question",
-      "options": ["Tagalog option (hal. halimbawa) / English option (e.g., example)", "Option 2 TL / EN", "Option 3 TL / EN"],
-      "context_hint": "Bakit mahalaga ito sa legal analysis / Why this matters for the legal analysis (with article)"
+      "id": "q1",
+      "question": "Clarification question",
+      "options": ["Option 1", "Option 2", "Option 3"],
+      "context_hint": "Why this matters under the Civil Code (cite article)"
     }
   ]
 }
 
-GOOD EXAMPLE for "ano ang pwede ikaso sakin":
-{"is_ambiguous": true, "confidence": 0.95, "category": "vague_liability_exposure", "reasoning": "Walang sinabi kung ano ang ginawa, sino ang sangkot, o kailan nangyari kaya hindi matukoy ang pananagutan / No facts about the act, parties, or timing so liability cannot be determined", "questions": [{"id": "factual_narrative", "question": "Ano ang eksaktong nangyari na pinangangambahan mong maikaso? / What exactly happened that you fear could be filed?", "options": ["Pisikal na komprontasyon (hal. suntukan) / Physical confrontation (e.g., fistfight)", "Hindi pagbayad ng utang (hal. P50,000 pautang) / Unpaid debt (e.g., P50,000 loan)", "Paninirang-puri online (hal. Facebook post) / Online defamation (e.g., Facebook post)"], "context_hint": "Ang gawa ang nagtatakda kung Art. 2176 o Art. 1170 ang applicable / The act determines whether Art. 2176 or Art. 1170 applies"}]}
+If NOT ambiguous:
+{
+  "is_ambiguous": false,
+  "confidence": 0.0,
+  "category": "",
+  "reasoning": "Query is clear enough or definitional",
+  "questions": []
+}"""
 
-BAD EXAMPLE (NEVER DO THIS):
-{"questions": [{"question": "Ano ang ginawa o sinabi?", "options": ["May ginawang aksyon ako.", "Nagsalita lang ako."]}]}
 
-If the query is NOT ambiguous, return:
-{"is_ambiguous": false, "confidence": 0.0, "category": "", "reasoning": "Sapat na ang detalye sa query / Query is clear enough", "questions": []}"""
-
-    from services.llm_client import call_chat_completion_async
-
-    base_user_content = (
-        f"Analyze this Philippine civil law query for ambiguity:\n\n\"{query}\""
-        f"{history_context}\n"
-        "Consider the recent conversation above — do NOT ask about facts already stated there."
-    )
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": base_user_content},
-    ]
-
-    def _parse_llm_json(raw_content: str) -> Optional[dict]:
-        raw = raw_content.strip()
-        cleaned = re.sub(r'^```(?:json)?\s*', '', raw)
-        cleaned = re.sub(r'\s*```$', '', cleaned)
-        json_match = re.search(r'\{[\s\S]*\}', cleaned)
-        if not json_match:
-            logger.warning(f"LLM ambiguity response did not contain valid JSON: {raw[:200]}")
-            return None
-        try:
-            return json.loads(json_match.group())
-        except json.JSONDecodeError as jde:
-            logger.warning(f"LLM ambiguity response JSON parse error: {jde} | content: {raw[:200]}")
-            return None
-
-    def _is_low_quality(parsed: dict) -> bool:
-        """Detects generic/shallow follow-ups the LLM must not produce."""
-        qs = parsed.get("questions", []) if parsed else []
-        if not qs:
-            return True
-        generic_options = {
-            "may ginawang aksyon ako.", "may ginawang aksyon ako",
-            "nagsalita lang ako.", "nagsalita lang ako",
-            "isang indibidwal.", "isang indibidwal",
-            "isang grupo o korporasyon.", "isang grupo o korporasyon",
-            "other", "not sure",
-        }
-        for q in qs:
-            opts = [str(o).strip() for o in q.get("options", [])]
-            if len(opts) < 3:
-                return True
-            # Question + hint must be bilingual (allow retry to fix monolingual)
-            if " / " not in q.get("question", "") or " / " not in q.get("context_hint", ""):
-                return True
-            # All options must be bilingual; at least 2 must carry a concrete
-            # (hal./e.g., ...) example — one plain "Not sure" option is allowed.
-            if not all(" / " in o for o in opts):
-                return True
-            for o in opts:
-                if o.strip().lower().rstrip(".") in {g.rstrip(".") for g in generic_options}:
-                    return True
-            with_example = sum(
-                1 for o in opts
-                if "(" in o or "hal." in o.lower() or "e.g." in o.lower()
-            )
-            if with_example < 2:
-                return True
-            if len(q.get("question", "")) < 30:
-                return True
-        # Fewer than 2 questions for a vague query = shallow
-        if len(qs) < 2 and bool(parsed.get("is_ambiguous")):
-            return True
-        return False
-
+def _fallback_extract_ambiguity(raw: str) -> Optional[dict]:
+    """Regex-based fallback extraction if strict JSON decoding fails on LLM output."""
     try:
-        raw_content = await call_chat_completion_async(
-            messages=messages,
-            temperature=0.1,
-            max_tokens=2000,
-            timeout_sec=25.0,
-        )
-        if not raw_content:
-            logger.warning("All LLM providers failed or returned empty response for ambiguity detection.")
+        ambig_m = re.search(r'"is_ambiguous"\s*:\s*(true|false)', raw, re.IGNORECASE)
+        if not ambig_m:
             return None
+        is_ambig = ambig_m.group(1).lower() == "true"
+        conf_m = re.search(r'"confidence"\s*:\s*([0-9.]+)', raw)
+        confidence = float(conf_m.group(1)) if conf_m else (0.85 if is_ambig else 0.0)
+        cat_m = re.search(r'"category"\s*:\s*"([^"]*)"', raw)
+        category = cat_m.group(1) if cat_m else ("missing_facts" if is_ambig else "")
+        reason_m = re.search(r'"reasoning"\s*:\s*"(.*?)"(?:\s*,\s*"\w+"|\s*\})', raw, re.DOTALL)
+        reasoning = reason_m.group(1).strip() if reason_m else ""
 
-        parsed = _parse_llm_json(raw_content)
-        if parsed is None:
-            return None
-
-        # --- LLM self-correction: one retry if follow-ups are generic/shallow ---
-        if bool(parsed.get("is_ambiguous")) and _is_low_quality(parsed):
-            logger.info("LLM follow-ups too generic — requesting detailed bilingual regeneration.")
-            retry_messages = messages + [
-                {"role": "assistant", "content": raw_content},
-                {"role": "user", "content": (
-                    "Your questions were too generic (e.g., 'May ginawang aksyon ako' / "
-                    "'Isang indibidwal' with no examples) and not bilingual with ' / '. "
-                    "Regenerate 2-3 DETAILED bilingual questions: Q1 = exact act with "
-                    "(hal./e.g., ...) examples in every option; Q2 = who + relationship "
-                    "with examples; Q3 = when + damage/evidence/Barangay. Every string "
-                    "must contain 'Tagalog / English'. Respond with JSON only."
-                )},
-            ]
-            retry_content = await call_chat_completion_async(
-                messages=retry_messages,
-                temperature=0.2,
-                max_tokens=2000,
-                timeout_sec=25.0,
-            )
-            if retry_content:
-                retry_parsed = _parse_llm_json(retry_content)
-                if retry_parsed is not None and not _is_low_quality(retry_parsed):
-                    parsed = retry_parsed
-                    logger.info("LLM regeneration produced detailed bilingual follow-ups.")
-                else:
-                    logger.warning("LLM regeneration still low-quality — using original output.")
-
-        is_ambig = bool(parsed.get("is_ambiguous", False))
-        confidence = float(parsed.get("confidence", 0.5 if is_ambig else 0.0))
-
-        if not is_ambig or confidence < 0.65:
-            return AmbiguityResult(
-                is_ambiguous=False,
-                confidence=confidence,
-                category=parsed.get("category", ""),
-                original_query=query,
-                reasoning=parsed.get("reasoning", "Query is sufficiently clear."),
-            )
-
-        # Build ClarificationQuestion objects from LLM response
         questions = []
-        for q_data in parsed.get("questions", []):
-            if not q_data.get("question"):
-                continue
-            questions.append(ClarificationQuestion(
-                id=q_data.get("id", f"llm_q_{len(questions)}"),
-                question=q_data["question"],
-                options=q_data.get("options", []),
-                allows_free_text=True,
-                context_hint=q_data.get("context_hint", ""),
-            ))
+        if is_ambig:
+            q_section = re.search(r'"questions"\s*:\s*\[([\s\S]*?)\]', raw)
+            if q_section:
+                blocks = re.findall(r'\{([^{}]*)\}', q_section.group(1))
+                for idx, block in enumerate(blocks):
+                    qm = re.search(r'"question"\s*:\s*"(.*?)"(?:\s*,\s*"\w+"|\s*\})', block, re.DOTALL)
+                    hint_m = re.search(r'"context_hint"\s*:\s*"(.*?)"(?:\s*,\s*"\w+"|\s*\})', block, re.DOTALL)
+                    options = []
+                    opt_section = re.search(r'"options"\s*:\s*\[(.*?)\]', block, re.DOTALL)
+                    if opt_section:
+                        options = re.findall(r'"(.*?)"', opt_section.group(1))
+                    if qm:
+                        questions.append({
+                            "id": f"q{idx + 1}",
+                            "question": qm.group(1).strip(),
+                            "options": [o.strip() for o in options if o.strip()] or ["Yes", "No", "Not sure"],
+                            "context_hint": hint_m.group(1).strip() if hint_m else "",
+                        })
 
-        if not questions:
-            return AmbiguityResult(
-                is_ambiguous=False,
-                confidence=confidence,
-                category=parsed.get("category", ""),
-                original_query=query,
-                reasoning="No clarification questions produced; treating as clear.",
-            )
-
-        return AmbiguityResult(
-            is_ambiguous=True,
-            confidence=confidence,
-            category=parsed.get("category", "llm_detected"),
-            questions=questions,
-            original_query=query,
-            reasoning=parsed.get("reasoning", "LLM detected missing critical facts."),
-        )
-
+        return {
+            "is_ambiguous": is_ambig,
+            "confidence": confidence,
+            "category": category,
+            "reasoning": reasoning,
+            "questions": questions,
+        }
     except Exception as e:
-        logger.warning(f"LLM ambiguity check failed ({type(e).__name__}: {e}) — falling back to rule-based only")
+        logger.warning(f"Fallback regex ambiguity extraction failed: {e}")
         return None
 
 
-# ---------------------------------------------------------------------------
-# Main Detection Function
-# ---------------------------------------------------------------------------
+def _parse_llm_json(raw: str) -> Optional[dict]:
+    """Extracts and parses JSON object from LLM output, with fallback cleaning."""
+    if not raw:
+        return None
+    cleaned = raw.strip()
+    cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+    cleaned = re.sub(r"\s*```$", "", cleaned)
+    match = re.search(r"\{[\s\S]*\}", cleaned)
+    if not match:
+        logger.warning(f"LLM ambiguity response contained no JSON object: {cleaned[:150]}")
+        return None
+    json_str = match.group()
+    # Attempt 1: direct parse
+    try:
+        return json.loads(json_str, strict=False)
+    except json.JSONDecodeError:
+        pass
+    # Attempt 2: clean trailing commas before closing braces/brackets
+    try:
+        fixed = re.sub(r",\s*([\]\}])", r"\1", json_str)
+        return json.loads(fixed, strict=False)
+    except json.JSONDecodeError:
+        pass
+    # Attempt 3: truncate at last valid closing brace if output was slightly cut
+    try:
+        last_brace = json_str.rfind("}")
+        if last_brace != -1:
+            truncated = json_str[: last_brace + 1]
+            fixed = re.sub(r",\s*([\]\}])", r"\1", truncated)
+            return json.loads(fixed, strict=False)
+    except json.JSONDecodeError:
+        pass
+    # Attempt 4: regex-based field extraction fallback
+    fallback = _fallback_extract_ambiguity(json_str)
+    if fallback:
+        return fallback
+
+    logger.warning(f"Failed to parse LLM ambiguity JSON: {cleaned[:150]}")
+    return None
+
+
+
+# Main Detection Function (100% LLM Driven)
+
 
 async def detect_ambiguity(
     query: str,
@@ -848,189 +203,121 @@ async def detect_ambiguity(
     use_llm: bool = True,
 ) -> AmbiguityResult:
     """
-    Analyzes an in-domain Philippine civil law query for critical factual gaps.
-
-    Returns an AmbiguityResult indicating whether clarification questions
-    should be presented before proceeding with RAG retrieval.
+    Analyzes an in-domain Philippine civil law query for critical factual gaps
+    using the LLM directly, without pattern matching rules.
 
     Args:
-        query: The user's raw query text
+        query: The user's query text
         history: Conversation history (list of ChatMessage or dicts)
         document_id: If set, user is in document analysis mode (skip ambiguity)
-        use_llm: Whether to use LLM-assisted detection for edge cases
+        use_llm: Retained for interface compatibility
+
+    Returns:
+        AmbiguityResult indicating whether clarification is needed.
     """
     q_clean = query.strip()
-    q_lower = q_clean.lower()
-
-    # Guard: Never ask for clarification in document analysis mode
-    if document_id:
+    if not q_clean or document_id:
         return AmbiguityResult(original_query=q_clean)
 
-    # Guard: Very short queries (1-2 words) are likely greetings or commands
+    # 1. Skip trivial or very short queries (1-2 words like greetings)
     if len(q_clean.split()) <= 2:
         return AmbiguityResult(original_query=q_clean)
 
-    # Guard: Inherently clear queries (specific articles, definitions, etc.)
-    for pattern in CLEAR_QUERY_PATTERNS:
-        if re.search(pattern, q_lower):
+    # 2. Build history context to avoid re-asking facts already stated
+    history_context = ""
+    if history:
+        recent = history[-6:] if len(history) > 6 else history
+        lines = []
+        for m in recent:
+            if hasattr(m, 'content'):
+                role = getattr(m, 'role', 'user')
+                lines.append(f"{role}: {m.content[:250]}")
+            elif isinstance(m, dict):
+                lines.append(f"{m.get('role', 'user')}: {str(m.get('content', ''))[:250]}")
+        if lines:
+            conv_str = "\n".join(lines)
+            history_context = f"\nRecent conversation:\n{conv_str}\n"
+
+    user_content = (
+        f"Analyze this Philippine civil law query for ambiguity:\n\n\"{q_clean}\"\n"
+        f"{history_context}\n"
+        "Consider the recent conversation above — do NOT ask about facts already provided there."
+    )
+
+    messages = [
+        {"role": "system", "content": AMBIGUITY_SYSTEM_PROMPT},
+        {"role": "user", "content": user_content},
+    ]
+
+    from services.llm_client import call_chat_completion_async
+
+    try:
+        raw_content = await call_chat_completion_async(
+            messages=messages,
+            temperature=0.1,
+            max_tokens=1000,
+            timeout_sec=30.0,
+        )
+        if not raw_content:
+            logger.warning("LLM ambiguity check returned empty; defaulting to clear.")
             return AmbiguityResult(original_query=q_clean)
 
-    # Tier 1 (PRIMARY): LLM handles ambiguity detection + follow-up generation,
-    # with recent conversation passed in for increased context.
-    if use_llm:
-        if not _history_already_clarified(history, "llm_detected"):
-            llm_result = await _llm_detect_ambiguity(query, q_lower, history)
-            if llm_result is not None:
-                logger.info(f"LLM ambiguity evaluation completed: is_ambiguous={llm_result.is_ambiguous} (conf={llm_result.confidence:.2f})")
-                return llm_result
+        parsed = _parse_llm_json(raw_content)
+        if not parsed:
+            return AmbiguityResult(original_query=q_clean)
 
-    # Tier 2 (FALLBACK ONLY): rule-based patterns when the LLM is offline.
-    # Includes the detailed bilingual vague-liability questions so offline mode
-    # still asks what really happened instead of generic options.
-    logger.info("LLM ambiguity check unavailable, falling back to rule-based patterns")
-    vague_fallback = _check_vague_liability_exposure(q_clean, q_lower, history)
-    if vague_fallback is not None:
-        return vague_fallback
-    for trigger_pat, exclusion_pat, category, base_confidence, questions_fn in AMBIGUITY_RULES:
-        if re.search(trigger_pat, q_lower, re.IGNORECASE):
-            # Check if the exclusion pattern resolves the ambiguity
-            if exclusion_pat and re.search(exclusion_pat, q_lower, re.IGNORECASE):
-                continue
+        is_ambig = bool(parsed.get("is_ambiguous", False))
+        confidence = float(parsed.get("confidence", 0.8 if is_ambig else 0.0))
 
-            # Check if conversation history already clarified this category
-            if _history_already_clarified(history, category):
-                continue
-
-            questions = questions_fn(q_lower)
-            if not questions:
-                continue
-
-            CATEGORY_REASONING = {
-                'missing_party_identity': "Kulang ang detalye sa citizenship at uri ng property — kritikal ito sa pagtukoy kung anong batas ang applicable. / Missing citizenship and property-type details — these critically determine which Philippine laws apply.",
-                'unclear_legal_relationship': "Kailangan ng mas tiyak na detalye sa kasunduan, alitan, at relasyon ng mga partido para sa tamang legal analysis. / More specifics on the agreement, dispute, and parties' relationship are needed for accurate analysis.",
-                'ambiguous_transaction_type': "Kung paano nakuha ang property ang nagtatakda kung sale (Art. 1458), donation (Art. 725), o succession (Art. 777) ang applicable. / How the property was acquired determines whether sale, donation, or succession governs.",
-                'missing_temporal_context': "Kritikal ang petsa dahil may prescriptive periods — baka ma-bar ang claim kung huli na (hal. 4 taon Art. 1146, 6 taon Art. 1145, 10 taon Art. 1144). / Timing is critical — late filing may bar the claim entirely.",
-                'conflicting_facts': "May mga detalyeng maaaring saklawin ng magkaibang probisyon depende sa relasyon ng mga partido. / Details may fall under different provisions depending on the parties' relationship.",
-                'vague_liability_exposure': "Masyadong pangkalahatan ang tanong — walang sinabi kung ano ang ginawa, sino ang sangkot, o kailan nangyari — kaya hindi matukoy kung anong pananagutan ang posible. / The query is too general — no facts about the act, parties, or timing — so no specific liability can be determined yet.",
-            }
-
+        if not is_ambig or confidence < 0.65:
             return AmbiguityResult(
-                is_ambiguous=True,
-                confidence=base_confidence,
-                category=category,
-                questions=questions,
+                is_ambiguous=False,
+                confidence=confidence,
+                category=parsed.get("category", ""),
                 original_query=q_clean,
-                reasoning=CATEGORY_REASONING.get(category, "Additional context is needed for an accurate legal analysis."),
+                reasoning=parsed.get("reasoning", "Query is sufficiently clear."),
             )
 
-    # No ambiguity detected
-    return AmbiguityResult(original_query=q_clean)
+        questions: List[ClarificationQuestion] = []
+        for q_data in parsed.get("questions", []):
+            q_text = str(q_data.get("question", "")).strip()
+            if not q_text:
+                continue
+            opts = [str(o).strip() for o in q_data.get("options", []) if str(o).strip()]
+            questions.append(ClarificationQuestion(
+                id=str(q_data.get("id", f"q_{len(questions)}")),
+                question=q_text,
+                options=opts if opts else ["Yes", "No", "Not sure"],
+                allows_free_text=True,
+                context_hint=str(q_data.get("context_hint", "")),
+            ))
+
+        if not questions:
+            return AmbiguityResult(
+                is_ambiguous=False,
+                confidence=confidence,
+                category=parsed.get("category", ""),
+                original_query=q_clean,
+                reasoning="No clarification questions produced; proceeding directly.",
+            )
+
+        logger.info(f"LLM detected ambiguity [{parsed.get('category')}]: {len(questions)} questions")
+        return AmbiguityResult(
+            is_ambiguous=True,
+            confidence=confidence,
+            category=str(parsed.get("category", "missing_facts")),
+            questions=questions,
+            original_query=q_clean,
+            reasoning=str(parsed.get("reasoning", "LLM detected missing critical facts.")),
+        )
+
+    except Exception as e:
+        logger.warning(f"LLM ambiguity detection failed ({type(e).__name__}: {e}); bypassing clarification safely.")
+        return AmbiguityResult(original_query=q_clean)
 
 
-# ---------------------------------------------------------------------------
-# Query Enrichment from Clarification Answers
-# ---------------------------------------------------------------------------
 
-# Maps clarification answer values to statutory search enrichment terms
-ENRICHMENT_MAP: Dict[str, Dict[str, str]] = {
-    "citizenship_status": {
-        "Filipino citizen": "Filipino citizen Philippine national property ownership full rights Art 414",
-        "Dual citizen (e.g., Filipino-American)": "dual citizenship RA 9225 reacquisition of citizenship property rights natural-born Filipino",
-        "Former Filipino citizen (naturalized abroad)": "former natural-born Filipino RA 9225 Batas Pambansa 185 limited land area residential urban rural",
-        "Foreign national (non-Filipino)": "alien foreign national constitutional prohibition Art XII Sec 7 1987 Constitution land ownership condominium act RA 4726 40 percent foreign equity lease agreement",
-    },
-    "property_type": {
-        "Residential land / house and lot": "residential land house and lot ownership title transfer deed of sale",
-        "Condominium unit": "condominium unit RA 4726 Condominium Act foreign ownership 40 percent equity ceiling",
-        "Agricultural land": "agricultural land CARP CARL DAR foreign ownership prohibition agrarian reform",
-        "Commercial property": "commercial property lease agreement corporation 60-40 Filipino equity requirement",
-    },
-    "agreement_form": {
-        "Yes, there is a written contract or promissory note": "written contract promissory note Art 1144 ten-year prescriptive period documentary evidence",
-        "No, it was a verbal/oral agreement only": "oral contract verbal agreement Art 1145 six-year prescriptive period parol evidence",
-        "There are text messages / chat records as evidence": "electronic evidence RA 8792 E-Commerce Act text messages digital records",
-    },
-    "amount_involved": {
-        "Below ₱400,000": "small claims court RA 11576 A.M. No. 08-8-7-SC simplified procedure MTC",
-        "₱400,000 to ₱2,000,000": "MTC Metropolitan Trial Court jurisdiction RA 11576",
-        "Above ₱2,000,000": "RTC Regional Trial Court jurisdiction RA 11576 civil action",
-    },
-    "accident_type": {
-        "Vehicular / traffic accident": "vehicular accident quasi-delict Art 2176 motor vehicle negligence reckless imprudence Art 2185 Art 2180",
-        "Physical assault / battery by another person": "physical injuries independent civil action Art 33 assault battery quasi-delict Art 2176 moral damages Art 2219",
-        "Workplace accident / injury at work": "employer liability vicarious liability Art 2180 workplace injury occupational safety",
-        "Accident on someone else's property (slip and fall, etc.)": "premises liability negligence Art 2176 property owner duty of care possessor liability",
-    },
-    "transfer_type": {
-        "Purchased (contract of sale / contract to sell)": "contract of sale Art 1458 deed of sale transfer of ownership Art 1477 contract to sell",
-        "Donated / given as a gift (donation)": "donation Art 725 deed of donation acceptance formalities inter vivos mortis causa",
-        "Inherited from a deceased relative": "succession inheritance Art 777 compulsory heirs legitime intestate testate will",
-        "Verbal promise or informal agreement": "oral agreement Statute of Frauds Art 1403 parol evidence enforceability",
-    },
-    "when_occurred": {
-        "Within the last 6 months": "recent event within prescriptive period timely filing",
-        "6 months to 1 year ago": "within prescriptive period timely filing",
-        "1 to 4 years ago": "check prescriptive period Art 1145 six years oral four years quasi-delict Art 1146",
-        "More than 4 years ago": "possible prescription lapsed Art 1146 four years quasi-delict Art 1145 six years oral",
-        "More than 10 years ago": "likely prescribed Art 1144 ten years written contract Art 1141 thirty years real actions",
-    },
-    "relationship_status": {
-        "Living together but not married (common-law / live-in)": "Art 147 co-ownership union without legal impediment common-law property regime wages salary",
-        "Married under Philippine law": "conjugal partnership absolute community property Art 75 Art 91 Family Code",
-        "Separated but not legally (no court decree)": "de facto separation no court decree conjugal obligations subsist Art 100",
-        "One or both parties are married to someone else": "Art 148 co-ownership union with legal impediment adulterous cohabitation actual joint contribution only",
-    },
-    "party_relationship": {
-        "Stranger / no prior relationship": "quasi-delict Art 2176 fault negligence stranger tortfeasor",
-        "Employer / employee": "employer vicarious liability Art 2180 diligence of a good father Art 2180 paragraph 4",
-        "Business / contractual relationship": "breach of contract Art 1170 Art 1169 contractual obligation",
-        "Family member or relative": "family relations Art 217 Art 218 parental authority family home",
-        "Neighbor": "neighbor property nuisance Art 694 easement lateral support Art 684",
-    },
-    "property_titling_status": {
-        "Yes, it has a Torrens Title (TCT/OCT)": "Torrens title registered land PD 1529 Sec 47 imprescriptibility cannot be acquired by prescription or adverse possession registered owner imprescriptible",
-        "No, it is untitled / covered only by Tax Declaration": "untitled land alienable disposable public agricultural land tax declaration possession acquisitive prescription Art 1137 thirty years",
-        "It is public / government land": "public dominion land patrimonial property State ownership inalienable Regalian doctrine",
-        "Unknown / not sure if titled": "Torrens title registration status search Registry of Deeds verification PD 1529",
-    },
-    "occupation_duration": {
-        "Less than 10 years": "less than ten years possession Art 555 loss of possession accion publiciana accion reivindicatoria",
-        "10 to 29 years (with good faith / just title)": "ordinary acquisitive prescription Art 1134 ten years good faith just title Art 1117",
-        "30 years or more (adverse possession / no title)": "extraordinary acquisitive prescription Art 1137 thirty years uninterrupted adverse possession bad faith",
-        "Occupied with owner's mere tolerance or permission": "possession by mere tolerance Art 537 unlawful detainer acts of tolerance do not create prescription or ownership",
-    },
-    # Detailed bilingual options for vague liability-exposure flow.
-    # Exact-match keys for the deterministic rule-based questions above.
-    "factual_narrative": {
-        "Pisikal na komprontasyon o pagbabanta (hal. suntukan, pananakit, pagbabanta sa chat) / Physical confrontation or threat (e.g., fistfight, hurting someone, threats in chat)": "physical confrontation assault threat quasi-delict Art 2176 independent civil action Art 33 moral damages Art 2219",
-        "Hindi pagbayad ng utang o hindi pagtupad sa usapan (hal. pautang, upa, bentahan, serbisyo) / Unpaid debt or unfulfilled agreement (e.g., loan, rent, sale, service)": "unpaid debt breach of contract Art 1170 Art 1169 oral written contract prescriptive period Art 1144 Art 1145",
-        "Pagsasalita o pag-post laban sa tao (hal. tsismis, Facebook/TikTok post, paninirang-puri) / Words or posts against a person (e.g., gossip, Facebook/TikTok post, defamation)": "defamation abuse of rights Art 19 Art 20 Art 21 human relations moral damages Art 2219",
-        "Aksidente o pinsala (hal. nabangga sa kalsada, nasaktan sa trabaho, nasira ang gamit o bahay) / Accident or damage (e.g., road collision, hurt at work, damaged property)": "accident negligence quasi-delict Art 2176 vicarious liability Art 2180 damages Art 2199",
-    },
-    "other_party_relationship": {
-        "Kapitbahay o kakilala, walang kontrata (hal. alitan sa ingay, hangganan, parking) / Neighbor or acquaintance, no contract (e.g., noise, boundary, parking dispute)": "neighbor nuisance Art 694 easement Art 684 quasi-delict Art 2176 barangay conciliation RA 7160",
-        "Kaibigan, kamag-anak, o kakilala na may utangan o kasunduan (hal. pautang, sanla, bentahan) / Friend, relative, or acquaintance with a loan or agreement (e.g., utang, sangla, sale)": "loan agreement breach of contract Art 1170 small claims RA 11576",
-        "Employer, negosyo, landlord, o kompanya (hal. trabaho, upa, serbisyo) / Employer, business, landlord, or company (e.g., work, lease, service)": "employer business lease contract Art 1654 vicarious liability Art 2180 breach of contract Art 1170",
-        "Wala pang nagbabanta — nag-aalala lang ako kung ano ang posible / No threat yet — I'm just worried about what is possible": "potential civil liability quasi-delict Art 2176 breach of contract Art 1170 abuse of rights Art 19",
-    },
-    "timing_damages_evidence": {
-        "Nitong 6 buwan lang; may ebidensya (hal. chat, video, kasulatan, resibo) / Within the last 6 months; with evidence (e.g., chats, video, document, receipt)": "recent event within prescriptive period documentary electronic evidence RA 8792 timely filing",
-        "6 buwan hanggang 1 taon na; may pinsala o hindi nabayarang pera (hal. sugat, sira, utang) / 6 months to 1 year ago; with injury or unpaid money (e.g., wound, damage, debt)": "injury damages Art 2199 Art 2202 unpaid debt within prescriptive period Art 1145 Art 1146",
-        "Mahigit 1 taon na o paulit-ulit; dumaan na o hindi pa sa Barangay / Over 1 year ago or repeated; with or without Barangay conciliation": "prescription Art 1144 ten years written Art 1145 six years oral Art 1146 four years quasi-delict barangay conciliation RA 7160",
-        "Hindi sigurado sa petsa / patuloy pa rin ang problema / Not sure of the date / problem is still ongoing": "ongoing dispute continuing cause of action prescription Art 1144 Art 1145 Art 1146",
-    },
-    "dispute_nature": {
-        "Ingay, amoy, o perwisyo (hal. videoke, basura, usok) / Noise, smell, or nuisance (e.g., videoke, garbage, smoke) — Nuisance Art. 694": "nuisance Art 694 abatement Art 699 damages Art 2199",
-        "Hangganan ng lupa, bakod, o pader (hal. lumampas ang bakod) / Land boundary, fence, or wall (e.g., encroaching fence)": "boundary encroachment accession Art 449 Art 450 lateral support Art 684",
-        "Sanga ng puno, ugat, drainage, o paghuhukay (hal. bumara, bumaha) / Tree branches, roots, drainage, or digging (e.g., clogging, flooding) — Easements Art. 680-684": "easement Art 680 Art 681 Art 682 Art 683 Art 684 drainage lateral support",
-        "Pinsala sa ari-arian o tao dahil sa kapabayaan (hal. nabasag, nasaktan) / Damage to property or person due to negligence (e.g., broken, injured) — Quasi-delict Art. 2176": "quasi-delict Art 2176 negligence damages Art 2199",
-    },
-    "barangay_conciliation": {
-        "Oo, may Certificate to File Action na kami / Yes, we have a Certificate to File Action from the Barangay": "certificate to file action barangay conciliation complied RA 7160 Katarungang Pambarangay",
-        "Hindi pa kami nag-uusap sa Barangay / No, we have not gone to the Barangay yet": "barangay conciliation mandatory RA 7160 Local Government Code condition precedent",
-        "Hindi sigurado kung kailangan dumaan sa Barangay / Not sure if Barangay conciliation is required": "barangay conciliation coverage exceptions RA 7160",
-    },
-}
+# Query Enrichment with User Clarification Answers
 
 
 def enrich_query_with_clarification(
@@ -1039,14 +326,14 @@ def enrich_query_with_clarification(
 ) -> str:
     """
     Merges the user's clarification answers into the search query
-    to guide both vector embedding similarity and legal term expansion.
+    to guide vector embedding similarity and hybrid statutory retrieval.
 
     Args:
         original_query: The user's original query text
         clarification_context: Dict with 'answers' key mapping question IDs to selected answers
 
     Returns:
-        Enriched query string with relevant statutory terms appended
+        Enriched query string with clarification answers appended
     """
     answers = clarification_context.get("answers", {})
     if not answers:
@@ -1054,17 +341,11 @@ def enrich_query_with_clarification(
 
     enriched_parts = [original_query]
 
-    for q_id, answer in answers.items():
-        if q_id in ENRICHMENT_MAP:
-            mapped = ENRICHMENT_MAP[q_id].get(answer)
-            if mapped:
-                enriched_parts.append(mapped)
-            else:
-                # Free-text answer: append directly
-                enriched_parts.append(answer)
-        else:
-            # Unknown question ID: append the raw answer
-            enriched_parts.append(answer)
+    for _, answer in answers.items():
+        if isinstance(answer, list):
+            enriched_parts.extend(str(a).strip() for a in answer if str(a).strip())
+        elif answer and str(answer).strip():
+            enriched_parts.append(str(answer).strip())
 
     enriched = " ".join(enriched_parts)
     logger.info(f"Enriched query with clarification: {enriched[:200]}...")

@@ -15,7 +15,7 @@ router.get('/stats', async (req, res) => {
   try {
     const [casesRes, artsRes, relsRes] = await Promise.all([
       supabase.from('jurisprudence_cases').select('*', { count: 'exact', head: true }),
-      supabase.from('civil_code_articles').select('*', { count: 'exact', head: true }),
+      supabase.from('civil_code_articles').select('*', { count: 'exact', head: true }).gt('article_number', 0),
       supabase.from('article_jurisprudence_relations').select('*', { count: 'exact', head: true })
     ]);
 
@@ -87,6 +87,13 @@ router.get('/toc', async (req, res) => {
       }
     });
 
+    const getArticleTitle = (a) => {
+      if (a.article_number && a.article_number > 0) {
+        return `Article ${a.article_number}`;
+      }
+      return a.hierarchy?.chapter_name || a.hierarchy?.title_name || a.article_id;
+    };
+
     const resultTree = [];
     let bIdx = 0;
 
@@ -113,13 +120,13 @@ router.get('/toc', async (req, res) => {
           const chapterNode = {
             id: `book-${bIdx}-title-${tIdx}-chapter-${cIdx}`,
             title: chapterName,
-            children: arts.map(a => ({ id: a.article_id, title: a.article_number ? `Article ${a.article_number}` : a.article_id }))
+            children: arts.map(a => ({ id: a.article_id, title: getArticleTitle(a) }))
           };
           titleNode.children.push(chapterNode);
         }
 
         titleObj.arts.forEach(a => {
-          titleNode.children.push({ id: a.article_id, title: a.article_number ? `Article ${a.article_number}` : a.article_id });
+          titleNode.children.push({ id: a.article_id, title: getArticleTitle(a) });
         });
 
         bookNode.children.push(titleNode);
@@ -131,19 +138,20 @@ router.get('/toc', async (req, res) => {
         const chapterNode = {
           id: `book-${bIdx}-direct-chapter-${bcIdx}`,
           title: chapterName,
-          children: arts.map(a => ({ id: a.article_id, title: a.article_number ? `Article ${a.article_number}` : a.article_id }))
+          children: arts.map(a => ({ id: a.article_id, title: getArticleTitle(a) }))
         };
         bookNode.children.push(chapterNode);
       }
 
       bookObj.arts.forEach(a => {
-        bookNode.children.push({ id: a.article_id, title: a.article_number ? `Article ${a.article_number}` : a.article_id });
+        bookNode.children.push({ id: a.article_id, title: getArticleTitle(a) });
       });
 
       resultTree.push(bookNode);
     }
 
     const bookOrder = {
+      "GENERAL OVERVIEW & FOUNDATIONAL PRINCIPLES": -1,
       "PRELIMINARY TITLE": 0,
       "BOOK I - PERSONS": 1,
       "BOOK II - PROPERTY, OWNERSHIP, AND ITS MODIFICATIONS": 2,

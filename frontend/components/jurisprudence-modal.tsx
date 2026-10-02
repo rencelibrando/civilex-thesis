@@ -100,9 +100,23 @@ export function parseJurisprudenceDocument(fullText?: string, caseUid?: string):
     "Wherefore",
     "IN VIEW OF THE FOREGOING",
     "In view of the foregoing",
+    "IN LIGHT OF ALL THE FOREGOING",
+    "In light of all the foregoing",
+    "IN LIGHT OF THE FOREGOING",
+    "In light of the foregoing",
+    "FOR ALL THE FOREGOING REASONS",
+    "For all the foregoing reasons",
+    "PREMISES CONSIDERED",
+    "Premises considered",
+    "ALL PREMISES CONSIDERED",
+    "All premises considered",
+    "IN VIEW WHEREOF",
+    "In view whereof",
     "With this modification",
     "ACCORDINGLY",
     "Accordingly",
+    "SO ORDERED",
+    "So ordered",
   ];
 
   let lastFalloIdx = -1;

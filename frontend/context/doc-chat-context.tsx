@@ -15,6 +15,25 @@ import { useAuth } from "./auth-context";
 import { RagStatus, RagStage, mergeCitations, getCitationKey, LegalAnalytics, generateFollowUpPrompts } from "./chat-context";
 
 export function generateDocFollowUpPrompts(lastAnswer: string, citations: any[] = [], filename?: string): string[] {
+  if (!lastAnswer || lastAnswer.trim().length < 20) return [];
+
+  const lower = lastAnswer.toLowerCase();
+  const isRefusal = [
+    "cannot provide information",
+    "outside my specialized scope",
+    "outside your specialized scope",
+    "falls outside the scope",
+    "falls outside your specialized",
+    "solely to analyze and answer legal questions",
+    "dedicated exclusively to the philippine civil code",
+    "not governed by the civil code",
+    "outside the field of law",
+    "i apologize, but i cannot",
+    "apologize, but i cannot",
+    "hindi ako makakapagbigay",
+  ].some((phrase) => lower.includes(phrase));
+  if (isRefusal) return [];
+
   const base = generateFollowUpPrompts(lastAnswer, citations);
   const suggestions: string[] = [...base];
   const seen = new Set<string>(suggestions.map((s) => s.toLowerCase()));
@@ -27,7 +46,6 @@ export function generateDocFollowUpPrompts(lastAnswer: string, citations: any[] 
     }
   };
 
-  const lower = lastAnswer.toLowerCase();
   if (lower.includes("clause") || lower.includes("stipulation") || lower.includes("agreement") || lower.includes("contract")) {
     addPrompt("Are any clauses in this document void under public policy or the Civil Code?");
     addPrompt("What formal written demand is legally required under Article 1169?");
@@ -39,6 +57,20 @@ export function generateDocFollowUpPrompts(lastAnswer: string, citations: any[] 
   }
   if (lower.includes("termination") || lower.includes("rescission") || lower.includes("default")) {
     addPrompt("What is the prescriptive period to file an action for judicial rescission under Art. 1191?");
+  }
+  if (lower.includes("lease") || lower.includes("rent") || lower.includes("sublease") || lower.includes("tenant") || lower.includes("lessor")) {
+    addPrompt("Does this lease comply with the statutory maintenance and warranty duties under Art. 1654?");
+    addPrompt("What are the lawful grounds and notice rules for ejectment under this agreement?");
+  }
+  if (lower.includes("mortgage") || lower.includes("pledge") || lower.includes("collateral") || lower.includes("security")) {
+    addPrompt("Does any foreclosure or acceleration clause violate the prohibition against pactum commissorium?");
+    addPrompt("What is the legal redemption period governing this security instrument?");
+  }
+  if (lower.includes("waiver") || lower.includes("quitclaim") || lower.includes("release")) {
+    addPrompt("Is this quitclaim or waiver valid, unvitiated, and binding under Philippine civil jurisprudence?");
+  }
+  if (lower.includes("warranty") || lower.includes("indemnity") || lower.includes("hold harmless")) {
+    addPrompt("How do statutory implied warranties against hidden defects and eviction apply here?");
   }
 
   const docFallbacks = [

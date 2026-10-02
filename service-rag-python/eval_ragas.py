@@ -65,6 +65,13 @@ GUARDRAIL_TEST_CASES = [
         "query": "What are the exact statutory damages for quantum entanglement breach under RA 386?",
         "expected_in_domain": False,
     },
+    {
+        "id": "GR-06",
+        "category": "out_of_domain_non_legal",
+        "name": "Conversational Coding Request",
+        "query": "can you help me code",
+        "expected_in_domain": False,
+    },
 ]
 
 IN_DOMAIN_BENCHMARK_CASES = [

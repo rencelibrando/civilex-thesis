@@ -36,10 +36,6 @@ interface AuthContextType {
     email: string;
     password: string;
     fullName: string;
-    role: string;
-    organization?: string;
-    practiceArea?: string;
-    phoneNumber?: string;
   }) => Promise<{ success: boolean; error?: string; sessionCreated: boolean }>;
   signOut: (reason?: string) => Promise<void>;
   refreshSession: () => Promise<Session | null>;
@@ -228,10 +224,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           id: data.user.id,
           email: data.user.email || cleanEmail,
           full_name: data.user.user_metadata?.full_name || "",
-          role: data.user.user_metadata?.role || "",
-          organization: data.user.user_metadata?.organization || "",
-          practice_area: data.user.user_metadata?.practice_area || "",
-          phone_number: data.user.user_metadata?.phone_number || "",
           avatar_url: data.user.user_metadata?.avatar_url || data.user.user_metadata?.picture || null,
         });
       }
@@ -250,10 +242,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     email: string;
     password: string;
     fullName: string;
-    role: string;
-    organization?: string;
-    practiceArea?: string;
-    phoneNumber?: string;
   }) => {
     try {
       const cleanEmail = payload.email.trim().toLowerCase();
@@ -263,10 +251,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         options: {
           data: {
             full_name: payload.fullName.trim(),
-            role: payload.role,
-            organization: payload.organization?.trim() || "",
-            practice_area: payload.practiceArea || "",
-            phone_number: payload.phoneNumber?.trim() || "",
           },
         },
       });
@@ -292,10 +276,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             saveCachedProfile(userId, {
               id: userId,
               full_name: payload.fullName.trim(),
-              role: payload.role,
-              organization: payload.organization?.trim() || "",
-              practice_area: payload.practiceArea || "",
-              phone_number: payload.phoneNumber?.trim() || "",
               avatar_url: null,
               email: cleanEmail,
             });
@@ -309,10 +289,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             },
             body: JSON.stringify({
               full_name: payload.fullName.trim(),
-              role: payload.role,
-              organization: payload.organization?.trim() || "",
-              practice_area: payload.practiceArea || "",
-              phone_number: payload.phoneNumber?.trim() || "",
             }),
           });
         } catch (syncErr) {

@@ -58,7 +58,7 @@ import { supabase } from "@/lib/supabase";
 import { BACKEND_URL, apiUrl } from "@/lib/config";
 import { useDocChat } from "@/context/doc-chat-context";
 import { RagStatus } from "@/context/chat-context";
-import { getDocPanelCopy, getRoleDocStarters } from "@/lib/user-persona";
+import { getDocPanelCopy, getDocStarters } from "@/lib/user-persona";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { cn } from "@/lib/utils";
@@ -566,8 +566,6 @@ export default function ResearchPage() {
     handleSendDocMessage,
     handleStopDocMessage,
     loadDocSession,
-    userRole,
-    userPracticeArea,
   } = useDocChat();
 
   const [documents, setDocuments] = useState<UserDocument[]>([]);
@@ -578,7 +576,7 @@ export default function ResearchPage() {
   const [pendingDocId, setPendingDocId] = useState<string | null>(null);
   const [isDraggingFile, setIsDraggingFile] = useState(false);
 
-  const docPanelCopy = getDocPanelCopy(userRole, userPracticeArea);
+  const docPanelCopy = getDocPanelCopy();
 
   const activeDocId = activeDocument?.id || "general";
   const currentChat = getDocChat(activeDocId, activeDocument?.filename);
@@ -796,18 +794,18 @@ export default function ResearchPage() {
   }, [documents, pendingDocId, ensureDocSession]);
 
   const refreshDocStarters = useCallback(() => {
-    const rolePrompts = getRoleDocStarters(userRole);
-    const pool = rolePrompts.length > 0 ? [...rolePrompts] : [...DOC_STARTER_PROMPTS];
+    const defaultPrompts = getDocStarters();
+    const pool = defaultPrompts.length > 0 ? [...defaultPrompts] : [...DOC_STARTER_PROMPTS];
     for (let i = pool.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
       [pool[i], pool[j]] = [pool[j], pool[i]];
     }
     setDocStarters(pool.slice(0, 2));
-  }, [userRole]);
+  }, []);
 
   useEffect(() => {
     refreshDocStarters();
-  }, [activeDocument?.id, userRole, refreshDocStarters]);
+  }, [activeDocument?.id, refreshDocStarters]);
 
   const handleStop = () => {
     if (!activeDocument) return;
@@ -2130,7 +2128,7 @@ export default function ResearchPage() {
                         <span>Retained Sources ({retainedCitations.length})</span>
                       </div>
                     </AccordionTrigger>
-                    <AccordionContent className="px-3 pb-3 text-xs flex flex-col gap-2 max-h-56 overflow-y-auto custom-scrollbar">
+                    <AccordionContent className="px-2.5 sm:px-3 pb-3 text-xs flex flex-col gap-2 max-h-72 overflow-y-auto overflow-x-hidden overscroll-contain touch-pan-y custom-scrollbar w-full max-w-full">
                       {[...retainedCitations]
                         .sort((a: any, b: any) => {
                           const aOut = a.is_in_context === false || a.rank_status === "out_of_rank" ? 1 : 0;
@@ -2173,12 +2171,12 @@ export default function ResearchPage() {
                             return (
                               <div
                                 key={idx}
-                                className={`p-3 bg-card rounded-xl border shadow-2xs hover:shadow-sm cursor-pointer transition-all duration-200 group flex flex-col justify-between ${isOutOfRank ? "border-border/60 opacity-90 hover:opacity-100" : "border-border/80 hover:border-primary/40"
+                                className={`p-3 bg-card rounded-xl border shadow-2xs hover:shadow-sm cursor-pointer transition-all duration-200 group flex flex-col justify-between w-full max-w-full overflow-hidden break-words touch-pan-y ${isOutOfRank ? "border-border/60 opacity-90 hover:opacity-100" : "border-border/80 hover:border-primary/40"
                                   }`}
                                 onClick={handleOpen}
                               >
-                                <div>
-                                  <div className="flex items-center justify-between mb-1.5 gap-1.5">
+                                <div className="w-full min-w-0">
+                                  <div className="flex items-center justify-between mb-1.5 gap-1.5 flex-wrap">
                                     <div className="flex items-center gap-1.5 min-w-0 flex-wrap">
                                       {rank && (
                                         <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-muted/80 text-foreground border border-border/70 shrink-0">
@@ -2219,24 +2217,24 @@ export default function ResearchPage() {
                                     )}
                                   </div>
 
-                                  <div className="mb-1.5">
-                                    <h4 className="font-semibold text-xs text-foreground group-hover:text-primary transition-colors leading-snug line-clamp-2">
+                                  <div className="mb-1.5 min-w-0">
+                                    <h4 className="font-semibold text-xs text-foreground group-hover:text-primary transition-colors leading-snug line-clamp-2 break-words">
                                       {title}
                                     </h4>
                                     {gr && (
-                                      <span className="text-[10px] font-mono text-muted-foreground block mt-0.5">
+                                      <span className="text-[10px] font-mono text-muted-foreground block mt-0.5 break-all">
                                         {gr}
                                       </span>
                                     )}
                                   </div>
 
-                                  <p className="text-xs text-muted-foreground leading-relaxed line-clamp-2 mb-2">
+                                  <p className="text-xs text-muted-foreground leading-relaxed line-clamp-2 mb-2 break-words">
                                     {summary}
                                   </p>
                                 </div>
 
                                 <div className="flex items-center justify-between pt-1.5 border-t border-border/50 text-[11px] font-semibold text-primary mt-auto">
-                                  <span className="flex items-center group-hover:translate-x-1 transition-transform">
+                                  <span className="flex items-center sm:group-hover:translate-x-1 transition-transform">
                                     Read full case <ArrowRight className="w-3 h-3 ml-1" />
                                   </span>
                                   {cit.metadata?.source_url && (
@@ -2250,32 +2248,32 @@ export default function ResearchPage() {
                           }
 
                           return (
-                            <div key={idx} className={`p-2.5 rounded-lg bg-card border shadow-2xs ${isOutOfRank ? "border-border/60 opacity-90 hover:opacity-100" : "border-border/60"}`}>
-                              <div className="flex items-center justify-between mb-1.5 gap-2">
-                                <div className="min-w-0 flex items-center gap-1.5 flex-wrap">
+                            <div key={idx} className={`p-2 sm:p-2.5 rounded-lg bg-card border shadow-2xs w-full max-w-full overflow-hidden break-words touch-pan-y ${isOutOfRank ? "border-border/60 opacity-90 hover:opacity-100" : "border-border/60"}`}>
+                              <div className="flex items-center justify-between mb-1 sm:mb-1.5 gap-1.5 flex-nowrap">
+                                <div className="min-w-0 flex items-center gap-1 sm:gap-1.5 flex-wrap">
                                   {rank && (
-                                    <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-muted/80 text-foreground border border-border/70 shrink-0">
+                                    <span className="text-[9.5px] sm:text-[10px] font-mono font-bold px-1.5 py-0.2 sm:py-0.5 rounded bg-muted/80 text-foreground border border-border/70 shrink-0">
                                       #{rank}
                                     </span>
                                   )}
-                                  <span className="font-bold text-primary text-[11px] uppercase truncate">
+                                  <span className="font-bold text-primary text-[10.5px] sm:text-[11px] uppercase truncate max-w-[130px] sm:max-w-none">
                                     {cit.parent_type === "civil_code" || cit.parent_type === "article"
                                       ? cit.parent_id
                                       : `Document Excerpt ${cit.chunk_id ? `(#${parseInt(cit.chunk_id.split('_c').pop() || '0', 10) + 1})` : ''}`}
                                   </span>
                                   {isOutOfRank ? (
-                                    <span className="inline-flex items-center gap-1 text-[10px] font-mono font-medium px-1.5 py-0.5 rounded bg-muted text-muted-foreground border border-border/80 shrink-0">
+                                    <span className="hidden xs:inline-flex items-center gap-1 text-[9.5px] sm:text-[10px] font-mono font-medium px-1.5 py-0.2 sm:py-0.5 rounded bg-muted text-muted-foreground border border-border/80 shrink-0">
                                       Out of Rank
                                     </span>
                                   ) : (
-                                    <span className="inline-flex items-center gap-1 text-[10px] font-mono font-medium px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 shrink-0">
+                                    <span className="hidden xs:inline-flex items-center gap-1 text-[9.5px] sm:text-[10px] font-mono font-medium px-1.5 py-0.2 sm:py-0.5 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 shrink-0">
                                       Active Grounding
                                     </span>
                                   )}
                                 </div>
                                 {cit.suitability_percent !== undefined && (
                                   <span
-                                    className={`text-[11px] font-semibold px-1.5 py-0.5 rounded-md border tabular-nums shrink-0 ${cit.suitability_percent >= 85
+                                    className={`text-[10px] sm:text-[11px] font-semibold px-1.5 py-0.2 sm:py-0.5 rounded-md border tabular-nums shrink-0 ${cit.suitability_percent >= 85
                                       ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
                                       : cit.suitability_percent >= 70
                                         ? "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60"
@@ -2287,13 +2285,13 @@ export default function ResearchPage() {
                                 )}
                               </div>
                               {cit.metadata?.title && (
-                                <p className="font-semibold text-foreground text-xs mb-0.5">
+                                <p className="font-semibold text-foreground text-[11px] sm:text-xs mb-0.5 line-clamp-1 break-words">
                                   {cit.metadata.title} {cit.metadata.gr_number ? `(GR ${cit.metadata.gr_number})` : ""}
                                 </p>
                               )}
-                              <p className="text-muted-foreground text-xs line-clamp-2">{cit.content}</p>
+                              <p className="text-muted-foreground text-[11px] sm:text-xs line-clamp-2 leading-snug sm:leading-relaxed break-words">{cit.content}</p>
                               {cit.metadata?.source_url && (
-                                <a href={cit.metadata.source_url} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline text-[11px] mt-1 inline-block">
+                                <a href={cit.metadata.source_url} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline text-[10px] sm:text-[11px] mt-0.5 sm:mt-1 inline-block font-medium">
                                   View full document
                                 </a>
                               )}
@@ -2399,7 +2397,7 @@ export default function ResearchPage() {
                                 <BookOpen className="w-3 h-3" />
                                 View Sources ({msg.citations.length})
                               </AccordionTrigger>
-                              <AccordionContent className="text-xs text-muted-foreground bg-accent/10 p-3 rounded-b-lg border border-t-0 border-border flex flex-col gap-2 max-h-60 overflow-y-auto custom-scrollbar">
+                              <AccordionContent className="text-xs text-muted-foreground bg-accent/10 p-2.5 sm:p-3 rounded-b-lg border border-t-0 border-border flex flex-col gap-2 max-h-72 overflow-y-auto overflow-x-hidden overscroll-contain touch-pan-y custom-scrollbar w-full max-w-full">
                                 {[...msg.citations]
                                   .sort((a: any, b: any) => {
                                     const aOut = a.is_in_context === false || a.rank_status === "out_of_rank" ? 1 : 0;
@@ -2442,12 +2440,12 @@ export default function ResearchPage() {
                                       return (
                                         <div
                                           key={cIdx}
-                                          className={`p-3 bg-card rounded-xl border shadow-2xs hover:shadow-sm cursor-pointer transition-all duration-200 group flex flex-col justify-between ${isOutOfRank ? "border-border/60 opacity-90 hover:opacity-100" : "border-border/80 hover:border-primary/40"
+                                          className={`p-3 bg-card rounded-xl border shadow-2xs hover:shadow-sm cursor-pointer transition-all duration-200 group flex flex-col justify-between w-full max-w-full overflow-hidden break-words touch-pan-y ${isOutOfRank ? "border-border/60 opacity-90 hover:opacity-100" : "border-border/80 hover:border-primary/40"
                                             }`}
                                           onClick={handleOpen}
                                         >
-                                          <div>
-                                            <div className="flex items-center justify-between mb-1.5 gap-1.5">
+                                          <div className="w-full min-w-0">
+                                            <div className="flex items-center justify-between mb-1.5 gap-1.5 flex-wrap">
                                               <div className="flex items-center gap-1.5 min-w-0 flex-wrap">
                                                 {rank && (
                                                   <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-muted/80 text-foreground border border-border/70 shrink-0">
@@ -2488,24 +2486,24 @@ export default function ResearchPage() {
                                               )}
                                             </div>
 
-                                            <div className="mb-1.5">
-                                              <h4 className="font-semibold text-xs text-foreground group-hover:text-primary transition-colors leading-snug line-clamp-2">
+                                            <div className="mb-1.5 min-w-0">
+                                              <h4 className="font-semibold text-xs text-foreground group-hover:text-primary transition-colors leading-snug line-clamp-2 break-words">
                                                 {title}
                                               </h4>
                                               {gr && (
-                                                <span className="text-[10px] font-mono text-muted-foreground block mt-0.5">
+                                                <span className="text-[10px] font-mono text-muted-foreground block mt-0.5 break-all">
                                                   {gr}
                                                 </span>
                                               )}
                                             </div>
 
-                                            <p className="text-xs text-muted-foreground leading-relaxed line-clamp-2 mb-2">
+                                            <p className="text-xs text-muted-foreground leading-relaxed line-clamp-2 mb-2 break-words">
                                               {summary}
                                             </p>
                                           </div>
 
                                           <div className="flex items-center justify-between pt-1.5 border-t border-border/50 text-[11px] font-semibold text-primary mt-auto">
-                                            <span className="flex items-center group-hover:translate-x-1 transition-transform">
+                                            <span className="flex items-center sm:group-hover:translate-x-1 transition-transform">
                                               Read full case <ArrowRight className="w-3 h-3 ml-1" />
                                             </span>
                                             {cit.metadata?.source_url && (
@@ -2519,30 +2517,30 @@ export default function ResearchPage() {
                                     }
 
                                     return (
-                                      <div key={cIdx} className={`flex flex-col gap-1 p-2.5 bg-card rounded-lg border shadow-2xs ${isOutOfRank ? "border-border/60 opacity-90 hover:opacity-100" : "border-border/60"}`}>
-                                        <div className="flex items-center justify-between gap-2">
-                                          <div className="min-w-0 flex items-center gap-1.5 flex-wrap">
+                                      <div key={cIdx} className={`flex flex-col gap-1 p-2 sm:p-2.5 bg-card rounded-lg border shadow-2xs w-full max-w-full overflow-hidden break-words touch-pan-y ${isOutOfRank ? "border-border/60 opacity-90 hover:opacity-100" : "border-border/60"}`}>
+                                        <div className="flex items-center justify-between gap-1.5 flex-nowrap">
+                                          <div className="min-w-0 flex items-center gap-1 sm:gap-1.5 flex-wrap">
                                             {rank && (
-                                              <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-muted/80 text-foreground border border-border/70 shrink-0">
+                                              <span className="text-[9.5px] sm:text-[10px] font-mono font-bold px-1.5 py-0.2 sm:py-0.5 rounded bg-muted/80 text-foreground border border-border/70 shrink-0">
                                                 #{rank}
                                               </span>
                                             )}
-                                            <span className="font-bold text-primary text-[11px] uppercase truncate">
+                                            <span className="font-bold text-primary text-[10.5px] sm:text-[11px] uppercase truncate max-w-[130px] sm:max-w-none">
                                               {cit.parent_type === "civil_code" ? cit.parent_id : `${cit.parent_type?.toUpperCase?.() ?? "SOURCE"} : ${cit.parent_id}`}
                                             </span>
                                             {isOutOfRank ? (
-                                              <span className="inline-flex items-center gap-1 text-[10px] font-mono font-medium px-1.5 py-0.5 rounded bg-muted text-muted-foreground border border-border/80 shrink-0">
+                                              <span className="hidden xs:inline-flex items-center gap-1 text-[9.5px] sm:text-[10px] font-mono font-medium px-1.5 py-0.2 sm:py-0.5 rounded bg-muted text-muted-foreground border border-border/80 shrink-0">
                                                 Out of Rank
                                               </span>
                                             ) : (
-                                              <span className="inline-flex items-center gap-1 text-[10px] font-mono font-medium px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 shrink-0">
+                                              <span className="hidden xs:inline-flex items-center gap-1 text-[9.5px] sm:text-[10px] font-mono font-medium px-1.5 py-0.2 sm:py-0.5 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 shrink-0">
                                                 Active Grounding
                                               </span>
                                             )}
                                           </div>
                                           {cit.suitability_percent !== undefined && (
                                             <span
-                                              className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-md border tabular-nums shrink-0 ${cit.suitability_percent >= 85
+                                              className={`text-[10px] sm:text-[11px] font-semibold px-1.5 py-0.2 sm:py-0.5 rounded-md border tabular-nums shrink-0 ${cit.suitability_percent >= 85
                                                 ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
                                                 : cit.suitability_percent >= 70
                                                   ? "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60"
@@ -2554,11 +2552,11 @@ export default function ResearchPage() {
                                           )}
                                         </div>
                                         {cit.metadata?.title && (
-                                          <span className="font-medium text-foreground text-xs">{cit.metadata.title}</span>
+                                          <span className="font-semibold text-foreground text-[11px] sm:text-xs mb-0.5 line-clamp-1 break-words">{cit.metadata.title}</span>
                                         )}
-                                        <span className="text-muted-foreground text-xs line-clamp-2">{cit.content}</span>
+                                        <span className="text-muted-foreground text-[11px] sm:text-xs line-clamp-2 leading-snug sm:leading-relaxed break-words">{cit.content}</span>
                                         {cit.metadata?.source_url && (
-                                          <a href={cit.metadata.source_url} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline text-[11px] mt-1 inline-block">
+                                          <a href={cit.metadata.source_url} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline text-[10px] sm:text-[11px] mt-0.5 sm:mt-1 inline-block font-medium">
                                             View full document
                                           </a>
                                         )}
@@ -2595,13 +2593,13 @@ export default function ResearchPage() {
                   type="button"
                   disabled={isDocProcessing || isDocFailed}
                   onClick={() => handleSend(item.prompt)}
-                  className="group flex items-center justify-between gap-2 px-3 py-1.5 sm:py-2 rounded-xl text-xs bg-accent/40 dark:bg-accent/20 hover:bg-[#100771] dark:hover:bg-blue-600 hover:text-white text-foreground border border-border/70 hover:border-transparent dark:hover:border-transparent transition-all shadow-2xs hover:shadow-xs active:scale-98 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed w-full text-left"
+                  className="group flex items-start sm:items-center justify-between gap-2 px-3 py-2 sm:py-2 rounded-xl text-xs bg-accent/40 dark:bg-accent/20 hover:bg-[#100771] dark:hover:bg-blue-600 hover:text-white text-foreground border border-border/70 hover:border-transparent dark:hover:border-transparent transition-all shadow-2xs hover:shadow-xs active:scale-98 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed w-full text-left min-h-[2.5rem]"
                   title={item.prompt}
                 >
-                  <span className="truncate text-xs min-w-0 font-normal group-hover:text-white flex-1">
+                  <span className="line-clamp-2 sm:line-clamp-2 text-left text-[11px] sm:text-xs leading-snug sm:leading-normal min-w-0 font-normal group-hover:text-white flex-1 break-words">
                     {item.prompt}
                   </span>
-                  <ChevronRight className="w-3.5 h-3.5 opacity-50 group-hover:opacity-100 group-hover:text-white group-hover:translate-x-0.5 transition-all shrink-0" />
+                  <ChevronRight className="w-3.5 h-3.5 mt-0.5 sm:mt-0 opacity-50 group-hover:opacity-100 group-hover:text-white group-hover:translate-x-0.5 transition-all shrink-0" />
                 </button>
               ))}
             </div>
@@ -2624,13 +2622,13 @@ export default function ResearchPage() {
                   type="button"
                   disabled={isDocProcessing || isDocFailed}
                   onClick={() => handleSend(prompt)}
-                  className="group flex items-center justify-between gap-2 px-3 py-1.5 sm:py-2 rounded-xl text-xs bg-accent/40 dark:bg-accent/20 hover:bg-[#100771] dark:hover:bg-blue-600 hover:text-white text-foreground border border-border/70 hover:border-transparent dark:hover:border-transparent transition-all duration-200 shadow-2xs hover:shadow-xs active:scale-98 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed w-full text-left"
+                  className="group flex items-start sm:items-center justify-between gap-2 px-3 py-2 sm:py-2 rounded-xl text-xs bg-accent/40 dark:bg-accent/20 hover:bg-[#100771] dark:hover:bg-blue-600 hover:text-white text-foreground border border-border/70 hover:border-transparent dark:hover:border-transparent transition-all duration-200 shadow-2xs hover:shadow-xs active:scale-98 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed w-full text-left min-h-[2.5rem]"
                   title={prompt}
                 >
-                  <span className="truncate text-xs min-w-0 group-hover:text-white transition-colors font-normal flex-1">
+                  <span className="line-clamp-2 sm:line-clamp-2 text-left text-[11px] sm:text-xs leading-snug sm:leading-normal min-w-0 group-hover:text-white transition-colors font-normal flex-1 break-words">
                     {prompt}
                   </span>
-                  <ChevronRight className="w-3.5 h-3.5 opacity-50 group-hover:opacity-100 group-hover:text-white group-hover:translate-x-0.5 transition-all shrink-0" />
+                  <ChevronRight className="w-3.5 h-3.5 mt-0.5 sm:mt-0 opacity-50 group-hover:opacity-100 group-hover:text-white group-hover:translate-x-0.5 transition-all shrink-0" />
                 </button>
               ))}
             </div>

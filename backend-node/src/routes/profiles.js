@@ -227,10 +227,6 @@ router.get('/me', requireAuth, async (req, res) => {
       const initialProfile = {
         id: userId,
         full_name: req.user.user_metadata?.full_name || '',
-        role: req.user.user_metadata?.role || '',
-        organization: req.user.user_metadata?.organization || '',
-        practice_area: req.user.user_metadata?.practice_area || '',
-        phone_number: req.user.user_metadata?.phone_number || '',
         avatar_url: metaAvatar,
         notification_preferences: { email: true, push: false },
         theme_preferences: 'system',
@@ -360,10 +356,6 @@ router.patch('/me', requireAuth, async (req, res) => {
     const userId = req.user.id;
     const {
       full_name,
-      role,
-      organization,
-      practice_area,
-      phone_number,
       avatar_url,
       notification_preferences,
       theme_preferences
@@ -376,10 +368,6 @@ router.patch('/me', requireAuth, async (req, res) => {
 
     const updates = { id: userId };
     if (full_name !== undefined) updates.full_name = full_name;
-    if (role !== undefined) updates.role = role;
-    if (organization !== undefined) updates.organization = organization;
-    if (practice_area !== undefined) updates.practice_area = practice_area;
-    if (phone_number !== undefined) updates.phone_number = phone_number;
     if (avatar_url !== undefined) updates.avatar_url = avatar_url;
     if (notification_preferences !== undefined) updates.notification_preferences = notification_preferences;
     if (theme_preferences !== undefined) updates.theme_preferences = theme_preferences;
@@ -397,10 +385,6 @@ router.patch('/me', requireAuth, async (req, res) => {
     try {
       const metaUpdates = {};
       if (full_name !== undefined) metaUpdates.full_name = full_name;
-      if (role !== undefined) metaUpdates.role = role;
-      if (organization !== undefined) metaUpdates.organization = organization;
-      if (practice_area !== undefined) metaUpdates.practice_area = practice_area;
-      if (phone_number !== undefined) metaUpdates.phone_number = phone_number;
       if (avatar_url !== undefined) metaUpdates.avatar_url = avatar_url;
 
       if (Object.keys(metaUpdates).length > 0) {

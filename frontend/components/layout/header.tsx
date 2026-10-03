@@ -25,8 +25,6 @@ export function Header() {
   const { session, token, signOut } = useAuth();
   const [userName, setUserName] = useState<string>("User");
   const [userEmail, setUserEmail] = useState<string>("");
-  const [userRole, setUserRole] = useState<string>("");
-  const [userOrg, setUserOrg] = useState<string>("");
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
 
   const fetchProfile = async (silent = false) => {
@@ -46,20 +44,12 @@ export function Header() {
 
       if (cached && cached.id === userId) {
         if (cached.full_name) setUserName(cached.full_name);
-        if (cached.role) setUserRole(cached.role);
-        if (cached.organization) setUserOrg(cached.organization);
         if (cached.avatar_url !== undefined) {
           setAvatarUrl(cached.avatar_url || metaAvatar);
         }
       } else {
         if (session.user.user_metadata?.full_name) {
           setUserName(session.user.user_metadata.full_name);
-        }
-        if (session.user.user_metadata?.role) {
-          setUserRole(session.user.user_metadata.role);
-        }
-        if (session.user.user_metadata?.organization) {
-          setUserOrg(session.user.user_metadata.organization);
         }
         if (metaAvatar) {
           setAvatarUrl(metaAvatar);
@@ -102,8 +92,6 @@ export function Header() {
         }
 
         if (data.full_name) setUserName(data.full_name);
-        if (data.role) setUserRole(data.role);
-        if (data.organization) setUserOrg(data.organization);
         const resolvedAvatar = data.avatar_url || metaAvatar;
         setAvatarUrl(resolvedAvatar);
 
@@ -111,8 +99,6 @@ export function Header() {
         saveCachedProfile(userId, {
           id: userId,
           full_name: data.full_name || session.user.user_metadata?.full_name || "User",
-          role: data.role || session.user.user_metadata?.role || "",
-          organization: data.organization || session.user.user_metadata?.organization || "",
           avatar_url: resolvedAvatar,
           email: session.user.email,
         });
@@ -130,8 +116,6 @@ export function Header() {
         const cached = getCachedProfile(session.user.id);
         if (cached && cached.id === session.user.id) {
           if (cached.full_name) setUserName(cached.full_name);
-          if (cached.role) setUserRole(cached.role);
-          if (cached.organization) setUserOrg(cached.organization);
           if (cached.avatar_url !== undefined) setAvatarUrl(cached.avatar_url);
         }
       }
@@ -208,18 +192,6 @@ export function Header() {
               {userEmail && (
                 <p className="text-xs text-muted-foreground truncate mt-1">{userEmail}</p>
               )}
-              <div className="flex flex-wrap gap-1 mt-2">
-                {userRole && (
-                  <span className="inline-block text-[11px] font-medium text-primary bg-primary/10 border border-primary/20 px-2 py-0.5 rounded-md truncate max-w-full">
-                    {userRole}
-                  </span>
-                )}
-                {userOrg && (
-                  <span className="inline-block text-[11px] font-medium text-muted-foreground bg-muted border border-border px-2 py-0.5 rounded-md truncate max-w-full">
-                    {userOrg}
-                  </span>
-                )}
-              </div>
             </div>
             <DropdownMenuSeparator className="my-1" />
             <Link href="/settings" className="w-full">

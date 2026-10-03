@@ -17,32 +17,14 @@ import {
 import { supabase, signOutUser } from "@/lib/supabase";
 import { BACKEND_URL, apiUrl } from "@/lib/config";
 import { getCachedProfile, saveCachedProfile } from "@/lib/auth-storage";
+import { validatePassword } from "@/lib/password-policy";
+import { PasswordChecklist } from "@/components/auth/password-checklist";
 
 type SaveStatus = "idle" | "saving" | "saved" | "error";
-
-const ROLE_OPTIONS = [
-  "Normal Citizen / General Public",
-  "Attorney / Legal Practitioner",
-  "Law Student / Bar Candidate",
-];
-
-const PRACTICE_AREAS = [
-  "General Civil Practice (All Areas)",
-  "Obligations & Contracts (Arts. 1156–2270)",
-  "Persons & Family Relations (Arts. 37–413)",
-  "Property, Ownership & Land Titles (Arts. 414–711)",
-  "Succession, Wills & Donations (Arts. 712–1155)",
-  "Torts, Quasi-Delicts & Damages (Arts. 2176–2235)",
-  "Pre-Bar / Academic Curriculum",
-];
 
 export default function SettingsPage() {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
-  const [role, setRole] = useState("");
-  const [organization, setOrganization] = useState("");
-  const [practiceArea, setPracticeArea] = useState("");
-  const [phoneNumber, setPhoneNumber] = useState("");
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
@@ -86,10 +68,6 @@ export default function SettingsPage() {
         const cached = getCachedProfile(session.user.id);
         if (cached && cached.id === session.user.id) {
           setName(cached.full_name || session.user.user_metadata?.full_name || "");
-          setRole(cached.role || session.user.user_metadata?.role || "");
-          setOrganization(cached.organization || session.user.user_metadata?.organization || "");
-          setPracticeArea(cached.practice_area || session.user.user_metadata?.practice_area || "");
-          setPhoneNumber(cached.phone_number || session.user.user_metadata?.phone_number || "");
           setAvatarUrl(cached.avatar_url || metaAvatar);
           setIsLoading(false);
         }
@@ -126,29 +104,17 @@ export default function SettingsPage() {
           }
 
           setName(data.full_name || session.user.user_metadata?.full_name || "");
-          setRole(data.role || session.user.user_metadata?.role || "");
-          setOrganization(data.organization || session.user.user_metadata?.organization || "");
-          setPracticeArea(data.practice_area || session.user.user_metadata?.practice_area || "");
-          setPhoneNumber(data.phone_number || session.user.user_metadata?.phone_number || "");
           const resolvedAvatar = data.avatar_url || metaAvatar;
           setAvatarUrl(resolvedAvatar);
 
           saveCachedProfile(session.user.id, {
             id: session.user.id,
             full_name: data.full_name,
-            role: data.role,
-            organization: data.organization,
-            practice_area: data.practice_area,
-            phone_number: data.phone_number,
             avatar_url: resolvedAvatar,
             email: session.user.email,
           });
         } else if (!cached || cached.id !== session.user.id) {
           setName(session.user.user_metadata?.full_name || "");
-          setRole(session.user.user_metadata?.role || "");
-          setOrganization(session.user.user_metadata?.organization || "");
-          setPracticeArea(session.user.user_metadata?.practice_area || "");
-          setPhoneNumber(session.user.user_metadata?.phone_number || "");
           setAvatarUrl(metaAvatar);
         }
       } catch (err) {
@@ -349,10 +315,6 @@ export default function SettingsPage() {
         },
         body: JSON.stringify({
           full_name: name,
-          role: role,
-          organization: organization,
-          practice_area: practiceArea,
-          phone_number: phoneNumber
         }),
         signal: controller.signal,
       }).catch(() => null);
@@ -367,10 +329,6 @@ export default function SettingsPage() {
           },
           body: JSON.stringify({
             full_name: name,
-            role: role,
-            organization: organization,
-            practice_area: practiceArea,
-            phone_number: phoneNumber
           })
         }).catch(() => null);
       }
@@ -378,18 +336,10 @@ export default function SettingsPage() {
       if (res && res.ok) {
         saveCachedProfile(session.user.id, {
           full_name: name,
-          role: role,
-          organization: organization,
-          practice_area: practiceArea,
-          phone_number: phoneNumber
         });
         await supabase.auth.updateUser({
           data: {
             full_name: name,
-            role: role,
-            organization: organization,
-            practice_area: practiceArea,
-            phone_number: phoneNumber
           }
         });
         window.dispatchEvent(new Event("profile-updated"));
@@ -413,9 +363,10 @@ export default function SettingsPage() {
       setPasswordMessage("Please enter your current password.");
       return;
     }
-    if (newPassword.length < 6) {
+    const policyError = validatePassword(newPassword);
+    if (policyError) {
       setPasswordStatus("error");
-      setPasswordMessage("New password must be at least 6 characters long.");
+      setPasswordMessage(policyError);
       return;
     }
     if (newPassword !== confirmPassword) {
@@ -510,7 +461,7 @@ export default function SettingsPage() {
         <div>
           <h1 className="text-xl sm:text-2xl 2xl:text-3xl font-bold text-foreground">Settings</h1>
           <p className="text-muted-foreground text-xs sm:text-sm mt-1">
-            Manage your personal profile, legal specialization, and account credentials.
+            Manage your personal profile and account credentials.
           </p>
         </div>
 
@@ -522,7 +473,7 @@ export default function SettingsPage() {
               Personal Information
             </CardTitle>
             <CardDescription className="text-muted-foreground text-xs sm:text-sm">
-              Update your photo, professional title, legal affiliation, and contact details.
+              Update your photo and display name.
             </CardDescription>
           </CardHeader>
           <CardContent className="p-4 sm:p-6 space-y-5 sm:space-y-6">
@@ -601,70 +552,13 @@ export default function SettingsPage() {
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              {/* Full Name */}
+              {/* Username */}
               <div className="space-y-2">
-                <label className="text-sm font-medium text-foreground">Full Name</label>
+                <label className="text-sm font-medium text-foreground">Username</label>
                 <Input
                   value={name}
                   onChange={(e) => setName(e.target.value)}
-                  placeholder="e.g. Atty. Juan Dela Cruz"
-                  className="bg-background/60 dark:bg-background/40 border-border focus-visible:ring-primary/30 focus-visible:border-primary rounded-xl h-10 transition-colors"
-                />
-              </div>
-
-              {/* Role / Job Title */}
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-foreground">Role / Professional Title</label>
-                <Input
-                  value={role}
-                  onChange={(e) => setRole(e.target.value)}
-                  list="roles-list"
-                  placeholder="e.g. Attorney / Normal Citizen / Law Student"
-                  className="bg-background/60 dark:bg-background/40 border-border focus-visible:ring-primary/30 focus-visible:border-primary rounded-xl h-10 transition-colors"
-                />
-                <datalist id="roles-list">
-                  {ROLE_OPTIONS.map((opt) => (
-                    <option key={opt} value={opt} />
-                  ))}
-                </datalist>
-              </div>
-
-              {/* Organization / Law Firm / Law School */}
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-foreground">Firm / Law School / Agency</label>
-                <Input
-                  value={organization}
-                  onChange={(e) => setOrganization(e.target.value)}
-                  placeholder="e.g. SyCip Law / UP College of Law"
-                  className="bg-background/60 dark:bg-background/40 border-border focus-visible:ring-primary/30 focus-visible:border-primary rounded-xl h-10 transition-colors"
-                />
-              </div>
-
-              {/* Primary Practice Area / Field of Specialization */}
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-foreground">Primary Legal Field / Focus</label>
-                <Input
-                  value={practiceArea}
-                  onChange={(e) => setPracticeArea(e.target.value)}
-                  list="practice-areas-list"
-                  placeholder="e.g. Civil Law & Obligations / General Civil Practice"
-                  className="bg-background/60 dark:bg-background/40 border-border focus-visible:ring-primary/30 focus-visible:border-primary rounded-xl h-10 transition-colors"
-                />
-                <datalist id="practice-areas-list">
-                  {PRACTICE_AREAS.map((opt) => (
-                    <option key={opt} value={opt} />
-                  ))}
-                </datalist>
-              </div>
-
-              {/* Phone / Contact Number */}
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-foreground">Contact Number</label>
-                <Input
-                  type="tel"
-                  value={phoneNumber}
-                  onChange={(e) => setPhoneNumber(e.target.value)}
-                  placeholder="+63 917 123 4567"
+                  placeholder="e.g. Juan Dela Cruz"
                   className="bg-background/60 dark:bg-background/40 border-border focus-visible:ring-primary/30 focus-visible:border-primary rounded-xl h-10 transition-colors"
                 />
               </div>
@@ -688,7 +582,7 @@ export default function SettingsPage() {
             <div className="text-xs text-muted-foreground flex items-center gap-2">
               {saveStatus === "saved" && <span className="text-emerald-500 font-medium">✓ Personal information saved successfully</span>}
               {saveStatus === "error" && <span className="text-destructive font-medium">✕ Failed to save changes</span>}
-              {saveStatus === "idle" && <span>Save updates made to your personal details, role, and organization.</span>}
+              {saveStatus === "idle" && <span>Save updates made to your display name.</span>}
             </div>
             <Button onClick={handleSave} disabled={saveStatus === "saving"} className="bg-primary hover:bg-primary/90 text-primary-foreground h-10 px-5 rounded-xl shadow-xs hover:shadow-sm transition-all active:scale-95 cursor-pointer">
               {saveStatus === "saving" ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Save className="w-4 h-4 mr-2" />}
@@ -743,7 +637,7 @@ export default function SettingsPage() {
                       type={showNewPassword ? "text" : "password"}
                       value={newPassword}
                       onChange={(e) => setNewPassword(e.target.value)}
-                      placeholder="At least 6 characters"
+                      placeholder="Create a strong password"
                       required
                       disabled={passwordStatus === "updating"}
                       className="pr-10 bg-background/60 dark:bg-background/40 border-border focus-visible:ring-primary/30 focus-visible:border-primary rounded-xl h-10 transition-colors"
@@ -781,6 +675,8 @@ export default function SettingsPage() {
                   </div>
                 </div>
               </div>
+
+              <PasswordChecklist id="settings-password-requirements" password={newPassword} />
 
               {passwordMessage && (
                 <div className={`text-xs font-medium ${passwordStatus === "saved" ? "text-emerald-500" : "text-destructive"}`}>
@@ -964,11 +860,6 @@ export default function SettingsPage() {
               <div className="mt-4 text-center">
                 <h3 className="text-sm font-semibold text-foreground">{name || "CIVIL-LEX User"}</h3>
                 {email && <p className="text-xs text-muted-foreground mt-0.5">{email}</p>}
-                {role && (
-                  <span className="inline-block mt-2 text-[11px] font-medium text-primary bg-primary/10 border border-primary/20 px-2.5 py-0.5 rounded-full">
-                    {role}
-                  </span>
-                )}
               </div>
             </div>
 

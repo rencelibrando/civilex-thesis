@@ -14,7 +14,6 @@ import { BACKEND_URL } from "@/lib/config";
 import { getCachedProfile, getInitialCachedProfile } from "@/lib/auth-storage";
 import {
   getPersonalizedGreeting,
-  getPreferredPromptCategories,
 } from "@/lib/user-persona";
 import { useAuth } from "./auth-context";
 
@@ -492,10 +491,10 @@ const DEFAULT_MESSAGES: Message[] = buildGreetingMessage(DEFAULT_GREETING);
 const ChatContext = createContext<ChatContextType | undefined>(undefined);
 
 export function ChatProvider({ children }: { children: ReactNode }) {
-  const initialProfile = typeof window !== "undefined" ? getInitialCachedProfile() : { role: "", practiceArea: "", firstName: "", fullName: "" };
+  const initialProfile = typeof window !== "undefined" ? getInitialCachedProfile() : { firstName: "", fullName: "" };
   const [messages, setMessages] = useState<Message[]>(() => {
-    if (initialProfile.role) {
-      return buildGreetingMessage(getPersonalizedGreeting(initialProfile.role, initialProfile.practiceArea, initialProfile.firstName));
+    if (initialProfile.firstName) {
+      return buildGreetingMessage(getPersonalizedGreeting(initialProfile.firstName));
     }
     return DEFAULT_MESSAGES;
   });
@@ -509,25 +508,17 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const [legalAnalytics, setLegalAnalytics] = useState<LegalAnalytics | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [followUpPrompts, setFollowUpPrompts] = useState<string[]>([]);
-  const [starterPrompts, setStarterPrompts] = useState<StarterPrompt[]>(() => {
-    if (initialProfile.practiceArea) {
-      const preferred = getPreferredPromptCategories(initialProfile.practiceArea);
-      return getRandomStarters(2, preferred);
-    }
-    return getRandomStarters(2);
-  });
+  const [starterPrompts, setStarterPrompts] = useState<StarterPrompt[]>(() => getRandomStarters(2));
 
   // ── User Profile (for personalization) ───────────────────────────────────
   // We read it from the Supabase session + local cache immediately so the
   // greeting and starter prompts are personalized on first render.
-  const [userRole, setUserRole] = useState(initialProfile.role);
-  const [userPracticeArea, setUserPracticeArea] = useState(initialProfile.practiceArea);
   const [userFirstName, setUserFirstName] = useState(initialProfile.firstName);
 
   // Resolve the personalized greeting from profile fields
   const buildPersonalizedMessages = useCallback(
-    (role: string, practiceArea: string, firstName: string): Message[] => {
-      const greeting = getPersonalizedGreeting(role, practiceArea, firstName);
+    (firstName: string): Message[] => {
+      const greeting = getPersonalizedGreeting(firstName);
       return buildGreetingMessage(greeting);
     },
     []
@@ -538,6 +529,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const charQueueRef = useRef<string[]>([]);
   const charIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const activeAssistantIdRef = useRef<number | null>(null);
+  const isExplicitlyStoppedRef = useRef<boolean>(false);
 
   // ── Load profile + personalize greeting on mount ──────────────────────────
   useEffect(() => {
@@ -552,26 +544,16 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
         // 1. Fast path: read from local cache bound to this user
         const cached = getCachedProfile(session.user.id);
-        const role =
-          cached?.role ||
-          session.user.user_metadata?.role ||
-          "";
-        const practiceArea =
-          cached?.practice_area ||
-          session.user.user_metadata?.practice_area ||
-          "";
         const fullName =
           cached?.full_name ||
           session.user.user_metadata?.full_name ||
           "";
         const firstName = fullName.split(" ")[0] || "";
 
-        setUserRole(role);
-        setUserPracticeArea(practiceArea);
         setUserFirstName(firstName);
 
         // 2. Personalize greeting (only update if different to avoid restarting typewriter)
-        const personalizedMsgs = buildPersonalizedMessages(role, practiceArea, firstName);
+        const personalizedMsgs = buildPersonalizedMessages(firstName);
         setMessages((prev) => {
           if (prev.length === 1 && prev[0].id === 1 && prev[0].content === personalizedMsgs[0].content) {
             return prev;
@@ -582,9 +564,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           return prev;
         });
 
-        // 3. Personalized starter prompts (bias toward practice area)
-        const preferredCategories = getPreferredPromptCategories(practiceArea);
-        setStarterPrompts(getRandomStarters(2, preferredCategories));
+        // 3. Random starter prompts
+        setStarterPrompts(getRandomStarters(2));
       } catch {
         // Fallback to generic defaults
         setStarterPrompts(getRandomStarters(2));
@@ -595,9 +576,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const refreshStarters = useCallback(() => {
-    const preferredCategories = getPreferredPromptCategories(userPracticeArea);
-    setStarterPrompts(getRandomStarters(2, preferredCategories));
-  }, [userPracticeArea]);
+    setStarterPrompts(getRandomStarters(2));
+  }, []);
 
 
   // Character Stream Queue Management
@@ -689,9 +669,77 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   }, [flushCharQueueInstantly]);
 
 
+  // Tab-switch / mobile iOS disconnection recovery:
+  // When a mobile tab is backgrounded, iOS terminates the SSE stream. The server detached
+  // background task continues and commits the message to the DB. This polling loop
+  // detects and displays the completed answer upon returning to the app.
+  const pollForRecoveredAssistantMessage = useCallback(
+    async (
+      targetSessionId: string,
+      targetAssistantId: number,
+      authToken: string
+    ): Promise<boolean> => {
+      // Poll every 2s for up to 90s (45 attempts)
+      for (let attempt = 0; attempt < 45; attempt++) {
+        if (isExplicitlyStoppedRef.current) return false;
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        if (isExplicitlyStoppedRef.current) return false;
+
+        try {
+          const res = await fetch(`${BACKEND_URL}/api/sessions/${targetSessionId}/messages`, {
+            headers: {
+              ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+            },
+          });
+          if (res.ok) {
+            const dbMsgs = await res.json();
+            if (Array.isArray(dbMsgs) && dbMsgs.length > 0) {
+              const lastAssistant = [...dbMsgs]
+                .reverse()
+                .find((m: any) => m.role === "assistant" && m.content && m.content.trim().length > 0);
+              if (lastAssistant) {
+                const recoveredCitations = lastAssistant.citations || [];
+                const recoveredAnalytics = lastAssistant.legal_analytics || null;
+
+                setMessages((prev) =>
+                  prev.map((m) =>
+                    m.id === targetAssistantId
+                      ? {
+                          ...m,
+                          content: lastAssistant.content,
+                          citations: recoveredCitations,
+                          legalAnalytics: recoveredAnalytics,
+                          ragStatus: { stage: "completed", message: "Analysis complete" },
+                        }
+                      : m
+                  )
+                );
+                setCurrentCitations(recoveredCitations);
+                setRetainedCitations((prev) => mergeCitations(prev, recoveredCitations));
+                if (recoveredAnalytics) {
+                  setLegalAnalytics(recoveredAnalytics);
+                }
+                const followUps = generateFollowUpPrompts(lastAssistant.content, recoveredCitations);
+                setFollowUpPrompts(followUps);
+                setRagStatus({ stage: "completed", message: "Analysis complete" });
+                setIsTyping(false);
+                return true;
+              }
+            }
+          }
+        } catch (pollErr) {
+          console.warn("Polling recovery attempt failed:", pollErr);
+        }
+      }
+      return false;
+    },
+    []
+  );
+
   // Stop Generating
 
-  const handleStop = useCallback(() => {
+  const handleStop = useCallback(async () => {
+    isExplicitlyStoppedRef.current = true;
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
@@ -699,12 +747,31 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     stopCharStream();
     setIsTyping(false);
     setRagStatus((prev) => (prev ? { ...prev, stage: "completed" } : null));
-  }, [stopCharStream]);
+
+    // Also notify backend to cancel active generation task if session exists
+    if (sessionId) {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const token = session?.access_token || "";
+        await fetch(`${BACKEND_URL}/api/chat/cancel`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+          body: JSON.stringify({ session_id: sessionId }),
+        });
+      } catch (err) {
+        console.warn("Failed to notify backend of cancel:", err);
+      }
+    }
+  }, [sessionId, stopCharStream]);
 
 
   // New Chat (Immediately stops any running request)
 
   const handleNewChat = useCallback(() => {
+    isExplicitlyStoppedRef.current = true;
     // 1. Instantly abort any active fetch request
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
@@ -721,12 +788,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     // 3. Reset state immediately — use personalized greeting if available
     setIsTyping(false);
     setRagStatus(null);
-    const resetMsgs =
-      userRole || userPracticeArea || userFirstName
-        ? buildGreetingMessage(
-            getPersonalizedGreeting(userRole, userPracticeArea, userFirstName)
-          )
-        : DEFAULT_MESSAGES;
+    const resetMsgs = userFirstName
+      ? buildGreetingMessage(getPersonalizedGreeting(userFirstName))
+      : DEFAULT_MESSAGES;
     setMessages(resetMsgs);
     setCurrentCitations([]);
     setRetainedCitations([]);
@@ -737,9 +801,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     setSessionId(null);
     setFollowUpPrompts([]);
 
-    // 4. Roll a fresh set of personalized prompt starters for the new chat!
+    // 4. Roll a fresh set of prompt starters for the new chat!
     refreshStarters();
-  }, [refreshStarters, userRole, userPracticeArea, userFirstName]);
+  }, [refreshStarters, userFirstName]);
 
   // Reset chat if the logged-in user changes to prevent cross-account chat bleed
   let authUserId: string | null = null;
@@ -793,10 +857,13 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     ]);
 
     startCharStream(assistantId);
+    isExplicitlyStoppedRef.current = false;
 
     let fullResponseAccumulator = "";
     let receivedCitations: any[] = [];
     let receivedFollowUps = false;
+    let activeSessionId: string | null = sessionId;
+    let token = "";
 
     try {
       const controller = new AbortController();
@@ -805,9 +872,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       const {
         data: { session },
       } = await supabase.auth.getSession();
-      const token = session?.access_token || "";
+      token = session?.access_token || "";
 
-      let activeSessionId = sessionId;
       if (!activeSessionId) {
         try {
           const createRes = await fetch(`${BACKEND_URL}/api/sessions`, {
@@ -1041,6 +1107,35 @@ export function ChatProvider({ children }: { children: ReactNode }) {
               : msg
           )
         );
+      } else if (activeSessionId && !isExplicitlyStoppedRef.current) {
+        // Tab-switch / mobile iOS disconnection recovery: poll session messages from DB
+        setRagStatus({
+          stage: "streaming",
+          message: "Reconnecting to legal analysis...",
+        });
+        const recovered = await pollForRecoveredAssistantMessage(
+          activeSessionId,
+          assistantId,
+          token
+        );
+        if (!recovered && !isExplicitlyStoppedRef.current) {
+          setRagStatus({
+            stage: "error",
+            message: "Service connection error",
+          });
+          setMessages((prev) =>
+            prev.map((msg) =>
+              msg.id === assistantId
+                ? {
+                  ...msg,
+                  content:
+                    msg.content ||
+                    "> ⚠️ **Connection Notice**\n>\n> Unable to connect to the legal service. The model service (LM Studio) may be offline. Please verify that LM Studio is running and try again.",
+                }
+                : msg
+            )
+          );
+        }
       } else {
         setRagStatus({
           stage: "error",
@@ -1102,10 +1197,12 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     ]);
 
     startCharStream(assistantId);
+    isExplicitlyStoppedRef.current = false;
 
     let fullResponseAccumulator = "";
     let receivedCitations: any[] = [];
     let receivedFollowUps = false;
+    let token = "";
 
     try {
       const controller = new AbortController();
@@ -1114,7 +1211,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       const {
         data: { session },
       } = await supabase.auth.getSession();
-      const token = session?.access_token || "";
+      token = session?.access_token || "";
 
       // Save clarification answer as user message
       if (sessionId) {
@@ -1297,6 +1394,35 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
       if (error.name === "AbortError") {
         setRagStatus(null);
+      } else if (sessionId && !isExplicitlyStoppedRef.current) {
+        // Tab-switch / mobile iOS disconnection recovery: poll session messages from DB
+        setRagStatus({
+          stage: "streaming",
+          message: "Reconnecting to legal analysis...",
+        });
+        const recovered = await pollForRecoveredAssistantMessage(
+          sessionId,
+          assistantId,
+          token
+        );
+        if (!recovered && !isExplicitlyStoppedRef.current) {
+          setRagStatus({
+            stage: "error",
+            message: "Service connection error",
+          });
+          setMessages((prev) =>
+            prev.map((msg) =>
+              msg.id === assistantId
+                ? {
+                  ...msg,
+                  content:
+                    msg.content ||
+                    "> ⚠️ **Connection Notice**\n>\n> Unable to connect to the legal service. The model service (LM Studio) may be offline. Please verify that LM Studio is running and try again.",
+                }
+                : msg
+            )
+          );
+        }
       } else {
         setRagStatus({
           stage: "error",

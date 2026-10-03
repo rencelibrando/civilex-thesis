@@ -29,6 +29,7 @@ import {
   getDashboardTag,
   getActionCardCopy,
   getSearchPlaceholder,
+  getMobileSearchPlaceholder,
 } from "@/lib/user-persona";
 
 interface SessionItem {
@@ -92,8 +93,6 @@ const CIVIL_CODE_BOOKS = [
 export default function DashboardPage() {
   const router = useRouter();
   const [userName, setUserName] = useState("");
-  const [userRole, setUserRole] = useState("");
-  const [userPracticeArea, setUserPracticeArea] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [recentSessions, setRecentSessions] = useState<SessionItem[]>([]);
   const [userDocs, setUserDocs] = useState<UserDocItem[]>([]);
@@ -101,20 +100,20 @@ export default function DashboardPage() {
   const [articlesCount, setArticlesCount] = useState<number>(2270);
   const [isLoading, setIsLoading] = useState(true);
 
-  // Derived persona copy — recomputed only when role/area changes
-  const dashboardTag = useMemo(() => getDashboardTag(userRole), [userRole]);
-  const dashboardSubtitle = useMemo(
-    () => getDashboardSubtitle(userRole, userPracticeArea),
-    [userRole, userPracticeArea]
-  );
-  const actionCards = useMemo(
-    () => getActionCardCopy(userRole),
-    [userRole]
-  );
-  const searchPlaceholder = useMemo(
-    () => getSearchPlaceholder(userRole),
-    [userRole]
-  );
+  // Default copy shared by every user
+  const dashboardTag = useMemo(() => getDashboardTag(), []);
+  const dashboardSubtitle = useMemo(() => getDashboardSubtitle(), []);
+  const actionCards = useMemo(() => getActionCardCopy(), []);
+  const searchPlaceholder = useMemo(() => getSearchPlaceholder(), []);
+  const mobileSearchPlaceholder = useMemo(() => getMobileSearchPlaceholder(), []);
+  const [isMobile, setIsMobile] = useState(false);
+
+  useEffect(() => {
+    const handleResize = () => setIsMobile(window.innerWidth < 640);
+    handleResize();
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
 
   useEffect(() => {
     async function loadDashboardData() {
@@ -142,14 +141,8 @@ export default function DashboardPage() {
         const cached = getCachedProfile(session.user.id);
         if (cached && cached.id === session.user.id && cached.full_name) {
           setUserName(cached.full_name);
-          setUserRole(cached.role || session.user.user_metadata?.role || "");
-          setUserPracticeArea(
-            cached.practice_area || session.user.user_metadata?.practice_area || ""
-          );
         } else if (session.user.user_metadata?.full_name) {
           setUserName(session.user.user_metadata.full_name);
-          setUserRole(session.user.user_metadata?.role || "");
-          setUserPracticeArea(session.user.user_metadata?.practice_area || "");
         }
 
         // Fetch user profile (no-store to eliminate cross-user cache hits)
@@ -167,12 +160,6 @@ export default function DashboardPage() {
             }
             if (data?.full_name) {
               setUserName(data.full_name);
-            }
-            if (data?.role) {
-              setUserRole(data.role);
-            }
-            if (data?.practice_area) {
-              setUserPracticeArea(data.practice_area);
             }
           })
           .catch((err) => console.error("Failed to load profile:", err));
@@ -352,19 +339,19 @@ export default function DashboardPage() {
         <div className="relative flex items-center w-full rounded-2xl border border-border/80 bg-card shadow-xs hover:border-border focus-within:border-primary/60 focus-within:ring-2 focus-within:ring-primary/20 transition-all p-1 sm:p-1.5">
           {/* Input Form */}
           <form onSubmit={handleSearchSubmit} className="relative flex items-center w-full min-w-0">
-            <Search className="absolute left-3.5 w-4 h-4 text-muted-foreground pointer-events-none" />
+            <Search className="absolute left-3 sm:left-3.5 w-3.5 h-3.5 sm:w-4 sm:h-4 text-muted-foreground pointer-events-none" />
             <input
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder={searchPlaceholder}
-              className="w-full bg-transparent pl-10 pr-24 py-1.5 sm:py-2 2xl:py-2.5 text-xs sm:text-sm border-0 outline-none text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-0"
+              placeholder={isMobile ? mobileSearchPlaceholder : searchPlaceholder}
+              className="w-full bg-transparent pl-8.5 sm:pl-10 pr-20 sm:pr-24 py-1.5 sm:py-2 2xl:py-2.5 text-[11px] sm:text-xs md:text-sm border-0 outline-none text-foreground placeholder:text-[10.5px] sm:placeholder:text-xs md:placeholder:text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-0"
             />
-            <div className="absolute right-1.5 flex items-center gap-1.5">
+            <div className="absolute right-1 sm:right-1.5 flex items-center gap-1.5">
               <Button
                 type="submit"
                 size="sm"
-                className="bg-[#100771] hover:bg-[#100771]/90 text-white dark:bg-blue-600 dark:hover:bg-blue-500 dark:text-white rounded-xl px-3 sm:px-4 h-7.5 sm:h-8 font-medium shadow-xs transition-all cursor-pointer text-xs"
+                className="bg-[#100771] hover:bg-[#100771]/90 text-white dark:bg-blue-600 dark:hover:bg-blue-500 dark:text-white rounded-xl px-2.5 sm:px-4 h-7 sm:h-8 font-medium shadow-xs transition-all cursor-pointer text-[11px] sm:text-xs"
               >
                 Search
               </Button>

@@ -5,6 +5,19 @@ import { PresenceService } from '../services/presence.js';
 export const setupProxies = (app) => {
   const ragServiceUrl = process.env.RAG_SERVICE_URL || 'http://localhost:8000';
 
+  // Proxy cancel requests to Python RAG service
+  app.post(
+    '/api/chat/cancel',
+    requireAuth,
+    createProxyMiddleware({
+      target: ragServiceUrl,
+      changeOrigin: true,
+      pathRewrite: {
+        '^/api/chat/cancel': '/cancel',
+      },
+    })
+  );
+
   // Apply proxy middleware to chat endpoint
   app.post(
     '/api/chat',
@@ -19,16 +32,6 @@ export const setupProxies = (app) => {
       },
       on: {
         proxyReq: (proxyReq, req, res) => {
-          // If the downstream client disconnects (tab closed, refreshed, or request aborted),
-          // immediately abort the upstream request to Python RAG so it frees the GPU/queue slot!
-          res.on('close', () => {
-            if (!res.writableEnded) {
-              try {
-                proxyReq.destroy();
-              } catch (_) { }
-            }
-          });
-
           if (req.user) {
             proxyReq.setHeader('x-user-id', req.user.id);
             if (req.user.email) {
@@ -38,12 +41,6 @@ export const setupProxies = (app) => {
               req.user.user_metadata?.full_name ||
               (req.user.email ? req.user.email.split('@')[0] : 'User');
             proxyReq.setHeader('x-user-name', encodeURIComponent(fullName));
-            const role = req.user.user_metadata?.role || 'Normal Citizen / General Public';
-            proxyReq.setHeader('x-user-role', encodeURIComponent(role));
-            const practiceArea = req.user.user_metadata?.practice_area || '';
-            if (practiceArea) {
-              proxyReq.setHeader('x-practice-area', encodeURIComponent(practiceArea));
-            }
 
             try {
               PresenceService.touch(req.user, req, 'Running Legal Query');

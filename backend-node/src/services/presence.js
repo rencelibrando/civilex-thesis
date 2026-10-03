@@ -25,7 +25,7 @@ dbPool.on('error', (err) => {
 });
 
 // In-memory active heartbeats map
-// userId -> { userId, email, fullName, role, ip, client, lastActive, action }
+// userId -> { userId, email, fullName, ip, client, lastActive, action }
 const inMemoryHeartbeats = new Map();
 
 // Helper to simplify user-agent string
@@ -61,7 +61,6 @@ export class PresenceService {
     const fullName =
       user.user_metadata?.full_name ||
       (email ? email.split('@')[0] : 'User');
-    const role = user.user_metadata?.role || 'Normal Citizen';
 
     let ip = '127.0.0.1';
     if (req) {
@@ -81,7 +80,6 @@ export class PresenceService {
       userId,
       email,
       fullName,
-      role,
       ip,
       client,
       lastActive: Date.now(),
@@ -113,7 +111,6 @@ export class PresenceService {
           userId: record.userId,
           email: record.email,
           fullName: record.fullName,
-          role: record.role,
           ip: record.ip,
           client: record.client,
           lastSeenSec: elapsedSec,
@@ -132,7 +129,6 @@ export class PresenceService {
           s.user_id,
           u.email,
           COALESCE(u.raw_user_meta_data->>'full_name', split_part(u.email, '@', 1)) as full_name,
-          COALESCE(u.raw_user_meta_data->>'role', 'Normal Citizen') as role,
           ROUND(EXTRACT(EPOCH FROM (NOW() - s.updated_at)))::int as last_seen_sec,
           COALESCE(host(s.ip), 'local') as ip,
           s.user_agent
@@ -159,7 +155,6 @@ export class PresenceService {
             userId: row.user_id,
             email: row.email,
             fullName: row.full_name || row.email,
-            role: row.role || 'User',
             ip: row.ip || 'local',
             client: parseClientDevice(row.user_agent),
             lastSeenSec: lastSeen,

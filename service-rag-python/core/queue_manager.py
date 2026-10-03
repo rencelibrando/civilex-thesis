@@ -55,8 +55,7 @@ class QueryQueueManager:
         user_id: str = "anon",
         session_id: str = "",
         user_name: str = "",
-        user_email: str = "",
-        user_role: str = ""
+        user_email: str = ""
     ) -> Tuple[bool, int, str]:
         """
         Request entry into the query processing pipeline.
@@ -94,7 +93,6 @@ class QueryQueueManager:
                     "user_id": user_id,
                     "user_name": user_name,
                     "user_email": user_email,
-                    "user_role": user_role,
                     "session_id": session_id,
                     "started_at": time.time(),
                 }
@@ -108,7 +106,6 @@ class QueryQueueManager:
                 "user_id": user_id,
                 "user_name": user_name,
                 "user_email": user_email,
-                "user_role": user_role,
                 "session_id": session_id,
                 "event": event,
                 "entered_at": time.time(),
@@ -159,7 +156,6 @@ class QueryQueueManager:
                     "user_id": next_waiter["user_id"],
                     "user_name": next_waiter.get("user_name", ""),
                     "user_email": next_waiter.get("user_email", ""),
-                    "user_role": next_waiter.get("user_role", ""),
                     "session_id": next_waiter["session_id"],
                     "started_at": time.time(),
                 }
@@ -177,7 +173,6 @@ class QueryQueueManager:
                 "user_id": slot.get("user_id"),
                 "user_name": slot.get("user_name", ""),
                 "user_email": slot.get("user_email", ""),
-                "user_role": slot.get("user_role", ""),
                 "session_id": slot.get("session_id"),
                 "running_time_sec": round(now - slot.get("started_at", now), 1)
             })
@@ -190,7 +185,6 @@ class QueryQueueManager:
                 "user_id": w.get("user_id"),
                 "user_name": w.get("user_name", ""),
                 "user_email": w.get("user_email", ""),
-                "user_role": w.get("user_role", ""),
                 "session_id": w.get("session_id"),
                 "wait_time_sec": round(now - w.get("entered_at", now), 1)
             })

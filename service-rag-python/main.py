@@ -2,6 +2,7 @@ import os
 import re
 import json
 import asyncio
+import uuid
 from decimal import Decimal
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
 from fastapi.responses import StreamingResponse
@@ -21,6 +22,9 @@ from core.config import (
 from core.queue_manager import queue_manager
 from services import memory as session_memory
 from services import followups as followup_svc
+
+# Registry of active detached generation tasks keyed by session_id
+active_generation_tasks: Dict[str, asyncio.Task] = {}
 
 logging.basicConfig(
     level=logging.INFO,
@@ -347,6 +351,21 @@ class SearchRequest(BaseModel):
     document_name: Optional[str] = None
     prior_citations: List[Dict] = []
     clarification_context: Optional[Dict] = None  # Carries user's answers to clarification questions
+
+class CancelRequest(BaseModel):
+    session_id: str
+
+@app.post("/cancel")
+async def cancel_generation(cancel_req: CancelRequest):
+    """Explicitly cancels an active background generation task for a session, releasing GPU/queue slot."""
+    session_id = cancel_req.session_id
+    if session_id and session_id in active_generation_tasks:
+        task = active_generation_tasks.get(session_id)
+        if task and not task.done():
+            task.cancel()
+            logging.info(f"Explicitly cancelled active generation task for session: {session_id}")
+            return {"status": "cancelled", "session_id": session_id}
+    return {"status": "not_found_or_already_done", "session_id": session_id}
 
 # Stopwords for both English and conversational Filipino/Tagalog
 SEARCH_STOPWORDS = {
@@ -1545,86 +1564,28 @@ async def search_documents(request: SearchRequest, raw_req: Request = None):
             user_name = urllib.parse.unquote(user_name_raw) if user_name_raw else ""
         except Exception:
             user_name = user_name_raw
-        user_role_raw = (raw_req.headers.get("x-user-role") if raw_req else None) or ""
-        try:
-            user_role = urllib.parse.unquote(user_role_raw) if user_role_raw else ""
-        except Exception:
-            user_role = user_role_raw
-        practice_area_raw = (raw_req.headers.get("x-practice-area") if raw_req else None) or ""
-        try:
-            practice_area = urllib.parse.unquote(practice_area_raw) if practice_area_raw else ""
-        except Exception:
-            practice_area = practice_area_raw
-
-        def _resolve_role_key(role: str) -> str:
-            """Collapse the stored role string into one of three canonical keys."""
-            r = (role or "").lower()
-            if any(k in r for k in ("attorney", "litigation", "in-house", "judiciary",
-                                    "court attorney", "legal researcher", "paralegal",
-                                    "faculty", "professor", "government legal")):
-                return "attorney"
-            if any(k in r for k in ("student", "bar candidate", "pre-bar", "academic")):
-                return "student"
-            return "citizen"
-
-        def build_user_persona_prefix(role: str, area: str, name: str) -> str:
+        def build_user_persona_prefix(name: str) -> str:
             """
-            Returns a short, role-aware persona prefix injected at the top of
-            every in-domain system prompt.  It shapes the LLM's vocabulary,
-            depth of analysis, and tone WITHOUT changing any retrieval logic.
+            Returns a concise persona prefix injected at the top of every system prompt,
+            greeting the user by first name if available and setting a clear, accessible
+            Philippine Civil Code analysis tone.
             """
-            role_key = _resolve_role_key(role)
             first_name = (name.split(" ")[0] if name else "").strip()
             greeting = f"The user's first name is {first_name}. " if first_name else ""
-            area_clause = (
-                f"Their primary focus area is **{area.replace('(', '').replace(')', '').strip()}**. "
-                if area and "general" not in area.lower()
-                else ""
+            return (
+                f"USER PROFILE:\n"
+                f"{greeting}"
+                f"COMMUNICATION STYLE FOR THIS SESSION:\n"
+                f"- Write in clear, structured, and accessible language.\n"
+                f"- Prioritize statutory precision: cite the exact Article number and Title from the Philippine Civil Code (RA 386).\n"
+                f"- Clearly explain legal concepts, requisites, and practical remedies in straightforward terms.\n"
+                f"- If the user's query is in Filipino/Tagalog, respond in clear, professional Filipino/Tagalog.\n\n"
             )
 
-            if role_key == "attorney":
-                return (
-                    f"USER PROFILE — LEGAL PROFESSIONAL:\n"
-                    f"{greeting}"
-                    f"The user is a licensed attorney or legal practitioner. {area_clause}"
-                    f"COMMUNICATION STYLE FOR THIS SESSION:\n"
-                    f"- Use professional legal terminology without over-explaining basic concepts.\n"
-                    f"- Prioritize statutory precision: cite the exact Article number, Book, and Title.\n"
-                    f"- Provide a rigorous analysis of requisites, exceptions, and jurisprudential qualifications.\n"
-                    f"- Include practical litigation notes where applicable (jurisdiction, prescriptive periods, cause of action).\n"
-                    f"- Assume familiarity with legal Latin and procedural law; no need to define standard terms.\n\n"
-                )
-            elif role_key == "student":
-                return (
-                    f"USER PROFILE — LAW STUDENT / BAR CANDIDATE:\n"
-                    f"{greeting}"
-                    f"The user is a law student or bar candidate. {area_clause}"
-                    f"COMMUNICATION STYLE FOR THIS SESSION:\n"
-                    f"- Structure your answers for bar exam readiness: lead with the black-letter rule, then the exceptions.\n"
-                    f"- Use mnemonic-friendly structure (enumerate elements/requisites clearly with bold labels).\n"
-                    f"- Cite the controlling Article first, then the landmark Supreme Court case that applied it.\n"
-                    f"- Briefly explain WHY a rule exists (ratio legis) to aid doctrinal understanding.\n"
-                    f"- You may use legal Latin with a short parenthetical explanation.\n\n"
-                )
-            else:  # citizen
-                return (
-                    f"USER PROFILE — GENERAL PUBLIC / ORDINARY CITIZEN:\n"
-                    f"{greeting}"
-                    f"The user is a member of the general public with no legal background. {area_clause}"
-                    f"COMMUNICATION STYLE FOR THIS SESSION:\n"
-                    f"- Write in plain, everyday language. Replace legal jargon with simple words.\n"
-                    f"- Every time you use a legal term (e.g., quasi-delict, rescission, legitime), "
-                    f"immediately explain what it means in one simple sentence.\n"
-                    f"- Use relatable Filipino examples and analogies to illustrate abstract legal concepts.\n"
-                    f"- Prioritize the user's practical next step (what they should do) over theoretical analysis.\n"
-                    f"- Avoid Latin. Match the user's language: a Tagalog/Taglish query gets a Tagalog/Taglish answer.\n\n"
-                )
-
-        user_persona_prefix = build_user_persona_prefix(user_role, practice_area, user_name)
+        user_persona_prefix = build_user_persona_prefix(user_name)
 
         logging.info(
-            f"Received search request from user [{user_name or user_email or user_identifier}] "
-            f"role=[{user_role or 'unknown'}] area=[{practice_area or 'none'}]: {request.query[:80]}"
+            f"Received search request from user [{user_name or user_email or user_identifier}]: {request.query[:80]}"
         )
 
 
@@ -1634,7 +1595,6 @@ async def search_documents(request: SearchRequest, raw_req: Request = None):
                 session_id=request.session_id or "",
                 user_name=user_name,
                 user_email=user_email,
-                user_role=user_role,
             )
 
             if err == "QUEUE_FULL":
@@ -2580,10 +2540,47 @@ CONTEXT:
                 except Exception as clean_err:
                     logging.error(f"Error releasing queue slot for ticket #{ticket}: {clean_err}")
 
+        session_key = request.session_id or f"anon_{uuid.uuid4().hex}"
+        sse_queue: asyncio.Queue = asyncio.Queue()
+
+        async def pipeline_worker():
+            gen = sse_generator()
+            try:
+                async for chunk in gen:
+                    await sse_queue.put(chunk)
+            except asyncio.CancelledError:
+                logging.info(f"Pipeline worker explicitly cancelled for session {session_key}")
+                try:
+                    await gen.aclose()
+                except Exception:
+                    pass
+                raise
+            except Exception as e:
+                logging.error(f"Pipeline worker unhandled error for session {session_key}: {e}", exc_info=True)
+                await sse_queue.put(f"data: {dumps({'type': 'error', 'message': 'An error occurred while generating the legal analysis.'})}\n\n")
+            finally:
+                if session_key in active_generation_tasks:
+                    active_generation_tasks.pop(session_key, None)
+                await sse_queue.put(None)
+
+        worker_task = asyncio.create_task(pipeline_worker())
+        active_generation_tasks[session_key] = worker_task
+
+        async def sse_consumer():
+            try:
+                while True:
+                    item = await sse_queue.get()
+                    if item is None:
+                        break
+                    yield item
+            except (asyncio.CancelledError, GeneratorExit):
+                logging.info(f"Client disconnected from SSE stream for session {session_key}. Background worker continues.")
+
         return StreamingResponse(
-            sse_generator(),
+            sse_consumer(),
             media_type="text/event-stream"
         )
+
 
     except HTTPException:
         raise

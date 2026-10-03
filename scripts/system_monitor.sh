@@ -491,27 +491,25 @@ generate_frame() {
     [ -n "$lm_lat" ] && lm_latency="${lm_lat}ms"
 
     # Parse active slots
-    while IFS=$'\t' read -r t_num u_display u_mail u_role run_sec; do
+    while IFS=$'\t' read -r t_num u_display u_mail run_sec; do
       [ -z "$t_num" ] && continue
-      active_slot_lines+=("$t_num	$u_display	$u_mail	$u_role	$run_sec")
+      active_slot_lines+=("$t_num	$u_display	$u_mail	$run_sec")
     done < <(echo "$queue_json" | jq -r '(.active_slots // [])[] | [
       (.ticket|tostring),
       ([.user_name, .user_email, .user_id] | map(select(. != null and . != "")) | first // "Unknown"),
       (.user_email // ""),
-      (.user_role // ""),
       ((.running_time_sec // 0)|tostring)
     ] | @tsv' 2>/dev/null || true)
 
     # Parse waiters
-    while IFS=$'\t' read -r pos t_num u_display u_mail u_role wait_sec; do
+    while IFS=$'\t' read -r pos t_num u_display u_mail wait_sec; do
       [ -z "$t_num" ] && continue
-      waiter_lines+=("$pos	$t_num	$u_display	$u_mail	$u_role	$wait_sec")
+      waiter_lines+=("$pos	$t_num	$u_display	$u_mail	$wait_sec")
     done < <(echo "$queue_json" | jq -r '(.waiters // [])[] | [
       ((.position // 1)|tostring),
       (.ticket|tostring),
       ([.user_name, .user_email, .user_id] | map(select(. != null and . != "")) | first // "Unknown"),
       (.user_email // ""),
-      (.user_role // ""),
       ((.wait_time_sec // 0)|tostring)
     ] | @tsv' 2>/dev/null || true)
   fi
@@ -525,10 +523,10 @@ generate_frame() {
 
   if [ -n "$users_json" ] && command -v jq >/dev/null 2>&1; then
     online_count=$(echo "$users_json" | jq -r '.onlineCount // (.users | length) // 0' 2>/dev/null || echo 0)
-    while IFS=$'\t' read -r u_name u_email u_role u_status u_last_seen u_ip u_client; do
+    while IFS=$'\t' read -r u_name u_email u_status u_last_seen u_ip u_client; do
       [ -z "$u_email" ] && [ -z "$u_name" ] && continue
-      online_users_lines+=("$u_name	$u_email	$u_role	$u_status	$u_last_seen	$u_ip	$u_client")
-    done < <(echo "$users_json" | jq -r '(.users // [])[] | [.fullName // "", .email // "", .role // "", .status // "Active", ((.lastSeenSec // 0)|tostring), .ip // "-", .client // "Browser"] | @tsv' 2>/dev/null || true)
+      online_users_lines+=("$u_name	$u_email	$u_status	$u_last_seen	$u_ip	$u_client")
+    done < <(echo "$users_json" | jq -r '(.users // [])[] | [.fullName // "", .email // "", .status // "Active", ((.lastSeenSec // 0)|tostring), .ip // "-", .client // "Browser"] | @tsv' 2>/dev/null || true)
   fi
 
   # Direct database fallback only if backend returned 0 users AND Postgres port 54322 is responding
@@ -538,7 +536,6 @@ generate_frame() {
       SELECT DISTINCT ON (s.user_id)
         COALESCE(u.raw_user_meta_data->>'full_name', split_part(u.email, '@', 1)) as full_name,
         u.email,
-        COALESCE(u.raw_user_meta_data->>'role', 'Normal Citizen') as role,
         'Recent Session' as status,
         ROUND(EXTRACT(EPOCH FROM (NOW() - s.updated_at)))::int as last_seen_sec,
         COALESCE(host(s.ip), 'local') as ip,
@@ -550,7 +547,7 @@ generate_frame() {
     " 2>/dev/null || true)
 
     if [ -n "$pg_out" ]; then
-      while IFS=$'\t' read -r u_name u_email u_role u_status u_last_seen u_ip u_client; do
+      while IFS=$'\t' read -r u_name u_email u_status u_last_seen u_ip u_client; do
         [ -z "$u_email" ] && [ -z "$u_name" ] && continue
         local short_client="Browser"
         if [[ "$u_client" =~ (iPhone|iPad) ]]; then short_client="iOS Safari";
@@ -559,7 +556,7 @@ generate_frame() {
         elif [[ "$u_client" =~ Linux ]]; then short_client="Linux";
         elif [[ "$u_client" =~ (Macintosh|Mac OS) ]]; then short_client="macOS";
         fi
-        online_users_lines+=("$u_name	$u_email	$u_role	$u_status	$u_last_seen	$u_ip	$short_client")
+        online_users_lines+=("$u_name	$u_email	$u_status	$u_last_seen	$u_ip	$short_client")
       done <<< "$pg_out"
       online_count=${#online_users_lines[@]}
     fi
@@ -653,18 +650,11 @@ generate_frame() {
 
   if [ ${#active_slot_lines[@]} -gt 0 ]; then
     for as_line in "${active_slot_lines[@]}"; do
-      IFS=$'\t' read -r as_ticket as_display as_mail as_role as_sec <<< "$as_line"
+      IFS=$'\t' read -r as_ticket as_display as_mail as_sec <<< "$as_line"
       local as_id_str="${BOLD}${WHITE}${as_display}${RESET}"
       if [ "$term_cols" -ge 115 ] && [ -n "$as_mail" ] && [ "$as_mail" != "$as_display" ]; then
         as_id_str+=" ${DIM}<${as_mail}>${RESET}"
       fi
-
-      local short_role="$as_role"
-      if [[ "$short_role" =~ (Normal Citizen|General Public) ]]; then short_role="Citizen";
-      elif [[ "$short_role" =~ (Law Student|Bar Candidate) ]]; then short_role="Law Student";
-      elif [[ "$short_role" =~ (Attorney|Lawyer|Practitioner) ]]; then short_role="Attorney";
-      fi
-      [ -n "$short_role" ] && as_id_str+=" ${CYAN}[${short_role}]${RESET}"
 
       frame+="${BOLD}${BLUE}║${RESET}  ${MAGENTA}↳ Running Ticket #${as_ticket}:${RESET} ${as_id_str} ${DIM}(${as_sec}s running · Model: ${active_model})${RESET}${CLEAR_LINE}\n"
     done
@@ -679,12 +669,11 @@ generate_frame() {
     for w_line in "${waiter_lines[@]}"; do
       w_cnt=$((w_cnt + 1))
       [ "$w_cnt" -gt "$w_max" ] && break
-      IFS=$'\t' read -r w_pos w_ticket w_display w_mail w_role w_sec <<< "$w_line"
+      IFS=$'\t' read -r w_pos w_ticket w_display w_mail w_sec <<< "$w_line"
       local w_id_str="${BOLD}${WHITE}${w_display}${RESET}"
       if [ "$term_cols" -ge 115 ] && [ -n "$w_mail" ] && [ "$w_mail" != "$w_display" ]; then
         w_id_str+=" ${DIM}<${w_mail}>${RESET}"
       fi
-      [ -n "$w_role" ] && w_id_str+=" ${CYAN}[${w_role}]${RESET}"
       frame+="${BOLD}${BLUE}║${RESET}  ${YELLOW}↳ Waiting #${w_pos}:${RESET} ${YELLOW}⏳ Ticket #${w_ticket}${RESET} │ ${w_id_str} ${DIM}(${w_sec}s in line)${RESET}${CLEAR_LINE}\n"
     done
   fi
@@ -759,20 +748,19 @@ generate_frame() {
   if [ "$term_cols" -ge 160 ]; then
     local th_user="USER / IDENTITY"
     local th_mail="EMAIL ADDRESS"
-    local th_role="ROLE"
     local th_stat="ACTIVITY STATUS"
     local th_seen="LAST SEEN"
     local th_ip="IP ADDRESS"
     local th_client="CLIENT / PLATFORM"
     local th_info="SESSION DETAILS / HEARTBEAT"
     local table_hdr
-    printf -v table_hdr "  ${DIM}%-2s  %-26.26s  %-30.30s  %-16.16s  %-22.22s  %-12.12s  %-16.16s  %-24.24s  %s${RESET}" \
-      "#" "$th_user" "$th_mail" "$th_role" "$th_stat" "$th_seen" "$th_ip" "$th_client" "$th_info"
+    printf -v table_hdr "  ${DIM}%-2s  %-26.26s  %-30.30s  %-22.22s  %-12.12s  %-16.16s  %-24.24s  %s${RESET}" \
+      "#" "$th_user" "$th_mail" "$th_stat" "$th_seen" "$th_ip" "$th_client" "$th_info"
     frame+="${BOLD}${BLUE}║${RESET}${table_hdr}${CLEAR_LINE}\n"
   elif [ "$term_cols" -ge 115 ]; then
     local table_hdr
-    printf -v table_hdr "  ${DIM}%-2s  %-24.24s  %-26.26s  %-14.14s  %-18.18s  %-10.10s  %-22.22s${RESET}" \
-      "#" "USER / IDENTITY" "EMAIL ADDRESS" "ROLE" "STATUS" "SEEN" "CLIENT / PLATFORM"
+    printf -v table_hdr "  ${DIM}%-2s  %-24.24s  %-26.26s  %-18.18s  %-10.10s  %-22.22s${RESET}" \
+      "#" "USER / IDENTITY" "EMAIL ADDRESS" "STATUS" "SEEN" "CLIENT / PLATFORM"
     frame+="${BOLD}${BLUE}║${RESET}${table_hdr}${CLEAR_LINE}\n"
   fi
 
@@ -784,7 +772,7 @@ generate_frame() {
 
     for ((u_i=USER_SCROLL_OFFSET; u_i<slice_end; u_i++)); do
       local u_line="${online_users_lines[$u_i]}"
-      IFS=$'\t' read -r u_name u_email u_role u_status u_last_seen u_ip u_client <<< "$u_line"
+      IFS=$'\t' read -r u_name u_email u_status u_last_seen u_ip u_client <<< "$u_line"
 
       local dot="${GREEN}●${RESET}"
       local st_color="${GREEN}"
@@ -801,18 +789,6 @@ generate_frame() {
         dot="${YELLOW}●${RESET}"
         st_color="${YELLOW}"
       fi
-
-      local role_plain=""
-      if [[ "$u_role" =~ (Attorney|Lawyer|Practitioner) ]]; then role_plain="[Attorney]"
-      elif [[ "$u_role" =~ (Law Student|Bar Candidate) ]]; then role_plain="[Law Student]"
-      elif [[ "$u_role" =~ (Normal Citizen|General Public) ]]; then role_plain="[Citizen]"
-      elif [ -n "$u_role" ] && [ "$u_role" != "User" ]; then role_plain="[${u_role:0:15}]"
-      else role_plain="[Citizen]"
-      fi
-
-      local role_badge="${CYAN}${role_plain}${RESET}"
-      [[ "$role_plain" =~ Attorney ]] && role_badge="${MAGENTA}${role_plain}${RESET}"
-      [[ "$role_plain" =~ Student ]] && role_badge="${BLUE}${role_plain}${RESET}"
 
       local time_str="Active"
       if [ "$u_last_seen" -gt 60 ]; then
@@ -845,25 +821,22 @@ generate_frame() {
         elif [ "$u_last_seen" -gt 300 ]; then
           extra_detail="Session Idle (> 5 minutes inactive)"
         fi
-        local name_field email_field role_field status_field tail_fields
+        local name_field email_field status_field tail_fields
         printf -v name_field "%-26.26s" "$u_name"
         printf -v email_field "%-30.30s" "$u_email"
-        printf -v role_field "%-16.16s" "$role_plain"
-        local pad_role="${role_field:${#role_plain}}"
-        local colored_role="${role_badge}${pad_role}"
 
         printf -v status_field "%-22.22s" "$disp_status"
         local pad_st="${status_field:${#disp_status}}"
         local colored_status="${st_color}${disp_status}${RESET}${pad_st}"
 
         printf -v tail_fields "%-12.12s  %-16.16s  %-24.24s  %s" "$time_str" "$u_ip" "$disp_client" "$extra_detail"
-        user_content="  ${dot}  ${BOLD}${WHITE}${name_field}${RESET}  ${DIM}${email_field}${RESET}  ${colored_role}  ${colored_status}  ${DIM}${tail_fields}${RESET}"
+        user_content="  ${dot}  ${BOLD}${WHITE}${name_field}${RESET}  ${DIM}${email_field}${RESET}  ${colored_status}  ${DIM}${tail_fields}${RESET}"
       elif [ "$term_cols" -ge 120 ]; then
         local email_str=""
         [ -n "$u_email" ] && [ "$u_email" != "$u_name" ] && email_str=" ${DIM}<${u_email}>${RESET}"
-        user_content="  ${dot} ${BOLD}${WHITE}${u_name}${RESET}${email_str} ${role_badge} ${st_color}${disp_status}${RESET} ${DIM}(${time_str} · IP: ${u_ip} · ${disp_client})${RESET}"
+        user_content="  ${dot} ${BOLD}${WHITE}${u_name}${RESET}${email_str} ${st_color}${disp_status}${RESET} ${DIM}(${time_str} · IP: ${u_ip} · ${disp_client})${RESET}"
       else
-        user_content="  ${dot} ${BOLD}${WHITE}${u_name}${RESET} ${role_badge} ${st_color}${disp_status}${RESET} ${DIM}(${time_str} · ${disp_client})${RESET}"
+        user_content="  ${dot} ${BOLD}${WHITE}${u_name}${RESET} ${st_color}${disp_status}${RESET} ${DIM}(${time_str} · ${disp_client})${RESET}"
       fi
 
       frame+="${BOLD}${BLUE}║${RESET}${user_content}${scroll_track}${CLEAR_LINE}\n"

@@ -839,13 +839,13 @@ export default function ChatPage() {
                       key={item.id}
                       type="button"
                       onClick={() => handleSend(item.prompt)}
-                      className="group flex items-center justify-between gap-2 px-3 py-1.5 sm:py-2 rounded-xl text-xs bg-accent/40 dark:bg-accent/20 hover:bg-[#100771] dark:hover:bg-blue-600 hover:text-white text-foreground border border-border/70 hover:border-transparent dark:hover:border-transparent transition-all shadow-2xs hover:shadow-xs active:scale-98 cursor-pointer w-full text-left"
+                      className="group flex items-start sm:items-center justify-between gap-2 px-3 py-2 sm:py-2 rounded-xl text-xs bg-accent/40 dark:bg-accent/20 hover:bg-[#100771] dark:hover:bg-blue-600 hover:text-white text-foreground border border-border/70 hover:border-transparent dark:hover:border-transparent transition-all shadow-2xs hover:shadow-xs active:scale-98 cursor-pointer w-full text-left min-h-[2.5rem]"
                       title={item.prompt}
                     >
-                      <span className="truncate text-xs font-normal group-hover:text-white flex-1">
+                      <span className="line-clamp-2 sm:line-clamp-2 text-left text-[11px] sm:text-xs leading-snug sm:leading-normal font-normal group-hover:text-white flex-1 break-words">
                         {item.prompt}
                       </span>
-                      <ChevronRight className="w-3.5 h-3.5 opacity-50 group-hover:opacity-100 group-hover:text-white group-hover:translate-x-0.5 transition-all shrink-0" />
+                      <ChevronRight className="w-3.5 h-3.5 mt-0.5 sm:mt-0 opacity-50 group-hover:opacity-100 group-hover:text-white group-hover:translate-x-0.5 transition-all shrink-0" />
                     </button>
                   ))}
                 </div>
@@ -867,11 +867,11 @@ export default function ChatPage() {
                       key={i}
                       type="button"
                       onClick={() => handleSend(prompt)}
-                      className="group flex items-center justify-between gap-2 px-3 py-1.5 sm:py-2 rounded-xl text-xs bg-accent/50 dark:bg-accent/20 hover:bg-[#100771] dark:hover:bg-blue-600 hover:text-white text-foreground border border-border/80 hover:border-transparent dark:hover:border-transparent transition-all shadow-2xs hover:shadow-xs active:scale-98 cursor-pointer w-full text-left"
+                      className="group flex items-start sm:items-center justify-between gap-2 px-3 py-2 sm:py-2 rounded-xl text-xs bg-accent/50 dark:bg-accent/20 hover:bg-[#100771] dark:hover:bg-blue-600 hover:text-white text-foreground border border-border/80 hover:border-transparent dark:hover:border-transparent transition-all shadow-2xs hover:shadow-xs active:scale-98 cursor-pointer w-full text-left min-h-[2.5rem]"
                       title={prompt}
                     >
-                      <span className="truncate text-left text-xs font-normal group-hover:text-white flex-1">{prompt}</span>
-                      <ChevronRight className="w-3.5 h-3.5 opacity-60 group-hover:opacity-100 group-hover:text-white group-hover:translate-x-0.5 transition-all shrink-0" />
+                      <span className="line-clamp-2 sm:line-clamp-2 text-left text-[11px] sm:text-xs leading-snug sm:leading-normal font-normal group-hover:text-white flex-1 break-words">{prompt}</span>
+                      <ChevronRight className="w-3.5 h-3.5 mt-0.5 sm:mt-0 opacity-60 group-hover:opacity-100 group-hover:text-white group-hover:translate-x-0.5 transition-all shrink-0" />
                     </button>
                   ))}
                 </div>
@@ -920,7 +920,7 @@ export default function ChatPage() {
       {/* ------------------------------------------------------------------ */}
       {(() => {
         const citationsBody = (
-          <div className="flex flex-col h-full bg-card min-h-0 overflow-hidden">
+          <div className="flex flex-col h-full bg-card min-h-0 overflow-hidden w-full max-w-full">
             {/* Panel header with Filter Tabs */}
             <div className="p-3.5 border-b border-border bg-card flex flex-col gap-2.5 shrink-0">
               <div className="flex items-center justify-between">
@@ -959,7 +959,7 @@ export default function ChatPage() {
             </div>
 
             {/* Scrollable citations list */}
-            <div ref={citationScrollRef} className="flex-1 overflow-y-auto p-4 custom-scrollbar min-h-0">
+            <div ref={citationScrollRef} className="flex-1 overflow-y-auto overflow-x-hidden overscroll-contain touch-pan-y p-3 sm:p-4 custom-scrollbar min-h-0 min-w-0">
               {/* NLI Statutory Grounding Reliability Header */}
               {(() => {
                 const isNliEvaluating =
@@ -978,7 +978,7 @@ export default function ChatPage() {
                     tabIndex={0}
                     onClick={() => setIsNliModalOpen(true)}
                     onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && setIsNliModalOpen(true)}
-                    className="p-3 mb-3 rounded-xl bg-card border border-border hover:border-primary/40 hover:bg-muted/40 transition-all duration-200 shadow-xs cursor-pointer group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                    className="p-3 mb-3 rounded-xl bg-card border border-border hover:border-primary/40 hover:bg-muted/40 transition-all duration-200 shadow-xs cursor-pointer group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary w-full max-w-full overflow-hidden touch-pan-y"
                     title="Click to view full Natural Language Inference (NLI) statutory grounding audit"
                   >
                     <div className="flex items-start justify-between gap-2">
@@ -1160,35 +1160,35 @@ export default function ChatPage() {
                             )}
                             {isCase ? (
                               <div
-                                className={`p-3.5 rounded-xl border shadow-xs hover:shadow-md hover:-translate-y-0.5 cursor-pointer transition-all duration-300 group flex flex-col justify-between ${isOutOfRank
+                                className={`p-2.5 sm:p-3.5 rounded-xl border shadow-xs hover:shadow-md sm:hover:-translate-y-0.5 cursor-pointer transition-all duration-300 group flex flex-col justify-between w-full max-w-full overflow-hidden break-words touch-pan-y ${isOutOfRank
                                   ? "bg-card/60 dark:bg-card/40 border-border/70 opacity-90 hover:opacity-100 hover:border-border"
                                   : "bg-card/90 dark:bg-card/70 border-border/80 hover:border-primary/40"
                                   }`}
                                 onClick={() => setSelectedCitation(cit)}
                               >
-                                <div>
-                                  <div className="flex items-center justify-between mb-2 gap-1.5">
+                                <div className="w-full min-w-0">
+                                  <div className="flex items-center justify-between mb-1.5 sm:mb-2 gap-1.5 flex-wrap">
                                     <div className="flex items-center gap-1.5 min-w-0 flex-wrap">
                                       {cit.rank && (
-                                        <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-muted/80 text-foreground border border-border/70 shrink-0">
+                                        <span className="text-[9.5px] sm:text-[10px] font-mono font-bold px-1.5 py-0.2 sm:py-0.5 rounded bg-muted/80 text-foreground border border-border/70 shrink-0">
                                           #{cit.rank}
                                         </span>
                                       )}
-                                      <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20 shrink-0">
+                                      <span className="inline-flex items-center gap-1 text-[9.5px] sm:text-[10px] font-bold uppercase tracking-wider px-2 py-0.2 sm:py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20 shrink-0">
                                         <Scale className="w-3 h-3" />
                                         Jurisprudence
                                       </span>
                                       {isOutOfRank ? (
-                                        <span className="inline-flex items-center gap-1 text-[10px] font-mono font-medium px-1.5 py-0.5 rounded bg-muted text-muted-foreground border border-border/80 shrink-0">
+                                        <span className="inline-flex items-center gap-1 text-[9.5px] sm:text-[10px] font-mono font-medium px-1.5 py-0.2 sm:py-0.5 rounded bg-muted text-muted-foreground border border-border/80 shrink-0">
                                           Out of Rank
                                         </span>
                                       ) : (
-                                        <span className="inline-flex items-center gap-1 text-[10px] font-mono font-medium px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 shrink-0">
+                                        <span className="inline-flex items-center gap-1 text-[9.5px] sm:text-[10px] font-mono font-medium px-1.5 py-0.2 sm:py-0.5 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 shrink-0">
                                           Active
                                         </span>
                                       )}
                                       {year && (
-                                        <Badge variant="outline" className="text-[10px] whitespace-nowrap bg-background font-mono">
+                                        <Badge variant="outline" className="text-[9.5px] sm:text-[10px] whitespace-nowrap bg-background font-mono px-1 sm:px-1.5 py-0">
                                           {year}
                                         </Badge>
                                       )}
@@ -1196,7 +1196,7 @@ export default function ChatPage() {
 
                                     {cit.suitability_percent !== undefined && (
                                       <span
-                                        className={`text-xs font-semibold px-2 py-0.5 rounded-md border tabular-nums shrink-0 ${cit.suitability_percent >= 85
+                                        className={`text-[10.5px] sm:text-xs font-semibold px-1.5 sm:px-2 py-0.2 sm:py-0.5 rounded-md border tabular-nums shrink-0 ${cit.suitability_percent >= 85
                                           ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
                                           : cit.suitability_percent >= 70
                                             ? "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60"
@@ -1208,24 +1208,24 @@ export default function ChatPage() {
                                     )}
                                   </div>
 
-                                  <div className="mb-2">
-                                    <h4 className="font-semibold text-xs text-foreground group-hover:text-primary transition-colors leading-snug line-clamp-2">
+                                  <div className="mb-1 sm:mb-2 min-w-0">
+                                    <h4 className="font-semibold text-xs text-foreground group-hover:text-primary transition-colors leading-snug line-clamp-1 sm:line-clamp-2 break-words">
                                       {title}
                                     </h4>
                                     {gr && (
-                                      <span className="text-[10px] font-mono text-muted-foreground block mt-0.5">
+                                      <span className="text-[10px] font-mono text-muted-foreground block mt-0.5 break-all">
                                         {gr}
                                       </span>
                                     )}
                                   </div>
 
-                                  <p className="text-xs text-muted-foreground leading-relaxed line-clamp-3 mb-3">
+                                  <p className="text-[11px] sm:text-xs text-muted-foreground leading-snug sm:leading-relaxed line-clamp-2 sm:line-clamp-3 mb-1.5 sm:mb-3 break-words">
                                     {summary}
                                   </p>
                                 </div>
 
-                                <div className="flex items-center justify-between pt-2 border-t border-border/50 text-xs font-semibold text-primary mt-auto">
-                                  <span className="flex items-center group-hover:translate-x-1 transition-transform">
+                                <div className="flex items-center justify-between pt-1.5 sm:pt-2 border-t border-border/50 text-[11px] sm:text-xs font-semibold text-primary mt-auto">
+                                  <span className="flex items-center sm:group-hover:translate-x-1 transition-transform">
                                     Read full case <ArrowRight className="w-3 h-3 ml-1" />
                                   </span>
                                   {cit.metadata?.source_url && (
@@ -1237,28 +1237,28 @@ export default function ChatPage() {
                               </div>
                             ) : (
                               <div
-                                className={`p-3 rounded-lg border hover:bg-muted/40 cursor-pointer transition-colors shadow-xs group ${isOutOfRank
+                                className={`p-2 sm:p-2.5 md:p-3 rounded-lg border hover:bg-muted/40 cursor-pointer transition-colors shadow-2xs group w-full max-w-full overflow-hidden break-words touch-pan-y ${isOutOfRank
                                   ? "bg-card/60 border-border/70 opacity-90 hover:opacity-100"
                                   : "bg-card border-border hover:border-primary/40"
                                   }`}
                                 onClick={() => setSelectedCitation(cit)}
                               >
-                                <div className="flex items-center justify-between mb-1.5 gap-2">
-                                  <div className="min-w-0 flex items-center gap-1.5 flex-wrap">
+                                <div className="flex items-center justify-between mb-1 sm:mb-1.5 gap-1.5 flex-nowrap">
+                                  <div className="min-w-0 flex items-center gap-1 sm:gap-1.5 flex-wrap">
                                     {cit.rank && (
-                                      <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-muted/80 text-foreground border border-border/70 shrink-0">
+                                      <span className="text-[9.5px] sm:text-[10px] font-mono font-bold px-1.5 py-0.2 sm:py-0.5 rounded bg-muted/80 text-foreground border border-border/70 shrink-0">
                                         #{cit.rank}
                                       </span>
                                     )}
-                                    <span className="text-[11px] font-mono font-medium text-foreground/80 px-1.5 py-0.5 rounded bg-muted border border-border/60 shrink-0">
+                                    <span className="text-[10.5px] sm:text-[11px] font-mono font-bold text-primary dark:text-blue-400 px-1.5 py-0.2 sm:py-0.5 rounded bg-primary/5 dark:bg-blue-500/10 border border-primary/20 shrink-0 truncate max-w-[130px] sm:max-w-none">
                                       {cit.parent_id}
                                     </span>
                                     {isOutOfRank ? (
-                                      <span className="inline-flex items-center gap-1 text-[10px] font-mono font-medium px-1.5 py-0.5 rounded bg-muted text-muted-foreground border border-border/80 shrink-0">
+                                      <span className="hidden xs:inline-flex items-center gap-1 text-[9.5px] sm:text-[10px] font-mono font-medium px-1.5 py-0.2 sm:py-0.5 rounded bg-muted text-muted-foreground border border-border/80 shrink-0">
                                         Out of Rank
                                       </span>
                                     ) : (
-                                      <span className="inline-flex items-center gap-1 text-[10px] font-mono font-medium px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 shrink-0">
+                                      <span className="hidden xs:inline-flex items-center gap-1 text-[9.5px] sm:text-[10px] font-mono font-medium px-1.5 py-0.2 sm:py-0.5 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 shrink-0">
                                         Active Grounding
                                       </span>
                                     )}
@@ -1266,7 +1266,7 @@ export default function ChatPage() {
 
                                   {cit.suitability_percent !== undefined && (
                                     <span
-                                      className={`text-xs font-semibold px-2 py-0.5 rounded-md border tabular-nums shrink-0 ${cit.suitability_percent >= 85
+                                      className={`text-[10px] sm:text-xs font-semibold px-1.5 sm:px-2 py-0.2 sm:py-0.5 rounded-md border tabular-nums shrink-0 ${cit.suitability_percent >= 85
                                         ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
                                         : cit.suitability_percent >= 70
                                           ? "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60"
@@ -1279,13 +1279,21 @@ export default function ChatPage() {
                                 </div>
 
                                 {cit.metadata?.title && (
-                                  <p className="text-xs font-semibold text-foreground line-clamp-1 mb-1">
+                                  <p className="text-[11.5px] sm:text-xs font-semibold text-foreground line-clamp-1 mb-0.5 sm:mb-1 break-words">
                                     {cit.metadata.title} {cit.metadata.gr_number ? `(GR ${cit.metadata.gr_number})` : ""}
                                   </p>
                                 )}
-                                <p className="text-xs text-muted-foreground leading-relaxed line-clamp-3">
+                                <p className="text-[11px] sm:text-xs text-muted-foreground leading-snug sm:leading-relaxed line-clamp-2 sm:line-clamp-3 break-words">
                                   {cit.content}
                                 </p>
+                                <div className="flex items-center justify-between pt-1 sm:pt-1.5 border-t border-border/40 text-[10px] sm:text-[11px] font-medium text-primary mt-1 sm:mt-1.5">
+                                  <span className="flex items-center sm:group-hover:translate-x-1 transition-transform">
+                                    View statutory provision <ArrowRight className="w-3 h-3 ml-1" />
+                                  </span>
+                                  <span className="text-[10px] font-normal text-muted-foreground">
+                                    Civil Code
+                                  </span>
+                                </div>
                               </div>
                             )}
                           </Fragment>
@@ -1354,11 +1362,11 @@ export default function ChatPage() {
 
             {/* Responsive Citations Drawer (Mobile, Tablet, and 14-inch Laptops < xl) */}
             <Sheet open={isMobileCitationsOpen} onOpenChange={setIsMobileCitationsOpen}>
-              <SheetContent side="right" className="w-[90vw] sm:w-[480px] max-w-lg p-0 flex flex-col h-full bg-card">
+              <SheetContent side="right" className="w-[90vw] sm:w-[480px] max-w-lg p-0 flex flex-col h-full bg-card overflow-x-hidden touch-pan-y">
                 <SheetHeader className="sr-only">
                   <SheetTitle>Retained Citations</SheetTitle>
                 </SheetHeader>
-                <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+                <div className="flex-1 flex flex-col min-h-0 overflow-hidden w-full max-w-full">
                   {citationsBody}
                 </div>
               </SheetContent>
@@ -1400,28 +1408,28 @@ export default function ChatPage() {
 
             {/* Statutory / General Citation Detail Modal */}
             <Dialog open={Boolean(selectedCitation && !isSelectedCase)} onOpenChange={(open) => !open && setSelectedCitation(null)}>
-              <DialogContent className="w-[95vw] sm:w-[92vw] md:w-[88vw] lg:w-[82vw] xl:w-[76vw] 2xl:w-[70vw] max-w-6xl 2xl:max-w-7xl max-h-[90dvh] overflow-y-auto custom-scrollbar p-4 sm:p-6 lg:p-8 rounded-2xl">
-                <DialogHeader className="space-y-3 pb-4 border-b border-border/70">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="flex items-center gap-2">
-                      <span className="inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider px-2.5 py-1 rounded-full bg-primary/10 text-primary border border-primary/20">
-                        <Scale className="w-3.5 h-3.5" />
+              <DialogContent className="w-[calc(100vw-1.5rem)] sm:w-[92vw] md:w-[88vw] lg:w-[82vw] xl:w-[76vw] 2xl:w-[70vw] max-w-5xl 2xl:max-w-6xl max-h-[90dvh] overflow-y-auto overflow-x-hidden overscroll-contain touch-pan-y custom-scrollbar p-3 sm:p-5 lg:p-7 rounded-2xl min-w-0">
+                <DialogHeader className="space-y-2 sm:space-y-3 pb-2.5 sm:pb-3.5 border-b border-border/70 pr-7 sm:pr-8 min-w-0 w-full">
+                  <div className="flex flex-col xs:flex-row xs:items-center justify-between gap-2 min-w-0">
+                    <div className="flex items-center gap-1.5 flex-wrap min-w-0">
+                      <span className="inline-flex items-center gap-1 text-[10px] sm:text-xs font-bold uppercase tracking-wider px-2 sm:px-2.5 py-0.5 sm:py-1 rounded-full bg-primary/10 text-primary border border-primary/20 shrink-0">
+                        <Scale className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
                         {selectedCitation?.parent_type === "civil_code" || selectedCitation?.parent_type === "article"
                           ? "Philippine Civil Code Provision"
                           : (selectedCitation?.parent_type?.toUpperCase?.() ?? "LEGAL AUTHORITY")}
                       </span>
                       {selectedCitation?.parent_id && (
-                        <span className="text-xs font-mono font-medium text-muted-foreground bg-accent/40 dark:bg-accent/20 px-2 py-0.5 rounded-md border border-border/50">
+                        <span className="text-[10px] sm:text-xs font-mono font-medium text-muted-foreground bg-accent/40 dark:bg-accent/20 px-1.5 sm:px-2 py-0.5 rounded-md border border-border/50 shrink-0">
                           {selectedCitation.parent_id}
                         </span>
                       )}
                       {selectedCitation?.suitability_percent !== undefined && (
-                        <div className="inline-flex items-center gap-1.5 text-xs">
-                          <span className="text-[11px] text-muted-foreground font-medium">
+                        <div className="inline-flex items-center gap-1 text-[10px] sm:text-xs shrink-0">
+                          <span className="text-[10px] sm:text-[11px] text-muted-foreground font-medium">
                             Suitability:
                           </span>
                           <span
-                            className={`text-xs font-semibold px-2 py-0.5 rounded-md border tabular-nums ${selectedCitation.suitability_percent >= 85
+                            className={`text-[10px] sm:text-xs font-semibold px-1.5 sm:px-2 py-0.5 rounded-md border tabular-nums ${selectedCitation.suitability_percent >= 85
                               ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
                               : selectedCitation.suitability_percent >= 70
                                 ? "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60"
@@ -1434,14 +1442,14 @@ export default function ChatPage() {
                       )}
                     </div>
 
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-1.5 shrink-0">
                       {selectedCitation?.content && (
                         <Button
                           type="button"
                           variant="outline"
                           size="sm"
                           onClick={() => handleCopyCitation(selectedCitation.content)}
-                          className="h-8 text-xs gap-1.5 rounded-lg border-border hover:bg-accent cursor-pointer"
+                          className="h-7 sm:h-8 px-2 sm:px-3 text-xs gap-1.5 rounded-lg border-border hover:bg-accent cursor-pointer"
                         >
                           {copiedCitation ? (
                             <>
@@ -1462,17 +1470,17 @@ export default function ChatPage() {
                           href={selectedCitation.metadata.source_url}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="inline-flex items-center justify-center h-8 px-3 text-xs gap-1.5 rounded-lg border border-primary/30 text-primary hover:bg-primary/10 transition-colors font-medium cursor-pointer"
+                          className="inline-flex items-center justify-center h-7 sm:h-8 px-2 sm:px-3 text-xs gap-1.5 rounded-lg border border-primary/30 text-primary hover:bg-primary/10 transition-colors font-medium cursor-pointer"
                         >
-                          <ExternalLink className="w-3.5 h-3.5" />
+                          <ExternalLink className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
                           <span>Official Record</span>
                         </a>
                       )}
                     </div>
                   </div>
 
-                  <div>
-                    <DialogTitle className="text-xl sm:text-2xl font-bold text-foreground tracking-tight">
+                  <div className="min-w-0">
+                    <DialogTitle className="text-base sm:text-xl lg:text-2xl font-bold text-foreground tracking-tight leading-snug break-words">
                       {selectedCitation?.metadata?.title || (
                         selectedCitation?.parent_type === "civil_code" || selectedCitation?.parent_type === "article"
                           ? `Civil Code of the Philippines : ${selectedCitation?.parent_id}`
@@ -1480,7 +1488,7 @@ export default function ChatPage() {
                       )}
                     </DialogTitle>
                     {selectedCitation?.metadata?.hierarchy && (
-                      <p className="text-xs text-muted-foreground mt-1">
+                      <p className="text-[11px] sm:text-xs text-muted-foreground mt-0.5 sm:mt-1 leading-normal break-words">
                         {[
                           selectedCitation.metadata.hierarchy.book_name,
                           selectedCitation.metadata.hierarchy.title_name,
@@ -1493,13 +1501,13 @@ export default function ChatPage() {
                   </div>
                 </DialogHeader>
 
-                <div className="mt-4 space-y-4">
-                  <div className="p-5 sm:p-6 lg:p-7 bg-accent/20 dark:bg-accent/10 rounded-xl border border-border/70 text-foreground leading-relaxed text-sm sm:text-base lg:text-[17px] whitespace-pre-wrap selection:bg-primary/20">
+                <div className="mt-3 sm:mt-4 space-y-3 sm:space-y-4">
+                  <div className="p-3 sm:p-5 lg:p-6 bg-accent/20 dark:bg-accent/10 rounded-xl border border-border/70 text-foreground leading-relaxed text-xs sm:text-sm lg:text-base whitespace-pre-wrap break-words [overflow-wrap:anywhere] max-w-full selection:bg-primary/20">
                     {selectedCitation?.content}
                   </div>
 
                   {selectedCitation?.metadata?.source_url && (
-                    <div className="flex items-center justify-between text-xs text-muted-foreground pt-2 border-t border-border/40">
+                    <div className="flex flex-col xs:flex-row xs:items-center justify-between text-[11px] sm:text-xs text-muted-foreground pt-2 border-t border-border/40 gap-1.5">
                       <span>Verified Philippine Legal Source Grounding</span>
                       <a
                         href={selectedCitation.metadata.source_url}

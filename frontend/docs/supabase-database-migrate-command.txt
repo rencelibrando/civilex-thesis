@@ -1,14 +1,34 @@
-//get the data from current supabase database
-//Export the schema (tables, vectors setup, etc.)
-supabase db dump --local -f supabase_schema.sql
+PART 1: EXPORT / BACKUP (Source Machine)
+1. Export database schema (public tables, auth schemas, storage schemas, vector extensions)
+npx supabase db dump --local --schema public,auth,storage -f supabase_schema.sql
 
-//Export the data (with RAM protection)
-supabase db dump --local --data-only --use-copy -f supabase_data.sql
+2. Export database records (table data, vectors, auth users, and storage metadata)
+npx supabase db dump --local --data-only --use-copy --schema public,auth,storage -f supabase_data.sql
+
+3. Export all physical storage files (avatars, uploaded PDFs, document attachments)
+Copies files directly out of the storage container mount:
+docker cp $(docker ps -qf "name=supabase_storage"):/mnt ./supabase_storage_files
+
+Compress the storage files into a single archive for transfer:
+tar -czvf supabase_storage_backup.tar.gz -C ./supabase_storage_files .
 
 
-//inject the schema to the new database
+
+PART 2: RESTORE / IMPORT (Target Machine / New Database)
+
+1. Restore physical storage files into the target storage container
+If using the copied folder:
+docker cp ./supabase_storage_files/. $(docker ps -qf "name=supabase_storage"):/mnt/
+
+If you transferred the tar archive, unpack it first:
+tar -xzvf supabase_storage_backup.tar.gz -C ./supabase_storage_files/
+docker cp ./supabase_storage_files/. $(docker ps -qf "name=supabase_storage"):/mnt/
+
+2. Inject schema into the PostgreSQL database
 docker exec -i $(docker ps -qf "name=supabase_db") psql -U postgres -d postgres < supabase_schema.sql
 
-
-//inject the data and vectors to the table 
+3. Inject data, vectors, user accounts, and storage metadata
 docker exec -i $(docker ps -qf "name=supabase_db") psql -U postgres -d postgres < supabase_data.sql
+
+4. Restart the storage service so permissions and cached objects refresh immediately
+docker restart $(docker ps -qf "name=supabase_storage")

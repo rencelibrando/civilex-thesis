@@ -148,8 +148,6 @@ interface DocChatContextType {
   ensureDocSession: (docId: string, filename: string) => Promise<string | null>;
   handleSendDocMessage: (docId: string, filename: string, overrideText?: string) => Promise<void>;
   handleStopDocMessage: (docId: string) => void;
-  userRole: string;
-  userPracticeArea: string;
   userFirstName: string;
 }
 
@@ -160,9 +158,7 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
   const abortControllersRef = useRef<Record<string, AbortController | null>>({});
 
   // User Profile state for document panel personalization (synchronously hydrated from local storage)
-  const initialProfile = typeof window !== "undefined" ? getInitialCachedProfile() : { role: "", practiceArea: "", firstName: "", fullName: "" };
-  const [userRole, setUserRole] = useState(initialProfile.role);
-  const [userPracticeArea, setUserPracticeArea] = useState(initialProfile.practiceArea);
+  const initialProfile = typeof window !== "undefined" ? getInitialCachedProfile() : { firstName: "", fullName: "" };
   const [userFirstName, setUserFirstName] = useState(initialProfile.firstName);
 
   // Character Stream Queue Management (matching legal chat typewriter effect)
@@ -298,22 +294,12 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
         if (!session) return;
 
         const cached = getCachedProfile(session.user.id);
-        const role =
-          cached?.role ||
-          session.user.user_metadata?.role ||
-          "";
-        const practiceArea =
-          cached?.practice_area ||
-          session.user.user_metadata?.practice_area ||
-          "";
         const fullName =
           cached?.full_name ||
           session.user.user_metadata?.full_name ||
           "";
         const firstName = fullName.split(" ")[0] || "";
 
-        setUserRole(role);
-        setUserPracticeArea(practiceArea);
         setUserFirstName(firstName);
 
         // Update any unstarted chats with personalized greeting
@@ -323,7 +309,7 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
           let changed = false;
           for (const [id, state] of Object.entries(prev)) {
             if (state.messages.length === 1 && state.messages[0].id === 1 && !state.sessionId) {
-              const newGreeting = getPersonalizedDocGreeting(role, practiceArea, firstName);
+              const newGreeting = getPersonalizedDocGreeting(firstName);
               if (state.messages[0].content !== newGreeting) {
                 changed = true;
                 updated[id] = {
@@ -369,15 +355,10 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
       if (existing) {
         return existing;
       }
-      const greeting = getPersonalizedDocGreeting(
-        userRole,
-        userPracticeArea,
-        userFirstName,
-        filename
-      );
+      const greeting = getPersonalizedDocGreeting(userFirstName, filename);
       return buildInitialDocState(greeting);
     },
-    [docChats, userRole, userPracticeArea, userFirstName]
+    [docChats, userFirstName]
   );
 
   const setDocInputValue = useCallback((docId: string, val: string) => {
@@ -459,7 +440,7 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
             const current =
               prev[docId] ||
               buildInitialDocState(
-                getPersonalizedDocGreeting(userRole, userPracticeArea, userFirstName)
+                getPersonalizedDocGreeting(userFirstName)
               );
             return {
               ...prev,
@@ -486,7 +467,7 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
     } catch (err) {
       console.error("Failed to load document session messages:", err);
     }
-  }, [userRole, userPracticeArea, userFirstName]);
+  }, [userFirstName]);
 
   const ensureDocSession = useCallback(
     async (docId: string, filename: string): Promise<string | null> => {
@@ -537,7 +518,7 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
             const current =
               prev[docId] ||
               buildInitialDocState(
-                getPersonalizedDocGreeting(userRole, userPracticeArea, userFirstName, filename)
+                getPersonalizedDocGreeting(userFirstName, filename)
               );
             return { ...prev, [docId]: { ...current, sessionId: newSession.id } };
           });
@@ -548,7 +529,7 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
       }
       return null;
     },
-    [docChats, loadDocSession, userRole, userPracticeArea, userFirstName]
+    [docChats, loadDocSession, userFirstName]
   );
 
   const handleStopDocMessage = useCallback((docId: string) => {
@@ -575,7 +556,7 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
       const currentState =
         docChats[docId] ||
         buildInitialDocState(
-          getPersonalizedDocGreeting(userRole, userPracticeArea, userFirstName, filename)
+          getPersonalizedDocGreeting(userFirstName, filename)
         );
       const userText = (overrideText ?? currentState.inputValue).trim();
       if (!userText || currentState.isTyping) return;
@@ -970,7 +951,7 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
         abortControllersRef.current[docId] = null;
       }
     },
-    [docChats, ensureDocSession, userRole, userPracticeArea, userFirstName, startCharStream, stopCharStream, enqueueText]
+    [docChats, ensureDocSession, userFirstName, startCharStream, stopCharStream, enqueueText]
   );
 
   return (
@@ -983,8 +964,6 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
         ensureDocSession,
         handleSendDocMessage,
         handleStopDocMessage,
-        userRole,
-        userPracticeArea,
         userFirstName,
       }}
     >

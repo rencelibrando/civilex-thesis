@@ -20,10 +20,6 @@ export interface CachedUserProfile {
   id: string;
   email?: string;
   full_name: string;
-  role: string;
-  organization: string;
-  practice_area?: string;
-  phone_number?: string;
   avatar_url: string | null;
   updated_at?: string;
   cachedAt: number;
@@ -329,8 +325,6 @@ export function saveCachedProfile(userId: string, data: Partial<CachedUserProfil
   const current = getCachedProfile(userId) || {
     id: userId,
     full_name: "",
-    role: "",
-    organization: "",
     avatar_url: null,
     cachedAt: 0,
   };
@@ -375,12 +369,10 @@ export function clearCachedProfile(userId?: string): void {
  * Checks both the session metadata and the cached user profile to avoid asynchronous delay.
  */
 export function getInitialCachedProfile(): {
-  role: string;
-  practiceArea: string;
   firstName: string;
   fullName: string;
 } {
-  const fallback = { role: "", practiceArea: "", firstName: "", fullName: "" };
+  const fallback = { firstName: "", fullName: "" };
   if (typeof window === "undefined") return fallback;
 
   try {
@@ -391,21 +383,17 @@ export function getInitialCachedProfile(): {
     const user = parsedSession?.user || parsedSession?.currentSession?.user;
     const userId = user?.id;
 
-    let role = user?.user_metadata?.role || "";
-    let practiceArea = user?.user_metadata?.practice_area || "";
     let fullName = user?.user_metadata?.full_name || "";
 
     if (userId) {
       const cached = getCachedProfile(userId);
       if (cached) {
-        role = cached.role || role;
-        practiceArea = cached.practice_area || practiceArea;
         fullName = cached.full_name || fullName;
       }
     }
 
     const firstName = fullName.split(" ")[0] || "";
-    return { role, practiceArea, firstName, fullName };
+    return { firstName, fullName };
   } catch {
     return fallback;
   }

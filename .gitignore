@@ -46,7 +46,8 @@ service-rag-python/data/
 __pycache__/
 
 # supabase
-supabase/
+supabase/.temp/
+supabase/.branches/
 
 # agent configuration
 .agents/

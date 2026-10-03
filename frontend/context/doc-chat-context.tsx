@@ -11,6 +11,8 @@ import React, {
 } from "react";
 import { supabase } from "@/lib/supabase";
 import { BACKEND_URL } from "@/lib/config";
+import { getCachedProfile, getInitialCachedProfile } from "@/lib/auth-storage";
+import { getPersonalizedDocGreeting } from "@/lib/user-persona";
 import { useAuth } from "./auth-context";
 import { RagStatus, RagStage, mergeCitations, getCitationKey, LegalAnalytics, generateFollowUpPrompts } from "./chat-context";
 
@@ -107,35 +109,48 @@ export interface DocChatState {
   followUpPrompts: string[];
 }
 
-const DEFAULT_DOC_MESSAGES: DocChatMessage[] = [
-  {
-    id: 1,
-    role: "assistant",
-    content:
-      "Hello! I am your CIVIL-LEX AI assistant. You can ask me questions about this legal document, its compliance with the Philippine Civil Code, and relevant jurisprudence.",
-  },
-];
+function buildDocGreetingMessage(greeting: string): DocChatMessage[] {
+  return [
+    {
+      id: 1,
+      role: "assistant",
+      content: greeting,
+    },
+  ];
+}
 
-const INITIAL_STATE: DocChatState = {
-  messages: DEFAULT_DOC_MESSAGES,
-  sessionId: null,
-  retainedCitations: [],
-  currentCitations: [],
-  inputValue: "",
-  isTyping: false,
-  ragStatus: null,
-  legalAnalytics: null,
-  followUpPrompts: [],
-};
+const DEFAULT_DOC_GREETING =
+  "Hello! I am your CIVIL-LEX AI assistant. You can ask me questions about this legal document, its compliance with the Philippine Civil Code, and relevant jurisprudence.";
+
+const DEFAULT_DOC_MESSAGES: DocChatMessage[] = buildDocGreetingMessage(DEFAULT_DOC_GREETING);
+
+function buildInitialDocState(greeting: string = DEFAULT_DOC_GREETING): DocChatState {
+  return {
+    messages: buildDocGreetingMessage(greeting),
+    sessionId: null,
+    retainedCitations: [],
+    currentCitations: [],
+    inputValue: "",
+    isTyping: false,
+    ragStatus: null,
+    legalAnalytics: null,
+    followUpPrompts: [],
+  };
+}
+
+const INITIAL_STATE: DocChatState = buildInitialDocState(DEFAULT_DOC_GREETING);
 
 interface DocChatContextType {
   docChats: Record<string, DocChatState>;
-  getDocChat: (docId: string) => DocChatState;
+  getDocChat: (docId: string, filename?: string) => DocChatState;
   setDocInputValue: (docId: string, val: string) => void;
   loadDocSession: (docId: string, sessionId: string) => Promise<void>;
   ensureDocSession: (docId: string, filename: string) => Promise<string | null>;
   handleSendDocMessage: (docId: string, filename: string, overrideText?: string) => Promise<void>;
   handleStopDocMessage: (docId: string) => void;
+  userRole: string;
+  userPracticeArea: string;
+  userFirstName: string;
 }
 
 const DocChatContext = createContext<DocChatContextType | undefined>(undefined);
@@ -143,6 +158,193 @@ const DocChatContext = createContext<DocChatContextType | undefined>(undefined);
 export function DocChatProvider({ children }: { children: ReactNode }) {
   const [docChats, setDocChats] = useState<Record<string, DocChatState>>({});
   const abortControllersRef = useRef<Record<string, AbortController | null>>({});
+
+  // User Profile state for document panel personalization (synchronously hydrated from local storage)
+  const initialProfile = typeof window !== "undefined" ? getInitialCachedProfile() : { role: "", practiceArea: "", firstName: "", fullName: "" };
+  const [userRole, setUserRole] = useState(initialProfile.role);
+  const [userPracticeArea, setUserPracticeArea] = useState(initialProfile.practiceArea);
+  const [userFirstName, setUserFirstName] = useState(initialProfile.firstName);
+
+  // Character Stream Queue Management (matching legal chat typewriter effect)
+  const charQueueRef = useRef<string[]>([]);
+  const charIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const activeStreamDocIdRef = useRef<string | null>(null);
+  const activeStreamAssistantIdRef = useRef<number | null>(null);
+
+  const flushCharQueueInstantly = useCallback(() => {
+    const queue = charQueueRef.current;
+    const docId = activeStreamDocIdRef.current;
+    const assistantId = activeStreamAssistantIdRef.current;
+    if (queue.length > 0 && docId && assistantId !== null) {
+      const remaining = queue.splice(0).join("");
+      setDocChats((prev) => {
+        const cur = prev[docId];
+        if (!cur) return prev;
+        return {
+          ...prev,
+          [docId]: {
+            ...cur,
+            messages: cur.messages.map((msg) =>
+              msg.id === assistantId
+                ? { ...msg, content: msg.content + remaining }
+                : msg
+            ),
+          },
+        };
+      });
+    }
+  }, []);
+
+  const startCharStream = useCallback((docId: string, assistantId: number) => {
+    activeStreamDocIdRef.current = docId;
+    activeStreamAssistantIdRef.current = assistantId;
+    charQueueRef.current = [];
+
+    if (charIntervalRef.current) {
+      clearInterval(charIntervalRef.current);
+    }
+
+    charIntervalRef.current = setInterval(() => {
+      const queue = charQueueRef.current;
+      if (queue.length === 0) return;
+
+      const batch = queue.splice(0, 4).join("");
+      const currentDocId = activeStreamDocIdRef.current;
+      const currentAssistantId = activeStreamAssistantIdRef.current;
+      if (!currentDocId || currentAssistantId === null) return;
+
+      setDocChats((prev) => {
+        const cur = prev[currentDocId];
+        if (!cur) return prev;
+        return {
+          ...prev,
+          [currentDocId]: {
+            ...cur,
+            messages: cur.messages.map((msg) =>
+              msg.id === currentAssistantId
+                ? { ...msg, content: msg.content + batch }
+                : msg
+            ),
+          },
+        };
+      });
+    }, 18);
+  }, []);
+
+  const stopCharStream = useCallback(() => {
+    if (charIntervalRef.current) {
+      clearInterval(charIntervalRef.current);
+      charIntervalRef.current = null;
+    }
+    flushCharQueueInstantly();
+    activeStreamDocIdRef.current = null;
+    activeStreamAssistantIdRef.current = null;
+  }, [flushCharQueueInstantly]);
+
+  const enqueueText = useCallback((text: string) => {
+    const docId = activeStreamDocIdRef.current;
+    const assistantId = activeStreamAssistantIdRef.current;
+
+    // If browser tab is hidden in background, append directly to state
+    if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+      if (docId && assistantId !== null) {
+        setDocChats((prev) => {
+          const cur = prev[docId];
+          if (!cur) return prev;
+          return {
+            ...prev,
+            [docId]: {
+              ...cur,
+              messages: cur.messages.map((msg) =>
+                msg.id === assistantId
+                  ? { ...msg, content: msg.content + text }
+                  : msg
+              ),
+            },
+          };
+        });
+      }
+      return;
+    }
+
+    for (const char of text) {
+      charQueueRef.current.push(char);
+    }
+  }, []);
+
+  // Background Tab Switching Handler (visibilitychange)
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        flushCharQueueInstantly();
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [flushCharQueueInstantly]);
+
+  // Load user profile on mount to personalize document greeting
+  useEffect(() => {
+    async function loadProfileAndPersonalize() {
+      try {
+        const {
+          data: { session },
+        } = await supabase.auth.getSession();
+        if (!session) return;
+
+        const cached = getCachedProfile(session.user.id);
+        const role =
+          cached?.role ||
+          session.user.user_metadata?.role ||
+          "";
+        const practiceArea =
+          cached?.practice_area ||
+          session.user.user_metadata?.practice_area ||
+          "";
+        const fullName =
+          cached?.full_name ||
+          session.user.user_metadata?.full_name ||
+          "";
+        const firstName = fullName.split(" ")[0] || "";
+
+        setUserRole(role);
+        setUserPracticeArea(practiceArea);
+        setUserFirstName(firstName);
+
+        // Update any unstarted chats with personalized greeting
+        setDocChats((prev) => {
+          if (Object.keys(prev).length === 0) return prev;
+          const updated: Record<string, DocChatState> = {};
+          let changed = false;
+          for (const [id, state] of Object.entries(prev)) {
+            if (state.messages.length === 1 && state.messages[0].id === 1 && !state.sessionId) {
+              const newGreeting = getPersonalizedDocGreeting(role, practiceArea, firstName);
+              if (state.messages[0].content !== newGreeting) {
+                changed = true;
+                updated[id] = {
+                  ...state,
+                  messages: buildDocGreetingMessage(newGreeting),
+                };
+              } else {
+                updated[id] = state;
+              }
+            } else {
+              updated[id] = state;
+            }
+          }
+          return changed ? updated : prev;
+        });
+      } catch (err) {
+        console.error("Failed to load user profile for doc chat:", err);
+      }
+    }
+    loadProfileAndPersonalize();
+  }, []);
 
   // Reset document chats if the logged-in user changes to prevent cross-account chat bleed
   let authUserId: string | null = null;
@@ -155,16 +357,27 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (prevDocUserIdRef.current && authUserId && prevDocUserIdRef.current !== authUserId) {
+      stopCharStream();
       setDocChats({});
     }
     prevDocUserIdRef.current = authUserId;
-  }, [authUserId]);
+  }, [authUserId, stopCharStream]);
 
   const getDocChat = useCallback(
-    (docId: string): DocChatState => {
-      return docChats[docId] || INITIAL_STATE;
+    (docId: string, filename?: string): DocChatState => {
+      const existing = docChats[docId];
+      if (existing) {
+        return existing;
+      }
+      const greeting = getPersonalizedDocGreeting(
+        userRole,
+        userPracticeArea,
+        userFirstName,
+        filename
+      );
+      return buildInitialDocState(greeting);
     },
-    [docChats]
+    [docChats, userRole, userPracticeArea, userFirstName]
   );
 
   const setDocInputValue = useCallback((docId: string, val: string) => {
@@ -243,7 +456,11 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
           const loadedFollowUps = lastAssistant ? generateDocFollowUpPrompts(lastAssistant.content, allCits) : [];
 
           setDocChats((prev) => {
-            const current = prev[docId] || INITIAL_STATE;
+            const current =
+              prev[docId] ||
+              buildInitialDocState(
+                getPersonalizedDocGreeting(userRole, userPracticeArea, userFirstName)
+              );
             return {
               ...prev,
               [docId]: {
@@ -269,7 +486,7 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
     } catch (err) {
       console.error("Failed to load document session messages:", err);
     }
-  }, []);
+  }, [userRole, userPracticeArea, userFirstName]);
 
   const ensureDocSession = useCallback(
     async (docId: string, filename: string): Promise<string | null> => {
@@ -317,7 +534,11 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
         if (createRes.ok) {
           const newSession = await createRes.json();
           setDocChats((prev) => {
-            const current = prev[docId] || INITIAL_STATE;
+            const current =
+              prev[docId] ||
+              buildInitialDocState(
+                getPersonalizedDocGreeting(userRole, userPracticeArea, userFirstName, filename)
+              );
             return { ...prev, [docId]: { ...current, sessionId: newSession.id } };
           });
           return newSession.id;
@@ -327,7 +548,7 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
       }
       return null;
     },
-    [docChats, loadDocSession]
+    [docChats, loadDocSession, userRole, userPracticeArea, userFirstName]
   );
 
   const handleStopDocMessage = useCallback((docId: string) => {
@@ -335,6 +556,7 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
       abortControllersRef.current[docId]?.abort();
       abortControllersRef.current[docId] = null;
     }
+    stopCharStream();
     setDocChats((prev) => {
       const current = prev[docId] || INITIAL_STATE;
       return {
@@ -346,11 +568,15 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
         },
       };
     });
-  }, []);
+  }, [stopCharStream]);
 
   const handleSendDocMessage = useCallback(
     async (docId: string, filename: string, overrideText?: string) => {
-      const currentState = docChats[docId] || INITIAL_STATE;
+      const currentState =
+        docChats[docId] ||
+        buildInitialDocState(
+          getPersonalizedDocGreeting(userRole, userPracticeArea, userFirstName, filename)
+        );
       const userText = (overrideText ?? currentState.inputValue).trim();
       if (!userText || currentState.isTyping) return;
 
@@ -390,6 +616,7 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
       try {
         const controller = new AbortController();
         abortControllersRef.current[docId] = controller;
+        startCharStream(docId, assistantId);
 
         const {
           data: { session },
@@ -442,6 +669,7 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
         let buffer = "";
         let fullResponseAccumulator = "";
         let receivedCitations: any[] = [];
+        let receivedFollowUps = false;
         let pendingCitations: any[] | null = null;
         let pendingAccumulatedCitations: any[] | null = null;
         let pendingLegalAnalytics: LegalAnalytics | null = null;
@@ -455,7 +683,9 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
 
             setDocChats((prev) => {
               const cur = prev[docId] || INITIAL_STATE;
-              const updatedRetained = accumulatedToCommit || mergeCitations(cur.retainedCitations, citsToCommit);
+              const updatedRetained = (accumulatedToCommit && accumulatedToCommit.length > 0)
+                ? accumulatedToCommit
+                : mergeCitations(cur.retainedCitations, citsToCommit);
               return {
                 ...prev,
                 [docId]: {
@@ -597,24 +827,28 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
                     if (hasStartedStreaming) {
                       commitDocCitations();
                     }
+                  } else if (data.type === "follow_ups") {
+                    // LLM-generated follow-up suggestions (preferred over rule-based).
+                    const suggestions = Array.isArray(data.data)
+                      ? data.data.filter((s: any) => typeof s === "string" && s.trim()).slice(0, 3)
+                      : [];
+                    if (suggestions.length > 0) {
+                      receivedFollowUps = true;
+                      setDocChats((prev) => {
+                        const cur = prev[docId] || INITIAL_STATE;
+                        return {
+                          ...prev,
+                          [docId]: { ...cur, followUpPrompts: suggestions },
+                        };
+                      });
+                    }
                   } else if (data.type === "text") {
                     if (!hasStartedStreaming) {
                       hasStartedStreaming = true;
                       commitDocCitations();
                     }
                     fullResponseAccumulator += data.text;
-                    setDocChats((prev) => {
-                      const cur = prev[docId] || INITIAL_STATE;
-                      return {
-                        ...prev,
-                        [docId]: {
-                          ...cur,
-                          messages: cur.messages.map((m) =>
-                            m.id === assistantId ? { ...m, content: m.content + data.text } : m
-                          ),
-                        },
-                      };
-                    });
+                    enqueueText(data.text);
                   } else if (data.type === "error") {
                     const errorMsg = data.message || "An error occurred while generating the legal analysis.";
                     setDocChats((prev) => {
@@ -640,14 +874,17 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
                     });
                   } else if (data.type === "done") {
                     commitDocCitations();
-                    const followUps = generateDocFollowUpPrompts(fullResponseAccumulator, receivedCitations, filename);
+                    // Prefer LLM-generated suggestions; fall back to rule-based.
+                    const fallbackFollowUps = receivedFollowUps
+                      ? null
+                      : generateDocFollowUpPrompts(fullResponseAccumulator, receivedCitations, filename);
                     setDocChats((prev) => {
                       const cur = prev[docId] || INITIAL_STATE;
                       return {
                         ...prev,
                         [docId]: {
                           ...cur,
-                          followUpPrompts: followUps,
+                          ...(fallbackFollowUps ? { followUpPrompts: fallbackFollowUps } : {}),
                           ragStatus: { stage: "completed", message: "Analysis complete" },
                           messages: cur.messages.map((m) =>
                             m.id === assistantId
@@ -668,7 +905,21 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
             }
           }
         }
+
+        // Wait for character queue to drain smoothly (creates the smooth typewriter effect)
+        const waitForDrain = () =>
+          new Promise<void>((resolve) => {
+            const check = setInterval(() => {
+              if (charQueueRef.current.length === 0) {
+                clearInterval(check);
+                resolve();
+              }
+            }, 50);
+          });
+        await waitForDrain();
+        stopCharStream();
       } catch (err: any) {
+        stopCharStream();
         if (err.name === "AbortError") {
           setDocChats((prev) => {
             const cur = prev[docId] || INITIAL_STATE;
@@ -705,6 +956,7 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
           });
         }
       } finally {
+        stopCharStream();
         setDocChats((prev) => {
           const cur = prev[docId] || INITIAL_STATE;
           return {
@@ -718,7 +970,7 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
         abortControllersRef.current[docId] = null;
       }
     },
-    [docChats, ensureDocSession]
+    [docChats, ensureDocSession, userRole, userPracticeArea, userFirstName, startCharStream, stopCharStream, enqueueText]
   );
 
   return (
@@ -731,6 +983,9 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
         ensureDocSession,
         handleSendDocMessage,
         handleStopDocMessage,
+        userRole,
+        userPracticeArea,
+        userFirstName,
       }}
     >
       {children}

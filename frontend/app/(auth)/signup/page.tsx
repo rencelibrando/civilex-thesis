@@ -23,25 +23,18 @@ import { Input } from "@/components/ui/input";
 import { useAuth } from "@/context/auth-context";
 
 const ROLE_OPTIONS = [
-  "Attorney / Litigation Practitioner",
-  "In-House Counsel / Corporate",
-  "Judiciary / Court Attorney",
-  "Law Student / Bar Candidate",
-  "Legal Researcher / Paralegal",
-  "Law Faculty / Professor",
-  "Government Legal Officer",
   "Normal Citizen / General Public",
-  "Other Legal Professional",
+  "Attorney / Legal Practitioner",
+  "Law Student / Bar Candidate",
 ];
 
 const PRACTICE_AREAS = [
-  "Civil Law & Obligations",
-  "Persons & Family Relations",
-  "Property, Ownership & Land Titles",
-  "Torts & Damages",
-  "Commercial & Corporate Law",
-  "Labor & Employment",
-  "General Civil Practice",
+  "General Civil Practice (All Areas)",
+  "Obligations & Contracts (Arts. 1156–2270)",
+  "Persons & Family Relations (Arts. 37–413)",
+  "Property, Ownership & Land Titles (Arts. 414–711)",
+  "Succession, Wills & Donations (Arts. 712–1155)",
+  "Torts, Quasi-Delicts & Damages (Arts. 2176–2235)",
   "Pre-Bar / Academic Curriculum",
 ];
 
@@ -111,7 +104,7 @@ export default function SignupPage() {
       if (res.sessionCreated) {
         window.location.href = "/dashboard";
       } else {
-        router.replace("/login?registered=true");
+        router.push(`/verify-email?email=${encodeURIComponent(cleanEmail)}`);
       }
     } catch (err: unknown) {
       setErrorMsg(err instanceof Error ? err.message : "Failed to create account. Please try again.");

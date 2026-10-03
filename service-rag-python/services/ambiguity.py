@@ -1,12 +1,3 @@
-"""
-Ambiguity Detection & Conversational Clarification Service for CIVIL-LEX.
-
-Directly leverages the LLM (LM Studio / Gemma) to analyze in-domain Philippine
-civil law queries for critical factual gaps (e.g., missing party relationship,
-unspecified transaction type, citizenship, prescription timing) and generates
-targeted clarification questions before proceeding with RAG retrieval.
-"""
-
 import re
 import json
 import logging
@@ -54,8 +45,6 @@ class AmbiguityResult:
 
 
 # LLM Ambiguity Analysis Prompt
-
-
 AMBIGUITY_SYSTEM_PROMPT = """You are a Philippine Civil Law query analyzer for CIVIL-LEX.
 Analyze whether the user's query is AMBIGUOUS or lacks essential facts needed to analyze rights, obligations, or remedies under the Philippine Civil Code (RA 386).
 
@@ -68,6 +57,8 @@ DECISION CRITERIA:
    - Inquiries referencing specific articles, laws, or Supreme Court decisions (e.g., 'Article 1191', 'Art. 2176', 'G.R. No. 123456').
    - Codal structure and overview queries (e.g., total articles or books of the Civil Code).
    - Inquiries that already provide sufficient factual circumstances to identify the governing legal framework.
+   - Follow-ups continuing an already-established line from CONVERSATION HISTORY ("ano ang exception dito?", "applies ba sa co-ownership?", "what about kung ...?") — reuse history, do NOT re-clarify resolved facts.
+   - Requests to shorten, summarize, recap, or restate an answer already given in this conversation ("in short ...?", "buod?", "paikliin?", "so ano ang konklusyon?") — these are NEVER ambiguous; the facts were resolved in prior turns.
    - Non-legal queries.
 
 2. AMBIGUOUS (is_ambiguous: true):
@@ -77,6 +68,7 @@ DECISION CRITERIA:
 
 BILINGUAL FORMATTING:
 - Questions and options should be bilingual (Tagalog / English) or match the user's language.
+- Use short, simple, everyday words a non-lawyer understands; explain any legal term in plain words on first use.
 - context_hint should briefly state why this matters under the Civil Code (e.g., Art. 1144, Art. 1170, or Art. 2176).
 
 JSON SCHEMA:

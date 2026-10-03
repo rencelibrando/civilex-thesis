@@ -782,8 +782,8 @@ export default function ChatPage() {
                                 onSubmit={handleClarificationSubmit}
                                 isSubmitted={!isLatestAssistant || isTyping}
                               />
-                            ) : msg.id === 1 && msg.content.includes("Hello. I am CIVIL-LEX") ? (
-                              <StartingTypewriterMessage content={msg.content} />
+                            ) : (msg.id === 1 || idx === 0) ? (
+                              <StartingTypewriterMessage key={msg.content} content={msg.content} />
                             ) : (
                               <AssistantMarkdown content={msg.content} />
                             )

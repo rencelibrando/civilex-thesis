@@ -11,6 +11,11 @@ import React, {
 } from "react";
 import { supabase } from "@/lib/supabase";
 import { BACKEND_URL } from "@/lib/config";
+import { getCachedProfile, getInitialCachedProfile } from "@/lib/auth-storage";
+import {
+  getPersonalizedGreeting,
+  getPreferredPromptCategories,
+} from "@/lib/user-persona";
 import { useAuth } from "./auth-context";
 
 
@@ -252,12 +257,36 @@ export const ALL_STARTER_PROMPTS: StarterPrompt[] = [
   },
 ];
 
-export function getRandomStarters(count: number = 2): StarterPrompt[] {
-  // Shuffle array using Fisher-Yates and pick first N
-  const pool = [...ALL_STARTER_PROMPTS];
-  for (let i = pool.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [pool[i], pool[j]] = [pool[j], pool[i]];
+export function getRandomStarters(
+  count: number = 2,
+  preferredCategories: string[] = []
+): StarterPrompt[] {
+  // If preferred categories are specified, try to front-load them
+  let pool: StarterPrompt[];
+  if (preferredCategories.length > 0) {
+    const preferred = ALL_STARTER_PROMPTS.filter((p) =>
+      preferredCategories.includes(p.category)
+    );
+    const rest = ALL_STARTER_PROMPTS.filter(
+      (p) => !preferredCategories.includes(p.category)
+    );
+    // Shuffle each group independently
+    for (let i = preferred.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [preferred[i], preferred[j]] = [preferred[j], preferred[i]];
+    }
+    for (let i = rest.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [rest[i], rest[j]] = [rest[j], rest[i]];
+    }
+    pool = [...preferred, ...rest];
+  } else {
+    // Pure random shuffle
+    pool = [...ALL_STARTER_PROMPTS];
+    for (let i = pool.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [pool[i], pool[j]] = [pool[j], pool[i]];
+    }
   }
   return pool.slice(0, count);
 }
@@ -445,19 +474,31 @@ export function mergeCitations(existing: any[], incoming: any[]): any[] {
   });
 }
 
-const DEFAULT_MESSAGES: Message[] = [
-  {
-    id: 1,
-    role: "assistant",
-    content:
-      "Hello. I am CIVIL-LEX, your AI Legal Assistant. How can I help you with Philippine Civil Law today?",
-  },
-];
+function buildGreetingMessage(greeting: string): Message[] {
+  return [
+    {
+      id: 1,
+      role: "assistant",
+      content: greeting,
+    },
+  ];
+}
+
+const DEFAULT_GREETING =
+  "Hello. I am CIVIL-LEX, your AI Legal Assistant. How can I help you with Philippine Civil Law today?";
+
+const DEFAULT_MESSAGES: Message[] = buildGreetingMessage(DEFAULT_GREETING);
 
 const ChatContext = createContext<ChatContextType | undefined>(undefined);
 
 export function ChatProvider({ children }: { children: ReactNode }) {
-  const [messages, setMessages] = useState<Message[]>(DEFAULT_MESSAGES);
+  const initialProfile = typeof window !== "undefined" ? getInitialCachedProfile() : { role: "", practiceArea: "", firstName: "", fullName: "" };
+  const [messages, setMessages] = useState<Message[]>(() => {
+    if (initialProfile.role) {
+      return buildGreetingMessage(getPersonalizedGreeting(initialProfile.role, initialProfile.practiceArea, initialProfile.firstName));
+    }
+    return DEFAULT_MESSAGES;
+  });
   const [inputValue, setInputValue] = useState("");
   const [isTyping, setIsTyping] = useState(false);
   const [ragStatus, setRagStatus] = useState<RagStatus | null>(null);
@@ -468,7 +509,29 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const [legalAnalytics, setLegalAnalytics] = useState<LegalAnalytics | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [followUpPrompts, setFollowUpPrompts] = useState<string[]>([]);
-  const [starterPrompts, setStarterPrompts] = useState<StarterPrompt[]>([]);
+  const [starterPrompts, setStarterPrompts] = useState<StarterPrompt[]>(() => {
+    if (initialProfile.practiceArea) {
+      const preferred = getPreferredPromptCategories(initialProfile.practiceArea);
+      return getRandomStarters(2, preferred);
+    }
+    return getRandomStarters(2);
+  });
+
+  // ── User Profile (for personalization) ───────────────────────────────────
+  // We read it from the Supabase session + local cache immediately so the
+  // greeting and starter prompts are personalized on first render.
+  const [userRole, setUserRole] = useState(initialProfile.role);
+  const [userPracticeArea, setUserPracticeArea] = useState(initialProfile.practiceArea);
+  const [userFirstName, setUserFirstName] = useState(initialProfile.firstName);
+
+  // Resolve the personalized greeting from profile fields
+  const buildPersonalizedMessages = useCallback(
+    (role: string, practiceArea: string, firstName: string): Message[] => {
+      const greeting = getPersonalizedGreeting(role, practiceArea, firstName);
+      return buildGreetingMessage(greeting);
+    },
+    []
+  );
 
   // Refs for request lifecycle & streaming
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -476,14 +539,65 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const charIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const activeAssistantIdRef = useRef<number | null>(null);
 
-  // Initialize random starter prompts on mount
+  // ── Load profile + personalize greeting on mount ──────────────────────────
   useEffect(() => {
-    setStarterPrompts(getRandomStarters(2));
+    async function loadProfileAndPersonalize() {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session) {
+          // No session — use random starters only
+          setStarterPrompts(getRandomStarters(2));
+          return;
+        }
+
+        // 1. Fast path: read from local cache bound to this user
+        const cached = getCachedProfile(session.user.id);
+        const role =
+          cached?.role ||
+          session.user.user_metadata?.role ||
+          "";
+        const practiceArea =
+          cached?.practice_area ||
+          session.user.user_metadata?.practice_area ||
+          "";
+        const fullName =
+          cached?.full_name ||
+          session.user.user_metadata?.full_name ||
+          "";
+        const firstName = fullName.split(" ")[0] || "";
+
+        setUserRole(role);
+        setUserPracticeArea(practiceArea);
+        setUserFirstName(firstName);
+
+        // 2. Personalize greeting (only update if different to avoid restarting typewriter)
+        const personalizedMsgs = buildPersonalizedMessages(role, practiceArea, firstName);
+        setMessages((prev) => {
+          if (prev.length === 1 && prev[0].id === 1 && prev[0].content === personalizedMsgs[0].content) {
+            return prev;
+          }
+          if (prev.length === 1 && prev[0].id === 1) {
+            return personalizedMsgs;
+          }
+          return prev;
+        });
+
+        // 3. Personalized starter prompts (bias toward practice area)
+        const preferredCategories = getPreferredPromptCategories(practiceArea);
+        setStarterPrompts(getRandomStarters(2, preferredCategories));
+      } catch {
+        // Fallback to generic defaults
+        setStarterPrompts(getRandomStarters(2));
+      }
+    }
+    loadProfileAndPersonalize();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const refreshStarters = useCallback(() => {
-    setStarterPrompts(getRandomStarters(2));
-  }, []);
+    const preferredCategories = getPreferredPromptCategories(userPracticeArea);
+    setStarterPrompts(getRandomStarters(2, preferredCategories));
+  }, [userPracticeArea]);
 
 
   // Character Stream Queue Management
@@ -604,10 +718,16 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     charQueueRef.current = [];
     activeAssistantIdRef.current = null;
 
-    // 3. Reset state immediately
+    // 3. Reset state immediately — use personalized greeting if available
     setIsTyping(false);
     setRagStatus(null);
-    setMessages(DEFAULT_MESSAGES);
+    const resetMsgs =
+      userRole || userPracticeArea || userFirstName
+        ? buildGreetingMessage(
+            getPersonalizedGreeting(userRole, userPracticeArea, userFirstName)
+          )
+        : DEFAULT_MESSAGES;
+    setMessages(resetMsgs);
     setCurrentCitations([]);
     setRetainedCitations([]);
     setActiveCitationFilter('all');
@@ -617,9 +737,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     setSessionId(null);
     setFollowUpPrompts([]);
 
-    // 4. Roll a fresh set of prompt starters for the new chat!
+    // 4. Roll a fresh set of personalized prompt starters for the new chat!
     refreshStarters();
-  }, [refreshStarters]);
+  }, [refreshStarters, userRole, userPracticeArea, userFirstName]);
 
   // Reset chat if the logged-in user changes to prevent cross-account chat bleed
   let authUserId: string | null = null;
@@ -676,6 +796,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
     let fullResponseAccumulator = "";
     let receivedCitations: any[] = [];
+    let receivedFollowUps = false;
 
     try {
       const controller = new AbortController();
@@ -810,16 +931,31 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                     )
                   );
                 } else if (data.type === "accumulated_citations") {
-                  const accumulated = (data.data || []).sort((a: any, b: any) => {
-                    const scoreA = Number(a?.suitability_percent) || 0;
-                    const scoreB = Number(b?.suitability_percent) || 0;
-                    const scoreDiff = scoreB - scoreA;
-                    if (scoreDiff !== 0) return scoreDiff;
-                    const priority = (type?: string) =>
-                      type === "article" || type === "civil_code" ? 1 : type === "user_document" ? 2 : 3;
-                    return priority(a.parent_type) - priority(b.parent_type);
-                  });
-                  setRetainedCitations(accumulated);
+                  const incoming = data.data || [];
+                  if (incoming.length === 0) {
+                    // Retained citations are append-only per session: ignore empty
+                    // server events (recall / refusal turns) so earlier turns keep theirs.
+                  } else {
+                    const accumulated = incoming.sort((a: any, b: any) => {
+                      const scoreA = Number(a?.suitability_percent) || 0;
+                      const scoreB = Number(b?.suitability_percent) || 0;
+                      const scoreDiff = scoreB - scoreA;
+                      if (scoreDiff !== 0) return scoreDiff;
+                      const priority = (type?: string) =>
+                        type === "article" || type === "civil_code" ? 1 : type === "user_document" ? 2 : 3;
+                      return priority(a.parent_type) - priority(b.parent_type);
+                    });
+                    setRetainedCitations(accumulated);
+                  }
+                } else if (data.type === "follow_ups") {
+                  // LLM-generated follow-up suggestions (preferred over rule-based).
+                  const suggestions = Array.isArray(data.data)
+                    ? data.data.filter((s: any) => typeof s === "string" && s.trim()).slice(0, 3)
+                    : [];
+                  if (suggestions.length > 0) {
+                    receivedFollowUps = true;
+                    setFollowUpPrompts(suggestions);
+                  }
                 } else if (data.type === "text") {
                   fullResponseAccumulator += data.text;
                   enqueueText(data.text);
@@ -886,8 +1022,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       });
 
       // Generate follow-ups
-      const followUps = generateFollowUpPrompts(fullResponseAccumulator, receivedCitations);
-      setFollowUpPrompts(followUps);
+      // Generation complete
+      if (!receivedFollowUps) {
+        const followUps = generateFollowUpPrompts(fullResponseAccumulator, receivedCitations);
+        setFollowUpPrompts(followUps);
+      }
     } catch (error: any) {
       console.error("Chat streaming error:", error);
       stopCharStream();
@@ -966,6 +1105,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
     let fullResponseAccumulator = "";
     let receivedCitations: any[] = [];
+    let receivedFollowUps = false;
 
     try {
       const controller = new AbortController();
@@ -1079,12 +1219,27 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                     )
                   );
                 } else if (data.type === "accumulated_citations") {
-                  const accumulated = (data.data || []).sort((a: any, b: any) => {
-                    const scoreA = Number(a?.suitability_percent) || 0;
-                    const scoreB = Number(b?.suitability_percent) || 0;
-                    return scoreB - scoreA;
-                  });
-                  setRetainedCitations(accumulated);
+                  const incoming = data.data || [];
+                  if (incoming.length === 0) {
+                    // Retained citations are append-only per session: ignore empty
+                    // server events (recall / refusal turns) so earlier turns keep theirs.
+                  } else {
+                    const accumulated = incoming.sort((a: any, b: any) => {
+                      const scoreA = Number(a?.suitability_percent) || 0;
+                      const scoreB = Number(b?.suitability_percent) || 0;
+                      return scoreB - scoreA;
+                    });
+                    setRetainedCitations(accumulated);
+                  }
+                } else if (data.type === "follow_ups") {
+                  // LLM-generated follow-up suggestions (preferred over rule-based).
+                  const suggestions = Array.isArray(data.data)
+                    ? data.data.filter((s: any) => typeof s === "string" && s.trim()).slice(0, 3)
+                    : [];
+                  if (suggestions.length > 0) {
+                    receivedFollowUps = true;
+                    setFollowUpPrompts(suggestions);
+                  }
                 } else if (data.type === "text") {
                   fullResponseAccumulator += data.text;
                   enqueueText(data.text);
@@ -1130,8 +1285,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         message: "Analysis complete",
       });
 
-      const followUps = generateFollowUpPrompts(fullResponseAccumulator, receivedCitations);
-      setFollowUpPrompts(followUps);
+      // Generation complete
+      if (!receivedFollowUps) {
+        const followUps = generateFollowUpPrompts(fullResponseAccumulator, receivedCitations);
+        setFollowUpPrompts(followUps);
+      }
     } catch (error: any) {
       console.error("Clarification re-submit error:", error);
       stopCharStream();

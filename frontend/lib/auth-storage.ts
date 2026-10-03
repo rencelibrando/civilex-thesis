@@ -367,6 +367,47 @@ export function clearCachedProfile(userId?: string): void {
     }
     // Also remove any un-namespaced profile key
     localStorage.removeItem(AUTH_STORAGE_KEYS.PROFILE);
-  } catch (_) {}
+  } catch (_) { }
+}
+
+/**
+ * Synchronously retrieves profile attributes from local storage for instant 0ms hydration.
+ * Checks both the session metadata and the cached user profile to avoid asynchronous delay.
+ */
+export function getInitialCachedProfile(): {
+  role: string;
+  practiceArea: string;
+  firstName: string;
+  fullName: string;
+} {
+  const fallback = { role: "", practiceArea: "", firstName: "", fullName: "" };
+  if (typeof window === "undefined") return fallback;
+
+  try {
+    const rawSession = localStorage.getItem(AUTH_STORAGE_KEYS.SESSION);
+    if (!rawSession) return fallback;
+
+    const parsedSession = JSON.parse(rawSession);
+    const user = parsedSession?.user || parsedSession?.currentSession?.user;
+    const userId = user?.id;
+
+    let role = user?.user_metadata?.role || "";
+    let practiceArea = user?.user_metadata?.practice_area || "";
+    let fullName = user?.user_metadata?.full_name || "";
+
+    if (userId) {
+      const cached = getCachedProfile(userId);
+      if (cached) {
+        role = cached.role || role;
+        practiceArea = cached.practice_area || practiceArea;
+        fullName = cached.full_name || fullName;
+      }
+    }
+
+    const firstName = fullName.split(" ")[0] || "";
+    return { role, practiceArea, firstName, fullName };
+  } catch {
+    return fallback;
+  }
 }
 

@@ -1,11 +1,5 @@
 """
 CIVIL-LEX: Neuro-Symbolic Hybrid Natural Language Inference (NLI) Engine
-========================================================================
-Production-grade hybrid verification engine combining white-box deterministic
-symbolic logic rules with local neural inference (Gemma 4 E4B via LM Studio)
-for verifying faithfulness of generated Philippine civil law answers against
-retrieved statutory context.
-
 Architecture:
     1. Atomic Proposition Decomposition — splits generated text into
        truth-evaluable legal assertions, pruning procedural headers.

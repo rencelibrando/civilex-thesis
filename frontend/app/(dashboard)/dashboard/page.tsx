@@ -24,6 +24,12 @@ import { Badge } from "@/components/ui/badge";
 import { supabase } from "@/lib/supabase";
 import { BACKEND_URL, apiUrl } from "@/lib/config";
 import { getCachedProfile } from "@/lib/auth-storage";
+import {
+  getDashboardSubtitle,
+  getDashboardTag,
+  getActionCardCopy,
+  getSearchPlaceholder,
+} from "@/lib/user-persona";
 
 interface SessionItem {
   id: string;
@@ -86,12 +92,29 @@ const CIVIL_CODE_BOOKS = [
 export default function DashboardPage() {
   const router = useRouter();
   const [userName, setUserName] = useState("");
+  const [userRole, setUserRole] = useState("");
+  const [userPracticeArea, setUserPracticeArea] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [recentSessions, setRecentSessions] = useState<SessionItem[]>([]);
   const [userDocs, setUserDocs] = useState<UserDocItem[]>([]);
   const [jurisprudenceCount, setJurisprudenceCount] = useState<number>(11879);
   const [articlesCount, setArticlesCount] = useState<number>(2270);
   const [isLoading, setIsLoading] = useState(true);
+
+  // Derived persona copy — recomputed only when role/area changes
+  const dashboardTag = useMemo(() => getDashboardTag(userRole), [userRole]);
+  const dashboardSubtitle = useMemo(
+    () => getDashboardSubtitle(userRole, userPracticeArea),
+    [userRole, userPracticeArea]
+  );
+  const actionCards = useMemo(
+    () => getActionCardCopy(userRole),
+    [userRole]
+  );
+  const searchPlaceholder = useMemo(
+    () => getSearchPlaceholder(userRole),
+    [userRole]
+  );
 
   useEffect(() => {
     async function loadDashboardData() {
@@ -119,8 +142,14 @@ export default function DashboardPage() {
         const cached = getCachedProfile(session.user.id);
         if (cached && cached.id === session.user.id && cached.full_name) {
           setUserName(cached.full_name);
+          setUserRole(cached.role || session.user.user_metadata?.role || "");
+          setUserPracticeArea(
+            cached.practice_area || session.user.user_metadata?.practice_area || ""
+          );
         } else if (session.user.user_metadata?.full_name) {
           setUserName(session.user.user_metadata.full_name);
+          setUserRole(session.user.user_metadata?.role || "");
+          setUserPracticeArea(session.user.user_metadata?.practice_area || "");
         }
 
         // Fetch user profile (no-store to eliminate cross-user cache hits)
@@ -138,6 +167,12 @@ export default function DashboardPage() {
             }
             if (data?.full_name) {
               setUserName(data.full_name);
+            }
+            if (data?.role) {
+              setUserRole(data.role);
+            }
+            if (data?.practice_area) {
+              setUserPracticeArea(data.practice_area);
             }
           })
           .catch((err) => console.error("Failed to load profile:", err));
@@ -217,14 +252,14 @@ export default function DashboardPage() {
           <div className="space-y-0.5 sm:space-y-1">
             <div className="flex items-center gap-2">
               <span className="inline-flex items-center gap-1.5 text-[11px] sm:text-xs text-muted-foreground font-medium">
-                R.A. 386 &amp; Supreme Court Grounded
+                {dashboardTag}
               </span>
             </div>
             <h1 className="text-lg sm:text-xl 2xl:text-2xl font-bold tracking-tight text-foreground">
               Welcome back{userName ? `, ${userName}` : ""}
             </h1>
             <p className="text-xs sm:text-sm text-muted-foreground max-w-2xl leading-relaxed">
-              Philippine Civil Law statutory analysis, Supreme Court jurisprudence retrieval, and automated document compliance.
+              {dashboardSubtitle}
             </p>
           </div>
 
@@ -322,7 +357,7 @@ export default function DashboardPage() {
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Ask a legal question, explore Civil Code articles, or find jurisprudence..."
+              placeholder={searchPlaceholder}
               className="w-full bg-transparent pl-10 pr-24 py-1.5 sm:py-2 2xl:py-2.5 text-xs sm:text-sm border-0 outline-none text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-0"
             />
             <div className="absolute right-1.5 flex items-center gap-1.5">
@@ -344,7 +379,7 @@ export default function DashboardPage() {
           <div className="xl:col-span-8 space-y-3.5 xl:space-y-4.5 min-h-full">
             {/* Core Action Cards: 3 columns on tablet/desktop */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5 sm:gap-3 2xl:gap-4">
-              {/* Card 1: Legal Consultation */}
+              {/* Card 1: Legal Chat */}
               <Card className="rounded-2xl border-border/80 bg-card shadow-xs hover:shadow-md hover:border-blue-500/40 transition-all duration-200 flex flex-col justify-between group">
                 <CardHeader className="p-3 sm:p-3.5 2xl:p-4.5 pb-2 sm:pb-2.5">
                   <div className="flex items-center justify-between mb-1.5">
@@ -353,9 +388,9 @@ export default function DashboardPage() {
                       RAG Citations
                     </Badge>
                   </div>
-                  <CardTitle className="text-sm sm:text-base 2xl:text-lg text-foreground font-semibold">Legal Chat</CardTitle>
+                  <CardTitle className="text-sm sm:text-base 2xl:text-lg text-foreground font-semibold">{actionCards.legalChat.title}</CardTitle>
                   <CardDescription className="text-xs leading-relaxed text-muted-foreground line-clamp-2">
-                    Consult CIVIL-LEX AI for statutory analysis, Supreme Court precedent, and legal opinions.
+                    {actionCards.legalChat.description}
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="p-3 sm:p-3.5 2xl:p-4.5 pt-0">
@@ -363,7 +398,7 @@ export default function DashboardPage() {
                     href="/chat"
                     className="inline-flex items-center justify-between font-medium w-full text-xs text-blue-600 dark:text-blue-400 bg-blue-500/10 dark:bg-blue-500/15 hover:bg-blue-600 hover:text-white dark:hover:bg-blue-600 dark:hover:text-white transition-all rounded-xl h-8 sm:h-8.5 px-3 cursor-pointer"
                   >
-                    <span>Start Consultation</span>
+                    <span>{actionCards.legalChat.cta}</span>
                     <ArrowRight className="w-3.5 h-3.5 ml-1 group-hover:translate-x-0.5 transition-transform" />
                   </Link>
                 </CardContent>
@@ -378,9 +413,9 @@ export default function DashboardPage() {
                       R.A. 386 Full Text
                     </Badge>
                   </div>
-                  <CardTitle className="text-sm sm:text-base 2xl:text-lg text-foreground font-semibold">Civil Code</CardTitle>
+                  <CardTitle className="text-sm sm:text-base 2xl:text-lg text-foreground font-semibold">{actionCards.civilCode.title}</CardTitle>
                   <CardDescription className="text-xs leading-relaxed text-muted-foreground line-clamp-2">
-                    Navigate 2,270 Civil Code articles across 4 books with linked Supreme Court jurisprudence doctrines.
+                    {actionCards.civilCode.description}
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="p-3 sm:p-3.5 2xl:p-4.5 pt-0">
@@ -388,7 +423,7 @@ export default function DashboardPage() {
                     href="/civil-code"
                     className="inline-flex items-center justify-between font-medium w-full text-xs text-indigo-600 dark:text-indigo-400 bg-indigo-500/10 dark:bg-indigo-500/15 hover:bg-indigo-600 hover:text-white dark:hover:bg-indigo-600 dark:hover:text-white transition-all rounded-xl h-8 sm:h-8.5 px-3 cursor-pointer"
                   >
-                    <span>Browse Articles</span>
+                    <span>{actionCards.civilCode.cta}</span>
                     <ArrowRight className="w-3.5 h-3.5 ml-1 group-hover:translate-x-0.5 transition-transform" />
                   </Link>
                 </CardContent>
@@ -403,9 +438,9 @@ export default function DashboardPage() {
                       OCR &amp; Audit
                     </Badge>
                   </div>
-                  <CardTitle className="text-sm sm:text-base 2xl:text-lg text-foreground font-semibold">Document Analysis</CardTitle>
+                  <CardTitle className="text-sm sm:text-base 2xl:text-lg text-foreground font-semibold">{actionCards.docAnalysis.title}</CardTitle>
                   <CardDescription className="text-xs leading-relaxed text-muted-foreground line-clamp-2">
-                    Upload contracts, pleadings, and legal briefs for OCR extraction and statutory verification.
+                    {actionCards.docAnalysis.description}
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="p-3 sm:p-3.5 2xl:p-4.5 pt-0">
@@ -413,7 +448,7 @@ export default function DashboardPage() {
                     href="/research"
                     className="inline-flex items-center justify-between font-medium w-full text-xs text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 dark:bg-emerald-500/15 hover:bg-emerald-600 hover:text-white dark:hover:bg-emerald-600 dark:hover:text-white transition-all rounded-xl h-8 sm:h-8.5 px-3 cursor-pointer"
                   >
-                    <span>Analyze Docs</span>
+                    <span>{actionCards.docAnalysis.cta}</span>
                     <ArrowRight className="w-3.5 h-3.5 ml-1 group-hover:translate-x-0.5 transition-transform" />
                   </Link>
                 </CardContent>

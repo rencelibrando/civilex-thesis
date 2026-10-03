@@ -38,8 +38,12 @@ export const setupProxies = (app) => {
               req.user.user_metadata?.full_name ||
               (req.user.email ? req.user.email.split('@')[0] : 'User');
             proxyReq.setHeader('x-user-name', encodeURIComponent(fullName));
-            const role = req.user.user_metadata?.role || 'Normal Citizen';
+            const role = req.user.user_metadata?.role || 'Normal Citizen / General Public';
             proxyReq.setHeader('x-user-role', encodeURIComponent(role));
+            const practiceArea = req.user.user_metadata?.practice_area || '';
+            if (practiceArea) {
+              proxyReq.setHeader('x-practice-area', encodeURIComponent(practiceArea));
+            }
 
             try {
               PresenceService.touch(req.user, req, 'Running Legal Query');

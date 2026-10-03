@@ -1,8 +1,4 @@
 import sys
-
-# 1. Guard against broken torchvision/torchaudio binary extensions
-# Setting these in sys.modules before any imports prevents Hugging Face transformers/peft
-# from attempting to load mismatched C++ shared libraries (.so files).
 sys.modules["torchvision"] = None
 sys.modules["torchvision.io"] = None
 sys.modules["torchvision.ops"] = None

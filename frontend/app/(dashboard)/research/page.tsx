@@ -58,6 +58,7 @@ import { supabase } from "@/lib/supabase";
 import { BACKEND_URL, apiUrl } from "@/lib/config";
 import { useDocChat } from "@/context/doc-chat-context";
 import { RagStatus } from "@/context/chat-context";
+import { getDocPanelCopy, getRoleDocStarters } from "@/lib/user-persona";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { cn } from "@/lib/utils";
@@ -565,6 +566,8 @@ export default function ResearchPage() {
     handleSendDocMessage,
     handleStopDocMessage,
     loadDocSession,
+    userRole,
+    userPracticeArea,
   } = useDocChat();
 
   const [documents, setDocuments] = useState<UserDocument[]>([]);
@@ -575,8 +578,10 @@ export default function ResearchPage() {
   const [pendingDocId, setPendingDocId] = useState<string | null>(null);
   const [isDraggingFile, setIsDraggingFile] = useState(false);
 
+  const docPanelCopy = getDocPanelCopy(userRole, userPracticeArea);
+
   const activeDocId = activeDocument?.id || "general";
-  const currentChat = getDocChat(activeDocId);
+  const currentChat = getDocChat(activeDocId, activeDocument?.filename);
   const messages = currentChat.messages;
   const inputValue = currentChat.inputValue;
   const isTyping = currentChat.isTyping;
@@ -791,17 +796,18 @@ export default function ResearchPage() {
   }, [documents, pendingDocId, ensureDocSession]);
 
   const refreshDocStarters = useCallback(() => {
-    const pool = [...DOC_STARTER_PROMPTS];
+    const rolePrompts = getRoleDocStarters(userRole);
+    const pool = rolePrompts.length > 0 ? [...rolePrompts] : [...DOC_STARTER_PROMPTS];
     for (let i = pool.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
       [pool[i], pool[j]] = [pool[j], pool[i]];
     }
     setDocStarters(pool.slice(0, 2));
-  }, []);
+  }, [userRole]);
 
   useEffect(() => {
     refreshDocStarters();
-  }, [activeDocument?.id, refreshDocStarters]);
+  }, [activeDocument?.id, userRole, refreshDocStarters]);
 
   const handleStop = () => {
     if (!activeDocument) return;
@@ -1068,10 +1074,15 @@ export default function ResearchPage() {
         <SheetContent side="left" className="w-[88vw] sm:w-84 sm:max-w-md p-0 flex flex-col">
           <SheetHeader className="p-3.5 sm:p-4 border-b border-border bg-card/50">
             <div className="flex items-center justify-between">
-              <SheetTitle className="flex items-center gap-2 text-base">
-                <FileText className="w-5 h-5 text-primary" />
-                My Documents
-              </SheetTitle>
+              <div>
+                <SheetTitle className="flex items-center gap-2 text-base">
+                  <FileText className="w-5 h-5 text-primary" />
+                  My Documents
+                </SheetTitle>
+                <p className="text-[11px] text-muted-foreground mt-0.5">
+                  {docPanelCopy.panelSubtitle}
+                </p>
+              </div>
               <Button
                 type="button"
                 variant="outline"
@@ -1187,10 +1198,15 @@ export default function ResearchPage() {
         >
           <div className="p-4 border-b border-border bg-card/50 shrink-0">
             <div className="flex items-center justify-between mb-4">
-              <h2 className="font-bold text-foreground flex items-center gap-2">
-                <FileText className="w-5 h-5 text-primary" />
-                My Documents
-              </h2>
+              <div>
+                <h2 className="font-bold text-foreground flex items-center gap-2">
+                  <FileText className="w-5 h-5 text-primary" />
+                  My Documents
+                </h2>
+                <p className="text-[11px] text-muted-foreground mt-0.5 truncate hidden sm:block">
+                  {docPanelCopy.panelSubtitle}
+                </p>
+              </div>
               <Button
                 type="button"
                 variant="ghost"
@@ -1618,7 +1634,7 @@ export default function ResearchPage() {
                   </Button>
                 )}
                 <Badge variant="outline" className="bg-blue-500/10 dark:bg-blue-500/20 text-blue-700 dark:text-blue-300 text-xs border-blue-500/25 font-semibold">
-                  Blank Analysis Mode
+                  {docPanelCopy.badgeLabel}
                 </Badge>
                 <span className="text-xs text-muted-foreground hidden sm:inline">Ready for Document Ingestion</span>
               </div>
@@ -1742,12 +1758,12 @@ export default function ResearchPage() {
                   )}
 
                   <h3 className="text-sm sm:text-base font-bold text-foreground mb-1">
-                    {isUploading ? "Uploading & Ingesting Legal Document..." : "Upload Legal Document for Analysis"}
+                    {isUploading ? "Uploading & Ingesting Legal Document..." : docPanelCopy.dropzoneTitle}
                   </h3>
                   <p className="text-xs sm:text-sm text-muted-foreground max-w-md mb-2.5 sm:mb-3 leading-relaxed">
                     {isUploading
                       ? "Extracting document structure, clauses, and preparing statutory audit pipeline..."
-                      : "Drag & drop your file here, or click to browse. Supports PDF, DOCX, TXT, and scanned image pleadings."}
+                      : docPanelCopy.dropzoneDescription}
                   </p>
 
                   <div className="flex flex-wrap items-center justify-center gap-1.5 mb-3 sm:mb-4">
@@ -1890,7 +1906,12 @@ export default function ResearchPage() {
               <span>{activeDocument ? "Doc" : "Upload"}</span>
             </Button>
             <ShieldCheck className="w-5 h-5 text-blue-600 dark:text-blue-400 shrink-0" />
-            <h2 className="font-bold text-foreground text-xs sm:text-sm lg:text-base truncate">Civilex Assistant</h2>
+            <div className="min-w-0">
+              <h2 className="font-bold text-foreground text-xs sm:text-sm lg:text-base truncate">Civilex Assistant</h2>
+              <p className="text-[10px] text-muted-foreground truncate hidden sm:block">
+                {docPanelCopy.panelSubtitle}
+              </p>
+            </div>
           </div>
           <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             {/* Mobile View Toggle: Doc vs Chat */}
@@ -2356,8 +2377,8 @@ export default function ResearchPage() {
                           }`}
                       >
                         {msg.role === 'assistant' ? (
-                          msg.id === 1 && (msg.content.includes("CIVIL-LEX") || msg.content.includes("Hello!") || msg.content.includes("Welcome back")) ? (
-                            <StartingTypewriterMessage content={msg.content} />
+                          (msg.id === 1 || idx === 0) ? (
+                            <StartingTypewriterMessage key={msg.content} content={msg.content} />
                           ) : msg.content ? (
                             <AssistantMarkdown content={msg.content} />
                           ) : isTyping && isLatestAssistant ? (

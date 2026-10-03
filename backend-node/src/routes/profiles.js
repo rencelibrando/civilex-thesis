@@ -422,4 +422,61 @@ router.patch('/me', requireAuth, async (req, res) => {
   }
 });
 
+/**
+ * DELETE /api/profiles/me
+ * Permanently deletes the authenticated user's account, storage files, profile, and auth record.
+ */
+router.delete('/me', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    // 1. Invalidate memory cache for avatar
+    invalidateCachedAvatar(userId);
+
+    // 2. Remove avatar storage files if any
+    try {
+      const { data: files } = await supabaseAdmin.storage.from('avatars').list('', {
+        search: userId
+      });
+      if (files && files.length > 0) {
+        const filePaths = files.map(f => f.name);
+        await supabaseAdmin.storage.from('avatars').remove(filePaths);
+      }
+    } catch (storageErr) {
+      console.warn("Storage cleanup warning during account deletion:", storageErr.message);
+    }
+
+    // 3. Clean up user's chat sessions and documents
+    try {
+      await supabaseAdmin.from('chat_sessions').delete().eq('user_id', userId);
+    } catch (sessionErr) {
+      console.warn("Chat sessions deletion warning:", sessionErr.message);
+    }
+    try {
+      await supabaseAdmin.from('documents').delete().eq('user_id', userId);
+    } catch (docErr) {
+      console.warn("Documents deletion warning:", docErr.message);
+    }
+
+    // 4. Remove row from profiles table
+    try {
+      await supabaseAdmin.from('profiles').delete().eq('id', userId);
+    } catch (dbErr) {
+      console.warn("Profile table deletion warning:", dbErr.message);
+    }
+
+    // 5. Permanently delete user from Supabase auth.users using supabaseAdmin
+    const { error: authDeleteError } = await supabaseAdmin.auth.admin.deleteUser(userId);
+    if (authDeleteError) {
+      console.error("Auth admin deleteUser error:", authDeleteError);
+      return res.status(500).json({ error: authDeleteError.message || "Failed to delete auth user." });
+    }
+
+    res.json({ success: true, message: "Account successfully deleted." });
+  } catch (err) {
+    console.error("Error deleting user account:", err);
+    res.status(500).json({ error: err.message || "An unexpected error occurred while deleting account." });
+  }
+});
+
 export default router;

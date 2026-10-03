@@ -19,6 +19,8 @@ from core.config import (
     LM_STUDIO_URL,
 )
 from core.queue_manager import queue_manager
+from services import memory as session_memory
+from services import followups as followup_svc
 
 logging.basicConfig(
     level=logging.INFO,
@@ -338,6 +340,8 @@ class ChatMessage(BaseModel):
 class SearchRequest(BaseModel):
     query: str
     session_id: Optional[str] = None
+    # Deprecated client-supplied memory (kept as fallback only). The server now
+    # loads canonical per-chat history/citations from the DB by session_id.
     history: List[ChatMessage] = []
     document_id: Optional[str] = None
     document_name: Optional[str] = None
@@ -1490,10 +1494,21 @@ def save_assistant_message_to_db(
     try:
         conn = get_db_connection()
         with conn.cursor() as cur:
-            cur.execute("""
-                INSERT INTO chat_messages (session_id, role, content, citations, legal_analytics)
-                VALUES (%s, 'assistant', %s, %s, %s);
-            """, (session_id, content, dumps(citations), dumps(legal_analytics) if legal_analytics else None))
+            try:
+                cur.execute("""
+                    INSERT INTO chat_messages (session_id, role, content, citations, legal_analytics)
+                    VALUES (%s, 'assistant', %s, %s, %s);
+                """, (session_id, content, dumps(citations), dumps(legal_analytics) if legal_analytics else None))
+            except Exception as col_err:
+                # Older schemas lack legal_analytics — retry without it.
+                if "legal_analytics" in str(col_err).lower():
+                    conn.rollback()
+                    cur.execute("""
+                        INSERT INTO chat_messages (session_id, role, content, citations)
+                        VALUES (%s, 'assistant', %s, %s);
+                    """, (session_id, content, dumps(citations)))
+                else:
+                    raise
             conn.commit()
     except Exception as db_err:
         logging.error(f"Failed to save message to DB: {db_err}")
@@ -1535,8 +1550,83 @@ async def search_documents(request: SearchRequest, raw_req: Request = None):
             user_role = urllib.parse.unquote(user_role_raw) if user_role_raw else ""
         except Exception:
             user_role = user_role_raw
+        practice_area_raw = (raw_req.headers.get("x-practice-area") if raw_req else None) or ""
+        try:
+            practice_area = urllib.parse.unquote(practice_area_raw) if practice_area_raw else ""
+        except Exception:
+            practice_area = practice_area_raw
 
-        logging.info(f"Received search request from user [{user_name or user_email or user_identifier}]: {request.query[:80]}")
+        def _resolve_role_key(role: str) -> str:
+            """Collapse the stored role string into one of three canonical keys."""
+            r = (role or "").lower()
+            if any(k in r for k in ("attorney", "litigation", "in-house", "judiciary",
+                                    "court attorney", "legal researcher", "paralegal",
+                                    "faculty", "professor", "government legal")):
+                return "attorney"
+            if any(k in r for k in ("student", "bar candidate", "pre-bar", "academic")):
+                return "student"
+            return "citizen"
+
+        def build_user_persona_prefix(role: str, area: str, name: str) -> str:
+            """
+            Returns a short, role-aware persona prefix injected at the top of
+            every in-domain system prompt.  It shapes the LLM's vocabulary,
+            depth of analysis, and tone WITHOUT changing any retrieval logic.
+            """
+            role_key = _resolve_role_key(role)
+            first_name = (name.split(" ")[0] if name else "").strip()
+            greeting = f"The user's first name is {first_name}. " if first_name else ""
+            area_clause = (
+                f"Their primary focus area is **{area.replace('(', '').replace(')', '').strip()}**. "
+                if area and "general" not in area.lower()
+                else ""
+            )
+
+            if role_key == "attorney":
+                return (
+                    f"USER PROFILE — LEGAL PROFESSIONAL:\n"
+                    f"{greeting}"
+                    f"The user is a licensed attorney or legal practitioner. {area_clause}"
+                    f"COMMUNICATION STYLE FOR THIS SESSION:\n"
+                    f"- Use professional legal terminology without over-explaining basic concepts.\n"
+                    f"- Prioritize statutory precision: cite the exact Article number, Book, and Title.\n"
+                    f"- Provide a rigorous analysis of requisites, exceptions, and jurisprudential qualifications.\n"
+                    f"- Include practical litigation notes where applicable (jurisdiction, prescriptive periods, cause of action).\n"
+                    f"- Assume familiarity with legal Latin and procedural law; no need to define standard terms.\n\n"
+                )
+            elif role_key == "student":
+                return (
+                    f"USER PROFILE — LAW STUDENT / BAR CANDIDATE:\n"
+                    f"{greeting}"
+                    f"The user is a law student or bar candidate. {area_clause}"
+                    f"COMMUNICATION STYLE FOR THIS SESSION:\n"
+                    f"- Structure your answers for bar exam readiness: lead with the black-letter rule, then the exceptions.\n"
+                    f"- Use mnemonic-friendly structure (enumerate elements/requisites clearly with bold labels).\n"
+                    f"- Cite the controlling Article first, then the landmark Supreme Court case that applied it.\n"
+                    f"- Briefly explain WHY a rule exists (ratio legis) to aid doctrinal understanding.\n"
+                    f"- You may use legal Latin with a short parenthetical explanation.\n\n"
+                )
+            else:  # citizen
+                return (
+                    f"USER PROFILE — GENERAL PUBLIC / ORDINARY CITIZEN:\n"
+                    f"{greeting}"
+                    f"The user is a member of the general public with no legal background. {area_clause}"
+                    f"COMMUNICATION STYLE FOR THIS SESSION:\n"
+                    f"- Write in plain, everyday language. Replace legal jargon with simple words.\n"
+                    f"- Every time you use a legal term (e.g., quasi-delict, rescission, legitime), "
+                    f"immediately explain what it means in one simple sentence.\n"
+                    f"- Use relatable Filipino examples and analogies to illustrate abstract legal concepts.\n"
+                    f"- Prioritize the user's practical next step (what they should do) over theoretical analysis.\n"
+                    f"- Avoid Latin. Match the user's language: a Tagalog/Taglish query gets a Tagalog/Taglish answer.\n\n"
+                )
+
+        user_persona_prefix = build_user_persona_prefix(user_role, practice_area, user_name)
+
+        logging.info(
+            f"Received search request from user [{user_name or user_email or user_identifier}] "
+            f"role=[{user_role or 'unknown'}] area=[{practice_area or 'none'}]: {request.query[:80]}"
+        )
+
 
         async def sse_generator():
             acquired_immediately, ticket, err = await queue_manager.enter_queue(
@@ -1597,6 +1687,104 @@ async def search_documents(request: SearchRequest, raw_req: Request = None):
 
                 logging.info("Starting SSE stream with granular RAG stages and context memory...")
 
+                # ── Per-chat server-authoritative memory ──
+                # DB is source of truth; client `history` is fallback only.
+                _db_history = await asyncio.to_thread(
+                    session_memory.load_session_history,
+                    request.session_id,
+                    session_memory.HISTORY_LIMIT,
+                    user_identifier if user_identifier != "anon" else None,
+                    get_db_connection,
+                )
+                _client_dicts = [{"role": m.role, "content": m.content} for m in (request.history or [])]
+                canonical_history = session_memory.resolve_history(_client_dicts, _db_history)
+                canonical_msgs = session_memory.to_chat_messages(canonical_history)
+                # Snapshot before the current turn is persisted — history-recall
+                # answers must quote *prior* queries, not the recall question itself.
+                _recall_base = list(canonical_history)
+                session_summary = await asyncio.to_thread(
+                    session_memory.load_session_summary, request.session_id, get_db_connection
+                )
+                server_citations = await asyncio.to_thread(
+                    session_memory.load_recent_citations,
+                    request.session_id,
+                    session_memory.PRIOR_CITATIONS_LIMIT,
+                    get_db_connection,
+                )
+                merged_prior_citations = session_memory.merge_prior_citations(
+                    server_citations, request.prior_citations
+                )
+                # Persist the incoming user turn (deduped vs the frontend's
+                # fire-and-forget POST to /api/sessions/:id/messages).
+                await asyncio.to_thread(
+                    session_memory.save_user_message,
+                    request.session_id,
+                    request.query,
+                    get_db_connection,
+                )
+                # Refresh canonical history to include the just-saved user turn.
+                if _db_history is not None:
+                    _db_history2 = await asyncio.to_thread(
+                        session_memory.load_session_history,
+                        request.session_id,
+                        session_memory.HISTORY_LIMIT,
+                        user_identifier if user_identifier != "anon" else None,
+                        get_db_connection,
+                    )
+                    if _db_history2:
+                        canonical_history = session_memory.resolve_history(_client_dicts, _db_history2)
+                        canonical_msgs = session_memory.to_chat_messages(canonical_history)
+
+                # ── History-recall shortcut ──
+                # Meta-questions about the conversation itself ("whats my first query
+                # all about") are answered deterministically from the stored
+                # transcript. They bypass domain gating, ambiguity detection,
+                # retrieval, and NLI — none of which apply to conversation recall.
+                if session_memory.is_history_recall_query(request.query):
+                    recall_text = session_memory.build_recall_response(request.query, _recall_base)
+                    recall_analytics = {
+                        'nli_score': None,
+                        'nli_status': 'N/A',
+                        'top_article_score': 0.0,
+                        'is_document_legal': None,
+                        'is_out_of_domain': False,
+                        'domain_category': 'conversation',
+                        'target_domain': None,
+                    }
+                    yield f"data: {dumps({'type': 'status', 'stage': 'streaming', 'message': 'Recalling conversation history...'})}\n\n"
+                    yield f"data: {dumps({'type': 'citations', 'data': []})}\n\n"
+                    yield f"data: {dumps({'type': 'accumulated_citations', 'data': merged_prior_citations})}\n\n"
+                    yield f"data: {dumps({'type': 'legal_analytics', 'data': recall_analytics})}\n\n"
+                    yield f"data: {dumps({'type': 'text', 'text': recall_text})}\n\n"
+                    yield f"data: {dumps({'type': 'done'})}\n\n"
+                    save_assistant_message_to_db(request.session_id, recall_text, [], recall_analytics)
+                    return
+
+                # ── Summary-request shortcut ──
+                # "In short...", "buod", "paikliin" and similar ask to shorten the
+                # answer just given. They are answered deterministically from the
+                # stored transcript and bypass ambiguity detection (which would
+                # otherwise re-interrogate already-resolved facts), retrieval, and NLI.
+                if session_memory.is_summary_request(request.query):
+                    short_text = session_memory.build_summary_response(request.query, _recall_base)
+                    short_analytics = {
+                        'nli_score': None,
+                        'nli_status': 'N/A',
+                        'top_article_score': 0.0,
+                        'is_document_legal': None,
+                        'is_out_of_domain': False,
+                        'domain_category': 'conversation',
+                        'target_domain': None,
+                    }
+                    yield f"data: {dumps({'type': 'status', 'stage': 'streaming', 'message': 'Summarizing the previous answer...'})}\n\n"
+                    yield f"data: {dumps({'type': 'citations', 'data': []})}\n\n"
+                    yield f"data: {dumps({'type': 'accumulated_citations', 'data': merged_prior_citations})}\n\n"
+                    yield f"data: {dumps({'type': 'legal_analytics', 'data': short_analytics})}\n\n"
+                    yield f"data: {dumps({'type': 'text', 'text': short_text})}\n\n"
+                    yield f"data: {dumps({'type': 'done'})}\n\n"
+                    save_assistant_message_to_db(request.session_id, short_text, [], short_analytics)
+                    return
+
                 # Resolve document filename and sample content if analyzing an uploaded document
                 doc_filename = request.document_name
                 doc_sample_text = ""
@@ -1638,7 +1826,7 @@ async def search_documents(request: SearchRequest, raw_req: Request = None):
                             except Exception:
                                 pass
 
-                history_dicts = [{"role": msg.role, "content": msg.content} for msg in request.history]
+                history_dicts = canonical_history
 
                 # Stage 0: Document Domain Classification (Guardrail for Document Analysis)
                 if request.document_id:
@@ -1695,7 +1883,7 @@ YOUR MANDATORY REFUSAL RULES:
                                 is_first_chunk = False
                                 yield f"data: {dumps({'type': 'status', 'stage': 'streaming', 'message': 'Streaming domain boundary notice...'})}\n\n"
                                 yield f"data: {dumps({'type': 'citations', 'data': []})}\n\n"
-                                yield f"data: {dumps({'type': 'accumulated_citations', 'data': []})}\n\n"
+                                yield f"data: {dumps({'type': 'accumulated_citations', 'data': merged_prior_citations})}\n\n"
                                 yield f"data: {dumps({'type': 'legal_analytics', 'data': analytics_payload})}\n\n"
                             full_text += chunk
                             yield f"data: {dumps({'type': 'text', 'text': chunk})}\n\n"
@@ -1722,7 +1910,7 @@ You may upload and analyze valid legal documents within the scope of Philippine 
 Please upload a legal document falling under Philippine Civil Law to proceed with statutory analysis."""
                             yield f"data: {dumps({'type': 'status', 'stage': 'streaming', 'message': 'Streaming domain boundary notice...'})}\n\n"
                             yield f"data: {dumps({'type': 'citations', 'data': []})}\n\n"
-                            yield f"data: {dumps({'type': 'accumulated_citations', 'data': []})}\n\n"
+                            yield f"data: {dumps({'type': 'accumulated_citations', 'data': merged_prior_citations})}\n\n"
                             yield f"data: {dumps({'type': 'legal_analytics', 'data': analytics_payload})}\n\n"
                             yield f"data: {dumps({'type': 'text', 'text': fallback_refusal})}\n\n"
                             full_text = fallback_refusal
@@ -1793,7 +1981,7 @@ YOUR MANDATORY REDIRECTION RULES:
                                 is_first_chunk = False
                                 yield f"data: {dumps({'type': 'status', 'stage': 'streaming', 'message': 'Streaming statutory redirection...'})}\n\n"
                                 yield f"data: {dumps({'type': 'citations', 'data': []})}\n\n"
-                                yield f"data: {dumps({'type': 'accumulated_citations', 'data': []})}\n\n"
+                                yield f"data: {dumps({'type': 'accumulated_citations', 'data': merged_prior_citations})}\n\n"
                                 yield f"data: {dumps({'type': 'legal_analytics', 'data': analytics_payload})}\n\n"
                             full_text += chunk
                             yield f"data: {dumps({'type': 'text', 'text': chunk})}\n\n"
@@ -1816,7 +2004,7 @@ While the primary legal framework is {target_domain}, any independent civil acti
 CIVIL-LEX is strictly specialized in Philippine Civil Law (RA 386). Please upload Philippine civil law contracts, deeds, leases, or property agreements for Civil Code analysis."""
                             yield f"data: {dumps({'type': 'status', 'stage': 'streaming', 'message': 'Streaming statutory redirection...'})}\n\n"
                             yield f"data: {dumps({'type': 'citations', 'data': []})}\n\n"
-                            yield f"data: {dumps({'type': 'accumulated_citations', 'data': []})}\n\n"
+                            yield f"data: {dumps({'type': 'accumulated_citations', 'data': merged_prior_citations})}\n\n"
                             yield f"data: {dumps({'type': 'legal_analytics', 'data': analytics_payload})}\n\n"
                             yield f"data: {dumps({'type': 'text', 'text': fallback_redirection})}\n\n"
                             full_text = fallback_redirection
@@ -1827,7 +2015,7 @@ CIVIL-LEX is strictly specialized in Philippine Civil Law (RA 386). Please uploa
                         return
 
                 # Stage 0.5: Query Intent Classification & Domain Boundary Gating (for General Chat or In-Domain Civil Documents)
-                intent_info = classify_query_intent(request.query, request.history, request.document_id, doc_filename)
+                intent_info = classify_query_intent(request.query, canonical_msgs, request.document_id, doc_filename)
                 logging.info(f"Query intent classification: {intent_info}")
 
                 # Branch A: Completely Non-Legal Inquiries (Bypass vector retrieval & suppress citations)
@@ -1871,14 +2059,14 @@ YOUR MANDATORY RESPONSE RULES:
                             is_first_chunk = False
                             yield f"data: {dumps({'type': 'status', 'stage': 'streaming', 'message': 'Streaming domain boundary notice...'})}\n\n"
                             yield f"data: {dumps({'type': 'citations', 'data': []})}\n\n"
-                            yield f"data: {dumps({'type': 'accumulated_citations', 'data': []})}\n\n"
+                            yield f"data: {dumps({'type': 'accumulated_citations', 'data': merged_prior_citations})}\n\n"
                             yield f"data: {dumps({'type': 'legal_analytics', 'data': analytics_payload})}\n\n"
                         full_text += chunk
                         yield f"data: {dumps({'type': 'text', 'text': chunk})}\n\n"
 
                     if is_first_chunk:
                         yield f"data: {dumps({'type': 'citations', 'data': []})}\n\n"
-                        yield f"data: {dumps({'type': 'accumulated_citations', 'data': []})}\n\n"
+                        yield f"data: {dumps({'type': 'accumulated_citations', 'data': merged_prior_citations})}\n\n"
                         yield f"data: {dumps({'type': 'legal_analytics', 'data': analytics_payload})}\n\n"
 
                     logging.info("Finished streaming non-legal refusal.")
@@ -1924,14 +2112,14 @@ YOUR MANDATORY REDIRECTION RULES:
                             is_first_chunk = False
                             yield f"data: {dumps({'type': 'status', 'stage': 'streaming', 'message': 'Streaming statutory redirection...'})}\n\n"
                             yield f"data: {dumps({'type': 'citations', 'data': []})}\n\n"
-                            yield f"data: {dumps({'type': 'accumulated_citations', 'data': []})}\n\n"
+                            yield f"data: {dumps({'type': 'accumulated_citations', 'data': merged_prior_citations})}\n\n"
                             yield f"data: {dumps({'type': 'legal_analytics', 'data': analytics_payload})}\n\n"
                         full_text += chunk
                         yield f"data: {dumps({'type': 'text', 'text': chunk})}\n\n"
 
                     if is_first_chunk:
                         yield f"data: {dumps({'type': 'citations', 'data': []})}\n\n"
-                        yield f"data: {dumps({'type': 'accumulated_citations', 'data': []})}\n\n"
+                        yield f"data: {dumps({'type': 'accumulated_citations', 'data': merged_prior_citations})}\n\n"
                         yield f"data: {dumps({'type': 'legal_analytics', 'data': analytics_payload})}\n\n"
 
                     logging.info("Finished streaming legal redirection.")
@@ -1946,7 +2134,7 @@ YOUR MANDATORY REDIRECTION RULES:
                     yield f"data: {dumps({'type': 'status', 'stage': 'embedding', 'message': 'Analyzing query context & completeness...'})}\n\n"
                     ambiguity_result = await detect_ambiguity(
                         request.query,
-                        history=request.history,
+                        history=canonical_msgs,
                         document_id=request.document_id,
                         use_llm=True,
                     )
@@ -1964,7 +2152,7 @@ YOUR MANDATORY REDIRECTION RULES:
                     logging.info(f"Query enriched with clarification context: {effective_query[:200]}")
 
                 # Context-aware query expansion for hybrid search
-                search_query = build_contextual_query(effective_query, request.history, doc_filename)
+                search_query = build_contextual_query(effective_query, canonical_msgs, doc_filename)
                 logging.info(f"Contextualized search query: {search_query}")
 
                 # Stage 1: Embedding the prompt
@@ -2006,7 +2194,7 @@ YOUR MANDATORY REDIRECTION RULES:
                     seen_cit_keys.add(get_citation_key(r))
 
                 retained_prior = []
-                for pc in (request.prior_citations or []):
+                for pc in merged_prior_citations:
                     ckey = get_citation_key(pc)
                     if ckey not in seen_cit_keys:
                         seen_cit_keys.add(ckey)
@@ -2125,7 +2313,13 @@ YOUR TASK IN THIS ACTIVE SESSION:
    - Anchor every substantive legal rule or finding with its bracketed citation (e.g. [Art. 1654] or [Art. 1191]).
 4. FACTUAL INTEGRITY: If a specific fact or term is stated in the document excerpts, state it clearly. Do not assume or hallucinate clauses not found in the excerpts.
 
-5. MANDATORY RESPONSE FORMATTING & MARKDOWN STRUCTURE:
+5. PLAIN LANGUAGE FOR ORDINARY CITIZENS (THESIS REQUIREMENT — applies to every section below):
+   - Your reader is a normal Filipino citizen, not a lawyer. Write in short, simple sentences using everyday words.
+   - Every time you use a legal term (e.g., quasi-delict, rescission, moral damages, jurisdiction), immediately explain what it means in plain words beside it.
+   - Never use Latin or lawyer jargon without a plain explanation. Match the user's language: a Tagalog/Taglish query gets a Tagalog/Taglish answer.
+   - ALWAYS keep the bracketed citations ([Art. XXXX]) — plain wording never removes legal grounding.
+
+6. MANDATORY RESPONSE FORMATTING & MARKDOWN STRUCTURE:
    Your output MUST be formatted using standard GitHub-flavored Markdown. Structure your response into clear, distinct sections:
 
    ### 📌 Summary & Direct Conclusion
@@ -2145,11 +2339,11 @@ YOUR TASK IN THIS ACTIVE SESSION:
    [Detailed analysis applying statutory provisions to the document. If the user requested a Tagalog explanation ("explain in tagalog" / "paliwanag sa tagalog"), provide this analysis in clear, professional Tagalog while preserving statutory Article numbers.]
 
    ### 📋 Legal Action Summary
-   (Include this section ONLY if the document review reveals actionable violations, contractual breaches, or enforceable remedies. Omit completely if the inquiry is purely descriptive or informational.)
-   - **Governing Civil Code Article(s)**: [List specific RA 386 articles, e.g., Article 1191, Article 1654]
-   - **Competent Court / Jurisdiction**: [Specify court based on RA 11576 thresholds: MTC (<= 2M), RTC (> 2M or incapable of pecuniary estimation), Family Court, etc.]
-   - **Pre-filing Requirement**: [State whether Katarungang Pambarangay / Barangay Conciliation is mandatory or exempt]
-   - **Possible Cause of Action to File**: [Exact technical legal title, e.g., Action for Specific Performance, Judicial Rescission, Unlawful Detainer, Sum of Money, Damages]
+   (Include this section ONLY if the document review reveals actionable violations, contractual breaches, or enforceable remedies. Omit completely if the inquiry is purely descriptive or informational. Write every bullet in plain, non-lawyer language: technical title first, then what it means and what the citizen must actually do, in one simple sentence.)
+   - **Governing Civil Code Article(s)**: [List specific RA 386 articles, e.g., Article 1191, Article 1654] + one plain sentence per article on what it means for the reader.
+   - **Competent Court / Jurisdiction**: [Specify court based on RA 11576 thresholds: MTC (<= 2M), RTC (> 2M or incapable of pecuniary estimation), Family Court, etc.] + one plain sentence on where to go.
+   - **Pre-filing Requirement**: [State whether Katarungang Pambarangay / Barangay Conciliation is mandatory or exempt] + the concrete first step in plain words.
+   - **Possible Cause of Action to File**: [Technical legal title + plain-meaning translation: what the case asks the court to do, in one simple sentence. Recommend ONLY civil actions under RA 386/EO 209 — never advise filing criminal charges.]
 
 ACTIVE DOCUMENT:
 Filename: {doc_display_name}
@@ -2218,14 +2412,30 @@ MANDATORY RAGAS COMPLIANCE & LEGAL ACCURACY RULES:
 
    ### 📋 Legal Action Summary
    (CRITICAL RULE FOR THIS SECTION: Include `### 📋 Legal Action Summary` ONLY when the query presents an actionable dispute, breach, claim, injury, or legal conflict requiring judicial or barangay proceedings. If the query is purely informational, conceptual, or structural—such as asking for the total number of articles, codal breakdown, definitions, or history—OMIT THIS ENTIRE SECTION COMPLETELY. Do not output N/A placeholders; simply end the response after `### ⚖️ Legal Analysis & Application`.)
-   - **Governing Civil Code Article(s)**: [List specific RA 386 articles, e.g., Article 56, Article 1191]
-   - **Competent Court / Jurisdiction**: [Specify court based on RA 11576 thresholds: MTC (≤ ₱2M), RTC (> ₱2M or incapable of pecuniary estimation), Family Court, etc.]
-   - **Pre-filing Requirement**: [State whether Katarungang Pambarangay / Barangay Conciliation is mandatory or exempt]
-   - **Possible Cause of Action to File**: [Exact technical legal title, e.g., Action for Nullity of Marriage, Action for Judicial Rescission, Action for Damages]
+   - **Governing Civil Code Article(s)**: [List specific RA 386 articles, e.g., Article 56, Article 1191] + one plain sentence per article on what it means for the reader.
+   - **Competent Court / Jurisdiction**: [Specify court based on RA 11576 thresholds: MTC (≤ ₱2M), RTC (> ₱2M or incapable of pecuniary estimation), Family Court, etc.] + one plain sentence on where to go.
+   - **Pre-filing Requirement**: [State whether Katarungang Pambarangay / Barangay Conciliation is mandatory or exempt] + the concrete first step in plain words.
+   - **Possible Cause of Action to File**: [Technical legal title + plain-meaning translation: what the case asks the court to do, in one simple sentence. Recommend ONLY civil actions under RA 386/EO 209 — never advise filing criminal charges.]
+
+7. PLAIN LANGUAGE FOR ORDINARY CITIZENS (THESIS REQUIREMENT — applies to every section above):
+   - Your reader is a normal Filipino citizen, not a lawyer. Write in short, simple sentences using everyday words.
+   - Every time you use a legal term (e.g., quasi-delict, rescission, moral damages, jurisdiction), immediately explain what it means in plain words beside it.
+   - Never use Latin or lawyer jargon without a plain explanation. Match the user's language: a Tagalog/Taglish query gets a Tagalog/Taglish answer.
+   - ALWAYS keep the bracketed citations ([Art. XXXX]) — plain wording never removes legal grounding.
 
 CONTEXT:
 {context_str}
 """
+
+                # Inject user persona prefix at the top so the LLM always
+                # sees the user's professional profile first.
+                if user_persona_prefix:
+                    system_prompt = user_persona_prefix + system_prompt
+
+                # Inject rolling per-chat summary (long-chat memory) if present.
+                system_prompt = session_memory.inject_summary_into_system_prompt(
+                    system_prompt, session_summary
+                )
 
                 # Stage 4: Thinking / Reasoning
                 think_msg = (
@@ -2236,7 +2446,7 @@ CONTEXT:
                 yield f"data: {dumps({'type': 'status', 'stage': 'thinking', 'message': think_msg})}\n\n"
 
                 # Stage 5: Character stream from LLM
-                history_dicts = [{"role": msg.role, "content": msg.content} for msg in request.history]
+                history_dicts = canonical_history
                 full_text = ""
                 is_first_chunk = True
 
@@ -2257,7 +2467,8 @@ CONTEXT:
                     logging.info("Model response detected as refusal/out-of-scope; sanitizing citations and NLI score.")
                     is_out_of_domain = True
                     results = []
-                    accumulated_citations = []
+                    # Session-level retained citations survive: only this turn's
+                    # per-message citations are cleared (NLI stays per-turn).
                     analytics_payload = {
                         'nli_score': None,
                         'nli_status': 'Out of Domain',
@@ -2269,13 +2480,29 @@ CONTEXT:
                     }
                     # Emit sanitized events to clear any noise citations on refusals
                     yield f"data: {dumps({'type': 'citations', 'data': []})}\n\n"
-                    yield f"data: {dumps({'type': 'accumulated_citations', 'data': []})}\n\n"
+                    yield f"data: {dumps({'type': 'accumulated_citations', 'data': merged_prior_citations})}\n\n"
                     yield f"data: {dumps({'type': 'legal_analytics', 'data': analytics_payload})}\n\n"
 
                 # ── Post-Generation Neuro-Symbolic Hybrid NLI Verification ─────
                 # Run the hybrid NLI engine (Symbolic Logic + Gemma in LM Studio)
                 # on the completed answer against retrieved context to compute
                 # accurate statutory faithfulness and detect contradictions.
+                # Follow-up suggestions are generated concurrently so they don't
+                # add latency after NLI finishes.
+                followup_task = None
+                if not is_out_of_domain and full_text.strip():
+                    _prior_user_turns = [
+                        m.get("content", "") for m in canonical_history
+                        if isinstance(m, dict) and m.get("role") == "user"
+                    ][-2:]
+                    followup_task = asyncio.create_task(
+                        followup_svc.generate_followups(
+                            query=request.query,
+                            answer=full_text,
+                            prior_user_turns=_prior_user_turns,
+                            doc_filename=doc_filename if is_doc_analysis else None,
+                        )
+                    )
                 if not is_out_of_domain and full_text.strip():
                     # Notify frontend that response generation finished and statutory NLI audit has started
                     yield f"data: {dumps({'type': 'status', 'stage': 'evaluating_nli', 'message': 'Auditing statutory grounding & NLI entailment...'})}\n\n"
@@ -2313,12 +2540,28 @@ CONTEXT:
                     except Exception as nli_err:
                         logging.error(f"Post-gen Hybrid NLI failed: {nli_err}")
 
+                # ── LLM-generated follow-up suggestions (best-effort) ──
+                if followup_task is not None:
+                    try:
+                        suggestions = await followup_task
+                    except Exception as fu_err:
+                        logging.warning(f"Follow-up suggestion task failed: {fu_err}")
+                        suggestions = []
+                    if suggestions:
+                        yield f"data: {dumps({'type': 'follow_ups', 'data': suggestions})}\n\n"
+
                 # Signal completion
                 logging.info("Finished streaming response.")
                 yield f"data: {dumps({'type': 'done'})}\n\n"
 
                 # Save to DB if valid UUID session_id is provided
                 save_assistant_message_to_db(request.session_id, full_text, results, analytics_payload)
+
+                # Best-effort rolling summary refresh for long chats (never blocks SSE — already done).
+                try:
+                    await session_memory.maybe_refresh_summary(request.session_id, get_db_connection)
+                except Exception as summ_err:
+                    logging.warning(f"Session summary refresh failed: {summ_err}")
 
             except Exception as stream_err:
                 logging.error(f"Error in SSE stream generation: {stream_err}", exc_info=True)

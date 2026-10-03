@@ -43,6 +43,8 @@ interface AuthContextType {
   }) => Promise<{ success: boolean; error?: string; sessionCreated: boolean }>;
   signOut: (reason?: string) => Promise<void>;
   refreshSession: () => Promise<Session | null>;
+  verifyOtp: (email: string, token: string) => Promise<{ success: boolean; error?: string }>;
+  resendVerificationOtp: (email: string) => Promise<{ success: boolean; error?: string }>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -89,6 +91,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       const activeSession = await getValidSession();
       if (activeSession) {
+        if (!activeSession.user.email_confirmed_at) {
+          await signOutUser("Please verify your email address to continue.");
+          setSession(null);
+          setUser(null);
+          setIsLoading(false);
+          return;
+        }
         setSession(activeSession);
         setUser(activeSession.user);
         sendHeartbeat(activeSession.access_token, "Active");
@@ -116,6 +125,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           setUser(null);
           clearAllAuthStorage();
         } else if (event === "SIGNED_IN" || event === "TOKEN_REFRESHED" || event === "USER_UPDATED") {
+          if (!newSession.user.email_confirmed_at) {
+            await signOutUser("Please verify your email address to continue.");
+            setSession(null);
+            setUser(null);
+            setIsLoading(false);
+            return;
+          }
           if (isSessionExpired()) {
             await signOutUser("Your 15-day session has expired.");
             setSession(null);
@@ -327,9 +343,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             Authorization: `Bearer ${session.access_token}`,
           },
           keepalive: true,
-        }).catch(() => {});
+        }).catch(() => { });
       }
-    } catch (_) {}
+    } catch (_) { }
     await signOutUser(reason);
     setSession(null);
     setUser(null);
@@ -349,6 +365,71 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return null;
   };
 
+  const verifyOtp = async (email: string, token: string) => {
+    try {
+      const cleanEmail = email.trim().toLowerCase();
+      const cleanToken = token.trim();
+
+      const { data, error } = await supabase.auth.verifyOtp({
+        email: cleanEmail,
+        token: cleanToken,
+        type: "signup",
+      });
+
+      if (error) {
+        return {
+          success: false,
+          error: error.message || "Invalid or expired verification code.",
+        };
+      }
+
+      // Enforce manual sign-in policy: purge newly issued session
+      try {
+        await supabase.auth.signOut();
+      } catch (_) { }
+      clearAllAuthStorage();
+      setSession(null);
+      setUser(null);
+
+      return { success: true };
+    } catch (err: unknown) {
+      return {
+        success: false,
+        error: err instanceof Error ? err.message : "Verification failed.",
+      };
+    }
+  };
+
+  const resendVerificationOtp = async (email: string) => {
+    try {
+      const cleanEmail = email.trim().toLowerCase();
+      const { error } = await supabase.auth.resend({
+        type: "signup",
+        email: cleanEmail,
+      });
+
+      if (error) {
+        if (error.message?.toLowerCase().includes("rate limit") || error.code === "over_email_send_rate_limit") {
+          return {
+            success: false,
+            error: "Too many email requests sent. Please check your inbox or spam folder for the code already sent, or wait a minute before requesting another.",
+          };
+        }
+        return {
+          success: false,
+          error: error.message || "Failed to resend verification code.",
+        };
+      }
+
+      return { success: true };
+    } catch (err: unknown) {
+      return {
+        success: false,
+        error: err instanceof Error ? err.message : "Failed to resend verification code.",
+      };
+    }
+  };
+
   const value: AuthContextType = {
     user,
     session,
@@ -360,6 +441,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     signUp,
     signOut,
     refreshSession,
+    verifyOtp,
+    resendVerificationOtp,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

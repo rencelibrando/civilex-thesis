@@ -14,6 +14,7 @@ import {
   ShieldCheck,
   Clock,
   Info,
+  Trash2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -27,7 +28,7 @@ import {
 function LoginFormContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { signIn, isAuthenticated, isLoading: isAuthLoading, logoutReason } = useAuth();
+  const { signIn, isAuthenticated, isLoading: isAuthLoading, logoutReason, resendVerificationOtp } = useAuth();
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -36,10 +37,21 @@ function LoginFormContent() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
   const [lockoutSeconds, setLockoutSeconds] = useState<number>(0);
+  const [unverifiedEmail, setUnverifiedEmail] = useState<string | null>(null);
 
   const redirectUrl = searchParams.get("redirect") || "/dashboard";
   const urlReason = searchParams.get("reason");
   const registered = searchParams.get("registered");
+  const verified = searchParams.get("verified");
+  const deleted = searchParams.get("deleted");
+  const reset = searchParams.get("reset");
+  const emailParam = searchParams.get("email");
+
+  useEffect(() => {
+    if (emailParam && !email) {
+      setEmail(emailParam);
+    }
+  }, [emailParam, email]);
 
   // Redirect if already logged in and not just logged out
   useEffect(() => {
@@ -106,10 +118,22 @@ function LoginFormContent() {
     try {
       const res = await signIn(email, password, rememberMe);
       if (!res.success) {
-        setErrorMsg(res.error || "Invalid email or password.");
-        const remaining = getRemainingLockoutSeconds();
-        if (remaining > 0) {
-          setLockoutSeconds(remaining);
+        if (res.error?.toLowerCase().includes("email not confirmed")) {
+          const cleanEmail = email.trim().toLowerCase();
+          setUnverifiedEmail(cleanEmail);
+          setErrorMsg("");
+          try {
+            await resendVerificationOtp(cleanEmail);
+          } catch (_) {}
+          router.push(`/verify-email?email=${encodeURIComponent(cleanEmail)}&prompt=existing`);
+          return;
+        } else {
+          setUnverifiedEmail(null);
+          setErrorMsg(res.error || "Invalid email or password.");
+          const remaining = getRemainingLockoutSeconds();
+          if (remaining > 0) {
+            setLockoutSeconds(remaining);
+          }
         }
       } else {
         // Full window navigation ensures all React context trees and in-memory caches are fresh for the authenticated user
@@ -138,7 +162,48 @@ function LoginFormContent() {
       </div>
 
       {/* Info/Notice Banners */}
-      {registered && (
+      {deleted && (
+        <div className="flex items-start gap-3 p-3.5 rounded-xl bg-destructive/10 border border-destructive/20 text-destructive text-xs sm:text-sm">
+          <Trash2 className="w-4 h-4 mt-0.5 shrink-0" />
+          <span>Your account and all associated data have been permanently deleted.</span>
+        </div>
+      )}
+
+      {reset && !deleted && !verified && (
+        <div className="flex items-start gap-3 p-3.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-700 dark:text-emerald-300 text-xs sm:text-sm">
+          <ShieldCheck className="w-4 h-4 mt-0.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
+          <span>Password reset successfully. Please enter your new password to sign in.</span>
+        </div>
+      )}
+
+      {verified && !deleted && (
+        <div className="flex items-start gap-3 p-3.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-700 dark:text-emerald-300 text-xs sm:text-sm">
+          <ShieldCheck className="w-4 h-4 mt-0.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
+          <span>Email verified successfully. Please enter your credentials to sign in.</span>
+        </div>
+      )}
+
+      {unverifiedEmail && !verified && (
+        <div className="flex items-start justify-between gap-3 p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-800 dark:text-amber-300 text-xs sm:text-sm">
+          <div className="flex items-start gap-2.5">
+            <AlertCircle className="w-4 h-4 mt-0.5 shrink-0 text-amber-600 dark:text-amber-400" />
+            <div>
+              <p className="font-semibold">Email verification required</p>
+              <p className="text-muted-foreground mt-0.5">
+                Your email has not been confirmed yet. Please enter the 6-digit code sent to your inbox.
+              </p>
+            </div>
+          </div>
+          <Link
+            href={`/verify-email?email=${encodeURIComponent(unverifiedEmail)}`}
+            className="shrink-0 inline-flex items-center gap-1 font-semibold px-2.5 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-900 dark:text-amber-200 transition-colors whitespace-nowrap"
+          >
+            Verify Now →
+          </Link>
+        </div>
+      )}
+
+      {registered && !unverifiedEmail && !verified && (
         <div className="flex items-start gap-3 p-3.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-700 dark:text-emerald-300 text-xs sm:text-sm">
           <ShieldCheck className="w-4 h-4 mt-0.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
           <span>Account created successfully. Please enter your credentials to sign in.</span>
@@ -199,17 +264,9 @@ function LoginFormContent() {
         </div>
 
         <div className="space-y-1.5">
-          <div className="flex items-center justify-between">
-            <label htmlFor="password" className="text-xs font-medium text-foreground">
-              Password
-            </label>
-            <Link
-              href="/reset-password"
-              className="text-xs font-medium text-primary hover:text-primary/80 transition-colors"
-            >
-              Forgot password?
-            </Link>
-          </div>
+          <label htmlFor="password" className="text-xs font-medium text-foreground">
+            Password
+          </label>
           <div className="relative">
             <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
             <Input

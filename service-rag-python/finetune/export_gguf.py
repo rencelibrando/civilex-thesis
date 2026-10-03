@@ -72,7 +72,7 @@ def main():
     gguf_dir = Path(f"{lora_dir}-gguf")
 
     if not merged_dir.exists():
-        print(f"❌ Error: Merged model directory '{merged_dir}' not found.")
+        print(f" Error: Merged model directory '{merged_dir}' not found.")
         print("Please run 'python merge_lora.py' first.")
         sys.exit(1)
 
@@ -95,9 +95,9 @@ def main():
     sanitize_tokenizer_config(merged_dir)
     patch_preprocessor_config(merged_dir)
 
-    # -------------------------------------------------------------------------
+    
     # PASS 1: Extract Multimodal Projector (mmproj) GGUF
-    # -------------------------------------------------------------------------
+    
     print(f"\n⚡ [1/3] Extracting Multimodal Projector: {mmproj_file.name}...")
     mmproj_cmd = [
         sys.executable,
@@ -112,9 +112,9 @@ def main():
     subprocess.run(mmproj_cmd, check=True)
     print(f"✓ Multimodal projector created: {mmproj_file.name}")
 
-    # -------------------------------------------------------------------------
+    
     # PASS 2: Convert Language Model to Text-Only BF16 GGUF
-    # -------------------------------------------------------------------------
+    
     print("\n⚡ [2/3] Converting Text Model weights to GGUF (BF16)...")
     text_cmd = [
         sys.executable,
@@ -128,9 +128,9 @@ def main():
     subprocess.run(text_cmd, check=True)
     print(f"✓ Full-precision text model created: {text_bf16_file.name}")
 
-    # -------------------------------------------------------------------------
+    
     # PASS 3: Quantize Text Model to Q4_K_M
-    # -------------------------------------------------------------------------
+    
     quant_bin_candidates = [
         llama_cpp_dir / "build" / "bin" / "llama-quantize",
         llama_cpp_dir / "llama-quantize",

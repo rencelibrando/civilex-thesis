@@ -2,8 +2,7 @@
 
 import { useState, useEffect, useMemo, useRef, useCallback, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
-import { BookOpen, ChevronRight, ChevronDown, Search, ArrowRight, Bookmark, Loader2, ChevronsUpDown, ChevronsDownUp, FileText, AlertCircle, List } from "lucide-react";
-import { useVirtualizer } from "@tanstack/react-virtual";
+import { BookOpen, ChevronRight, ChevronDown, Search, ArrowRight, Bookmark, Loader2, ChevronsUpDown, ChevronsDownUp, FileText, AlertCircle, List, X } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -56,6 +55,16 @@ function findTocPath(nodes: TreeNode[], targetId: string, trail: string[] = []):
     return null;
 }
 
+function extractArticleNumber(q: string): number | null {
+    if (!q) return null;
+    const match = q.match(/(?:art(?:icle|ile|cl|icel)?\.?\s*|^#?\s*)(\d{1,4})\b/i);
+    if (match) {
+        const num = parseInt(match[1], 10);
+        if (num >= 1 && num <= 2270) return num;
+    }
+    return null;
+}
+
 function CivilCodeContent() {
     const searchParams = useSearchParams();
     const [tocData, setTocData] = useState<TreeNode[]>([]);
@@ -70,15 +79,48 @@ function CivilCodeContent() {
     const [loadingArticle, setLoadingArticle] = useState(false);
     const [articleError, setArticleError] = useState("");
     const [searchQuery, setSearchQuery] = useState("");
+    const [remoteMatchedArticleIds, setRemoteMatchedArticleIds] = useState<string[]>([]);
+    const [isSearchingRemote, setIsSearchingRemote] = useState(false);
 
     // Full Jurisprudence Document Modal State
     const [selectedCase, setSelectedCase] = useState<JurisprudenceCase | null>(null);
 
-    const scrollContainerRef = useRef<HTMLDivElement>(null);
+    const desktopScrollRef = useRef<HTMLDivElement>(null);
 
     // Deep-link state (dashboard Civil Code Divisions -> TOC section/article)
     const lastDeepLinkKey = useRef<string | null>(null);
     const pendingScrollId = useRef<string | null>(null);
+
+    useEffect(() => {
+        const trimmed = searchQuery.trim();
+        if (trimmed.length < 2) return;
+
+        const controller = new AbortController();
+        const timer = setTimeout(async () => {
+            setIsSearchingRemote(true);
+            try {
+                const res = await fetch(`${BACKEND_URL}/api/civil-code/search?q=${encodeURIComponent(trimmed)}`, {
+                    signal: controller.signal,
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    const ids: string[] = (data.articles || []).map((a: { article_id: string }) => a.article_id);
+                    setRemoteMatchedArticleIds(ids);
+                }
+            } catch (err: unknown) {
+                if ((err as Error)?.name !== "AbortError") {
+                    console.error("Civil Code remote search error:", err);
+                }
+            } finally {
+                setIsSearchingRemote(false);
+            }
+        }, 180);
+
+        return () => {
+            clearTimeout(timer);
+            controller.abort();
+        };
+    }, [searchQuery]);
 
     useEffect(() => {
         async function fetchTOC() {
@@ -186,16 +228,30 @@ function CivilCodeContent() {
 
     // Flatten tree into a displayable list based on expand state
     const flatRows: FlatRow[] = useMemo(() => {
-        if (searchQuery) {
+        const trimmed = searchQuery.trim();
+        if (trimmed) {
+            const q = trimmed.toLowerCase();
+            const articleNum = extractArticleNumber(trimmed);
+            const remoteSet = new Set(
+                (trimmed.length >= 2 ? remoteMatchedArticleIds : []).map((id) => id.toLowerCase())
+            );
+
             // Search mode: flatten all leaf nodes that match
             const result: FlatRow[] = [];
             const flatten = (nodes: TreeNode[]) => {
                 for (const node of nodes) {
                     if (!node.children || node.children.length === 0) {
-                        if (
-                            node.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                            node.id.toLowerCase().includes(searchQuery.toLowerCase())
-                        ) {
+                        const titleLower = node.title.toLowerCase();
+                        const idLower = node.id.toLowerCase();
+
+                        const matchesTitle = titleLower.includes(q);
+                        const matchesId = idLower.includes(q);
+                        const matchesNum = articleNum
+                            ? idLower === `ra386-art${articleNum}` || titleLower === `article ${articleNum}`
+                            : false;
+                        const matchesRemote = remoteSet.has(idLower);
+
+                        if (matchesTitle || matchesId || matchesNum || matchesRemote) {
                             result.push({
                                 id: node.id,
                                 title: node.title,
@@ -235,15 +291,21 @@ function CivilCodeContent() {
         };
         walk(tocData, 0);
         return result;
-    }, [tocData, expandedNodes, searchQuery]);
+    }, [tocData, expandedNodes, searchQuery, remoteMatchedArticleIds]);
 
-    // Virtual list
-    const virtualizer = useVirtualizer({
-        count: flatRows.length,
-        getScrollElement: () => scrollContainerRef.current,
-        estimateSize: () => 36,
-        overscan: 20,
-    });
+    // Scroll the TOC to the deep-linked row once it is visible
+    useEffect(() => {
+        const targetId = pendingScrollId.current;
+        if (!targetId || flatRows.length === 0) return;
+        const index = flatRows.findIndex((r) => r.id === targetId);
+        if (index < 0) return;
+        pendingScrollId.current = null;
+        // Wait a tick for the rows to render, then scroll the row into view
+        const t = setTimeout(() => {
+            desktopScrollRef.current?.querySelector(`[data-index="${index}"]`)?.scrollIntoView({ block: "center" });
+        }, 50);
+        return () => clearTimeout(t);
+    }, [flatRows]);
 
     // Deep-link: ?toc=<branchId>&article=<leafId> from dashboard divisions
     useEffect(() => {
@@ -272,24 +334,6 @@ function CivilCodeContent() {
             fetchArticle(articleParam);
         }
     }, [tocData, loadingToc, searchParams, fetchArticle]);
-
-    // Scroll the TOC to the deep-linked row once it is visible
-    useEffect(() => {
-        const targetId = pendingScrollId.current;
-        if (!targetId || flatRows.length === 0) return;
-        const index = flatRows.findIndex((r) => r.id === targetId);
-        if (index < 0) return;
-        pendingScrollId.current = null;
-        // Wait a tick for the virtualizer to measure new rows
-        const t = setTimeout(() => {
-            try {
-                virtualizer.scrollToIndex(index, { align: "center" });
-            } catch {
-                scrollContainerRef.current?.querySelector(`[data-index="${index}"]`)?.scrollIntoView({ block: "center" });
-            }
-        }, 50);
-        return () => clearTimeout(t);
-    }, [flatRows, virtualizer]);
 
     return (
         <div className="flex h-full min-h-0 gap-3 xl:gap-4 2xl:gap-6 animate-fade-in bg-background/50">
@@ -335,14 +379,41 @@ function CivilCodeContent() {
                     </div>
 
                     <div className="relative">
-                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
                         <Input
-                            placeholder="Search chapters, articles..."
-                            className="pl-9 bg-background/50 border-border focus-visible:ring-primary shadow-sm"
+                            placeholder="Search articles, numbers, phrases (e.g. Art. 554, good faith)..."
+                            className="pl-9 pr-8 bg-background/50 border-border focus-visible:ring-primary shadow-sm text-xs sm:text-sm"
                             value={searchQuery}
                             onChange={(e) => setSearchQuery(e.target.value)}
                         />
+                        {isSearchingRemote && (
+                            <Loader2 className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 animate-spin text-amber-500" />
+                        )}
+                        {!isSearchingRemote && searchQuery && (
+                            <button
+                                type="button"
+                                onClick={() => setSearchQuery("")}
+                                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground cursor-pointer"
+                                title="Clear search"
+                            >
+                                <X className="w-3.5 h-3.5" />
+                            </button>
+                        )}
                     </div>
+                    {searchQuery.trim() && (
+                        <div className="flex items-center justify-between text-[11px] text-muted-foreground px-0.5 pt-0.5">
+                            <span>
+                                {flatRows.length} {flatRows.length === 1 ? "article" : "articles"} found
+                            </span>
+                            <button
+                                type="button"
+                                onClick={() => setSearchQuery("")}
+                                className="hover:text-primary underline cursor-pointer"
+                            >
+                                Show All
+                            </button>
+                        </div>
+                    )}
                 </div>
 
                 {/* Virtualized scroll container */}
@@ -368,75 +439,54 @@ function CivilCodeContent() {
                     </div>
                 ) : (
                     <div
-                        ref={scrollContainerRef}
-                        className="flex-1 overflow-y-auto p-2 min-h-0 custom-scrollbar will-change-transform"
+                        ref={desktopScrollRef}
+                        className="flex-1 overflow-y-auto p-2 min-h-0 custom-scrollbar"
                     >
-                        <div
-                            style={{
-                                height: `${virtualizer.getTotalSize()}px`,
-                                width: "100%",
-                                position: "relative",
-                            }}
-                        >
-                            {virtualizer.getVirtualItems().map((virtualRow) => {
-                                const row = flatRows[virtualRow.index];
-                                const isSelected = selectedArticleId === row.id;
-
-                                return (
-                                    <div
-                                        key={row.id}
-                                        data-index={virtualRow.index}
-                                        ref={virtualizer.measureElement}
-                                        style={{
-                                            position: "absolute",
-                                            top: 0,
-                                            left: 0,
-                                            width: "100%",
-                                            transform: `translateY(${virtualRow.start}px)`,
-                                        }}
-                                    >
-                                        <button
-                                            className={`w-full flex items-center py-1.5 px-2 rounded-lg transition-colors duration-150 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 cursor-pointer ${isSelected
-                                                ? "bg-indigo-500/10 dark:bg-indigo-500/20 text-indigo-700 dark:text-indigo-300 font-semibold border-l-2 border-indigo-600 dark:border-indigo-400 shadow-2xs"
-                                                : "hover:bg-accent"
+                        {flatRows.map((row, index) => {
+                            const isSelected = selectedArticleId === row.id;
+                            return (
+                                <button
+                                    key={row.id}
+                                    data-index={index}
+                                    className={`w-full flex items-start py-1.5 px-2 rounded-lg transition-colors duration-150 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 cursor-pointer ${isSelected
+                                        ? "bg-indigo-500/10 dark:bg-indigo-500/20 text-indigo-700 dark:text-indigo-300 font-semibold border-l-2 border-indigo-600 dark:border-indigo-400 shadow-2xs"
+                                        : "hover:bg-accent"
+                                        }`}
+                                    style={{ paddingLeft: `${row.depth * 1.1 + 0.35}rem` }}
+                                    onClick={() =>
+                                        row.isLeaf
+                                            ? fetchArticle(row.id)
+                                            : toggleNode(row.id)
+                                    }
+                                    aria-expanded={!row.isLeaf ? row.isExpanded : undefined}
+                                >
+                                    {!row.isLeaf ? (
+                                        row.isExpanded ? (
+                                            <ChevronDown className="w-3.5 h-3.5 mr-1.5 mt-0.5 text-muted-foreground flex-shrink-0 transition-transform" />
+                                        ) : (
+                                            <ChevronRight className="w-3.5 h-3.5 mr-1.5 mt-0.5 text-muted-foreground flex-shrink-0 transition-transform" />
+                                        )
+                                    ) : (
+                                        <FileText
+                                            className={`w-3 h-3 mr-1.5 mt-0.5 flex-shrink-0 ${isSelected
+                                                ? "text-indigo-600 dark:text-indigo-400"
+                                                : "text-muted-foreground/60"
                                                 }`}
-                                            style={{ paddingLeft: `${row.depth * 1.1 + 0.35}rem` }}
-                                            onClick={() =>
-                                                row.isLeaf
-                                                    ? fetchArticle(row.id)
-                                                    : toggleNode(row.id)
-                                            }
-                                            aria-expanded={!row.isLeaf ? row.isExpanded : undefined}
-                                        >
-                                            {!row.isLeaf ? (
-                                                row.isExpanded ? (
-                                                    <ChevronDown className="w-3.5 h-3.5 mr-1.5 text-muted-foreground flex-shrink-0 transition-transform" />
-                                                ) : (
-                                                    <ChevronRight className="w-3.5 h-3.5 mr-1.5 text-muted-foreground flex-shrink-0 transition-transform" />
-                                                )
-                                            ) : (
-                                                <FileText
-                                                    className={`w-3 h-3 mr-1.5 flex-shrink-0 ${isSelected
-                                                        ? "text-indigo-600 dark:text-indigo-400"
-                                                        : "text-muted-foreground/60"
-                                                        }`}
-                                                />
-                                            )}
-                                            <span
-                                                className={`text-xs sm:text-sm leading-tight ${row.depth === 0
-                                                    ? "font-semibold text-foreground"
-                                                    : isSelected
-                                                        ? "text-indigo-700 dark:text-indigo-300 font-semibold"
-                                                        : "text-muted-foreground"
-                                                    }`}
-                                            >
-                                                {row.title}
-                                            </span>
-                                        </button>
-                                    </div>
-                                );
-                            })}
-                        </div>
+                                        />
+                                    )}
+                                    <span
+                                        className={`flex-1 min-w-0 break-words text-xs sm:text-sm leading-snug ${row.depth === 0
+                                            ? "font-semibold text-foreground"
+                                            : isSelected
+                                                ? "text-indigo-700 dark:text-indigo-300 font-semibold"
+                                                : "text-muted-foreground"
+                                            }`}
+                                    >
+                                        {row.title}
+                                    </span>
+                                </button>
+                            );
+                        })}
                     </div>
                 )}
             </div>
@@ -463,7 +513,7 @@ function CivilCodeContent() {
                       />
                     </div>
                   </div>
-                  <div ref={scrollContainerRef} className="flex-1 overflow-y-auto p-2 min-h-0 custom-scrollbar">
+                  <div className="flex-1 overflow-y-auto p-2 min-h-0 custom-scrollbar">
                     {loadingToc ? (
                       <div className="space-y-4 p-2">
                         <Skeleton className="h-6 w-3/4 rounded-md" />
@@ -475,24 +525,28 @@ function CivilCodeContent() {
                       return (
                         <button
                           key={row.id}
-                          className={`w-full flex items-center py-1.5 px-2 rounded-lg transition-colors duration-150 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 cursor-pointer ${isSelected ? "bg-indigo-500/10 dark:bg-indigo-500/20 text-indigo-700 dark:text-indigo-300 font-semibold border-l-2 border-indigo-600 dark:border-indigo-400 shadow-2xs" : "hover:bg-accent"}`}
+                          className={`w-full flex items-start py-1.5 px-2 rounded-lg transition-colors duration-150 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 cursor-pointer ${isSelected ? "bg-indigo-500/10 dark:bg-indigo-500/20 text-indigo-700 dark:text-indigo-300 font-semibold border-l-2 border-indigo-600 dark:border-indigo-400 shadow-2xs" : "hover:bg-accent"}`}
                           style={{ paddingLeft: `${row.depth * 1.1 + 0.35}rem` }}
                           onClick={() => {
-                            row.isLeaf ? fetchArticle(row.id) : toggleNode(row.id);
-                            if (row.isLeaf) setIsTocSheetOpen(false);
+                            if (row.isLeaf) {
+                              fetchArticle(row.id);
+                              setIsTocSheetOpen(false);
+                            } else {
+                              toggleNode(row.id);
+                            }
                           }}
                           aria-expanded={!row.isLeaf ? row.isExpanded : undefined}
                         >
                           {!row.isLeaf ? (
                             row.isExpanded ? (
-                              <ChevronDown className="w-3.5 h-3.5 mr-1.5 text-muted-foreground flex-shrink-0" />
+                              <ChevronDown className="w-3.5 h-3.5 mr-1.5 mt-0.5 text-muted-foreground flex-shrink-0" />
                             ) : (
-                              <ChevronRight className="w-3.5 h-3.5 mr-1.5 text-muted-foreground flex-shrink-0" />
+                              <ChevronRight className="w-3.5 h-3.5 mr-1.5 mt-0.5 text-muted-foreground flex-shrink-0" />
                             )
                           ) : (
-                            <FileText className={`w-3 h-3 mr-1.5 flex-shrink-0 ${isSelected ? "text-indigo-600 dark:text-indigo-400" : "text-muted-foreground/60"}`} />
+                            <FileText className={`w-3 h-3 mr-1.5 mt-0.5 flex-shrink-0 ${isSelected ? "text-indigo-600 dark:text-indigo-400" : "text-muted-foreground/60"}`} />
                           )}
-                          <span className={`text-xs sm:text-sm leading-tight ${row.depth === 0 ? "font-semibold text-foreground" : isSelected ? "text-indigo-700 dark:text-indigo-300 font-semibold" : "text-muted-foreground"}`}>
+                          <span className={`flex-1 min-w-0 break-words text-xs sm:text-sm leading-snug ${row.depth === 0 ? "font-semibold text-foreground" : isSelected ? "text-indigo-700 dark:text-indigo-300 font-semibold" : "text-muted-foreground"}`}>
                             {row.title}
                           </span>
                         </button>

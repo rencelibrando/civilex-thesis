@@ -30,6 +30,195 @@ router.get('/stats', async (req, res) => {
   }
 });
 
+function extractArticleNumber(q) {
+  if (!q) return null;
+  // If pure number: must be whole number 1 to 2270 (not a 5-6 digit G.R. number)
+  const pureNumMatch = q.trim().match(/^#?\s*(\d{1,4})$/);
+  if (pureNumMatch) {
+    const num = parseInt(pureNumMatch[1], 10);
+    if (num >= 1 && num <= 2270) return num;
+    return null;
+  }
+  // If prefixed with article/art/artile/etc.
+  const prefixMatch = q.match(/\b(?:art(?:icle|ile|cl|icel)?\.?\s*)(\d{1,4})\b/i);
+  if (prefixMatch) {
+    const num = parseInt(prefixMatch[1], 10);
+    if (num >= 1 && num <= 2270) return num;
+  }
+  return null;
+}
+
+function makeSnippet(content, query) {
+  if (!content) return '';
+  const idx = content.toLowerCase().indexOf(query.toLowerCase());
+  if (idx === -1) {
+    return content.length > 150 ? content.slice(0, 150) + '...' : content;
+  }
+  const start = Math.max(0, idx - 45);
+  const end = Math.min(content.length, idx + query.length + 85);
+  let snippet = content.slice(start, end).trim();
+  if (start > 0) snippet = '...' + snippet;
+  if (end < content.length) snippet = snippet + '...';
+  return snippet;
+}
+
+router.get('/search', async (req, res) => {
+  const query = (req.query.q || '').toString().trim();
+  const limit = Math.min(parseInt(req.query.limit || '15', 10), 50);
+
+  if (!query) {
+    return res.json({ query: '', exact_article: null, articles: [], toc_sections: [], total_matches: 0 });
+  }
+
+  try {
+    const articleNum = extractArticleNumber(query);
+    const seenArticleIds = new Set();
+    const articles = [];
+    let exactArticle = null;
+
+    // 1. Exact article lookup by parsed article number
+    if (articleNum) {
+      const { data: numArts, error: numErr } = await supabase
+        .from('civil_code_articles')
+        .select('article_id, article_number, hierarchy, content')
+        .eq('article_number', articleNum)
+        .limit(1);
+
+      if (!numErr && numArts && numArts.length > 0) {
+        const art = numArts[0];
+        exactArticle = {
+          article_id: art.article_id,
+          article_number: art.article_number,
+          title: `Article ${art.article_number}`,
+          hierarchy: art.hierarchy || {},
+          content: art.content || '',
+          snippet: art.content ? (art.content.length > 160 ? art.content.slice(0, 160) + '...' : art.content) : '',
+          match_type: 'exact_number'
+        };
+        seenArticleIds.add(art.article_id);
+        articles.push(exactArticle);
+      }
+    }
+
+    // 2. Phrase & keyword search in article content
+    // Strip leading "article 554" or "artile 554" if there's trailing phrase text, e.g. "article 554 possession"
+    const cleanedPhrase = query.replace(/^(?:art(?:icle|ile|cl|icel)?\.?\s*)?\d+\s*/i, '').trim();
+    const searchPhrase = cleanedPhrase.length >= 2 ? cleanedPhrase : (articleNum ? null : (query.length >= 2 ? query : null));
+
+    if (searchPhrase) {
+      const remainingLimit = limit - articles.length;
+      if (remainingLimit > 0) {
+        const { data: contentArts, error: contentErr } = await supabase
+          .from('civil_code_articles')
+          .select('article_id, article_number, hierarchy, content')
+          .ilike('content', `%${searchPhrase}%`)
+          .limit(remainingLimit);
+
+        if (!contentErr && contentArts) {
+          for (const art of contentArts) {
+            if (!seenArticleIds.has(art.article_id)) {
+              seenArticleIds.add(art.article_id);
+              articles.push({
+                article_id: art.article_id,
+                article_number: art.article_number,
+                title: art.article_number > 0 ? `Article ${art.article_number}` : (art.hierarchy?.chapter_name || art.article_id),
+                hierarchy: art.hierarchy || {},
+                content: art.content || '',
+                snippet: makeSnippet(art.content, searchPhrase),
+                match_type: 'phrase'
+              });
+            }
+          }
+        }
+      }
+
+      // 3. Search TOC hierarchy (chapter name, title name)
+      const hierRemaining = limit - articles.length;
+      if (hierRemaining > 0) {
+        const { data: hierArts, error: hierErr } = await supabase
+          .from('civil_code_articles')
+          .select('article_id, article_number, hierarchy, content')
+          .or(`hierarchy->>chapter_name.ilike.%${searchPhrase}%,hierarchy->>title_name.ilike.%${searchPhrase}%`)
+          .limit(hierRemaining);
+
+        if (!hierErr && hierArts) {
+          for (const art of hierArts) {
+            if (!seenArticleIds.has(art.article_id)) {
+              seenArticleIds.add(art.article_id);
+              articles.push({
+                article_id: art.article_id,
+                article_number: art.article_number,
+                title: art.article_number > 0 ? `Article ${art.article_number}` : (art.hierarchy?.chapter_name || art.article_id),
+                hierarchy: art.hierarchy || {},
+                content: art.content || '',
+                snippet: art.content ? (art.content.length > 150 ? art.content.slice(0, 150) + '...' : art.content) : '',
+                match_type: 'toc_topic'
+              });
+            }
+          }
+        }
+      }
+    }
+
+    // Extract distinct TOC sections matched
+    const tocMap = new Map();
+    for (const art of articles) {
+      const h = art.hierarchy || {};
+      const chapter = h.chapter_name;
+      const title = h.title_name;
+      const book = h.book_name;
+      if (chapter && !tocMap.has(chapter)) {
+        tocMap.set(chapter, {
+          type: 'chapter',
+          name: chapter,
+          book_name: book,
+          sample_article_id: art.article_id
+        });
+      } else if (title && !tocMap.has(title)) {
+        tocMap.set(title, {
+          type: 'title',
+          name: title,
+          book_name: book,
+          sample_article_id: art.article_id
+        });
+      }
+    }
+
+    // 4. Search Jurisprudence Cases (G.R. Number, Title, or summary keywords)
+    let cases = [];
+    const caseSearchTerm = query.replace(/^art[a-z]*\.?\s*\d+\s*/i, '').trim() || query;
+    if (caseSearchTerm && caseSearchTerm.length >= 2) {
+      const { data: casesData, error: casesErr } = await supabase
+        .from('jurisprudence_cases')
+        .select('case_uid, title, gr_number, decision_date, content_summary')
+        .or(`title.ilike.%${caseSearchTerm}%,gr_number.ilike.%${caseSearchTerm}%,content_summary.ilike.%${caseSearchTerm}%`)
+        .limit(4);
+
+      if (!casesErr && casesData) {
+        cases = casesData.map(c => ({
+          case_uid: c.case_uid,
+          title: c.title,
+          gr_number: c.gr_number || '',
+          decision_date: c.decision_date || '',
+          snippet: c.content_summary ? (c.content_summary.length > 150 ? c.content_summary.slice(0, 150) + '...' : c.content_summary) : ''
+        }));
+      }
+    }
+
+    res.json({
+      query,
+      exact_article: exactArticle,
+      articles,
+      toc_sections: Array.from(tocMap.values()).slice(0, 5),
+      cases,
+      total_matches: articles.length + cases.length
+    });
+  } catch (err) {
+    console.error('Error in /api/civil-code/search:', err);
+    res.status(500).json({ error: 'Search failed', articles: [], total_matches: 0 });
+  }
+});
+
 router.get('/toc', async (req, res) => {
   try {
     let rows = [];

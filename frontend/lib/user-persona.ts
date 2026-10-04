@@ -63,16 +63,97 @@ export function getActionCardCopy(): ActionCardCopy {
   };
 }
 
-// Search Placeholder
+// Dashboard Search Hints (rotating instructions, NOT example questions)
+//
+// Each hint tells the user WHAT they can type into the dashboard search:
+// keywords, exact articles, cases, past conversations, or document names.
+
+export interface SearchExample {
+  full: string;
+  mobile: string;
+  lang: "en" | "tl";
+}
+
+export const SEARCH_EXAMPLES: SearchExample[] = [
+  {
+    full: "Type a keyword to search your data — e.g. upa, utang, mana, sustento…",
+    mobile: "Keyword: upa, utang, mana…",
+    lang: "en",
+  },
+  {
+    full: "Mag-type ng keyword — hal. kasal, lupa, sangla, danyos…",
+    mobile: "Keyword: kasal, lupa, sangla…",
+    lang: "tl",
+  },
+  {
+    full: "Enter an exact article — e.g. Art. 1654, Article 2176…",
+    mobile: "Exact article: Art. 1654…",
+    lang: "en",
+  },
+  {
+    full: "Ilagay ang eksaktong artikulo — hal. Art. 1191, Artikulo 448…",
+    mobile: "Eksaktong artikulo: Art. 1191…",
+    lang: "tl",
+  },
+  {
+    full: "Search an exact case by G.R. number or case title…",
+    mobile: "Case: G.R. number or title…",
+    lang: "en",
+  },
+  {
+    full: "Hanapin ang kaso gamit ang G.R. number o pamagat nito…",
+    mobile: "Kaso: G.R. number o pamagat…",
+    lang: "tl",
+  },
+  {
+    full: "Find a past conversation by typing its title…",
+    mobile: "Past chat by title…",
+    lang: "en",
+  },
+  {
+    full: "Hanapin ang nakaraang usapan gamit ang pamagat nito…",
+    mobile: "Nakaraang usapan sa pamagat…",
+    lang: "tl",
+  },
+  {
+    full: "Look up an uploaded document by its file name…",
+    mobile: "Document by file name…",
+    lang: "en",
+  },
+  {
+    full: "Hanapin ang dokumento gamit ang pangalan ng file…",
+    mobile: "Dokumento sa file name…",
+    lang: "tl",
+  },
+];
+
+/** Returns a random search hint with its index, optionally avoiding a previous index */
+export function getRandomSearchExample(excludeIndex?: number): { example: SearchExample; index: number } {
+  if (SEARCH_EXAMPLES.length === 0) {
+    return {
+      example: {
+        full: "Search by keyword, article, case, past chat, or document name…",
+        mobile: "Search your data…",
+        lang: "en",
+      },
+      index: 0,
+    };
+  }
+  let index = Math.floor(Math.random() * SEARCH_EXAMPLES.length);
+  if (typeof excludeIndex === "number" && SEARCH_EXAMPLES.length > 1 && index === excludeIndex) {
+    index = (index + 1) % SEARCH_EXAMPLES.length;
+  }
+  return { example: SEARCH_EXAMPLES[index], index };
+}
 
 /** Returns the search bar placeholder */
 export function getSearchPlaceholder(): string {
-  return "Ask a civil law question in plain language, e.g. 'What are my rights as a tenant?'";
+  return getRandomSearchExample().example.full;
 }
 
 /** Returns the compact search bar placeholder for mobile devices */
 export function getMobileSearchPlaceholder(): string {
-  return "Ask a civil law question, e.g. 'Tenant rights'...";
+  return getRandomSearchExample().example.mobile;
 }
 
 // Document Panel Copy

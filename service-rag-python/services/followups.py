@@ -6,15 +6,21 @@ from typing import List, Optional
 logger = logging.getLogger(__name__)
 
 MAX_SUGGESTIONS = 3
+# Defensive cap so a verbose LLM line can't blow out the card layout.
+# UI wraps full text (no line-clamp); this only guards pathological output.
+MAX_CHARS = 140
 
 _SYSTEM_PROMPT = (
-    "You suggest follow-up questions for a Philippine civil-law legal chat. "
+    "You suggest follow-up questions for a Philippine civil-law legal chat for ordinary citizens. "
     "Output exactly 3 short follow-up questions the user would plausibly ask next, "
     "each on its own line, with no numbering, bullets, quotes, or extra text. "
-    "Write in the SAME language as the user's question (English or Filipino/Tagalog). "
+    "Keep each question concise: under 12 words and ~80 characters so it fits on a small card. "
+    "STRICT UNILINGUAL MATCH: Write all 3 questions in the EXACT SAME language as the user's question with ZERO code-switching. "
+    "If the user asked in English, write all questions ENTIRELY in simple, everyday English without any Tagalog words. "
+    "If the user asked in Tagalog, write all questions ENTIRELY in simplified, natural Tagalog without Taglish or English mixing. "
     "Keep every question grounded in the Philippine Civil Code (RA 386) or Family Code (EO 209) "
-    "and directly related to the answered topic. Never suggest out-of-scope topics "
-    "(criminal, labor, tax, programming)."
+    "and directly related to the answered topic. Never use dense lawyer jargon without plain wording. "
+    "Never suggest out-of-scope topics (criminal, labor, tax, programming)."
 )
 
 
@@ -57,6 +63,10 @@ def parse_followup_questions(text: Optional[str], limit: int = MAX_SUGGESTIONS) 
         if key in seen:
             continue
         seen.add(key)
+        # Defensive cap: truncate pathological lines on a word boundary.
+        if len(line) > MAX_CHARS:
+            cut = line[:MAX_CHARS].rsplit(' ', 1)[0] or line[:MAX_CHARS]
+            line = cut.rstrip(' ,;:')
         out.append(line if line.endswith('?') else line + '?')
         if len(out) >= int(limit):
             break

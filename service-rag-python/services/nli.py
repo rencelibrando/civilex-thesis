@@ -20,8 +20,9 @@ Architecture:
        - Neural entailment upgrades valid semantic paraphrases.
        - Graceful degradation to pure symbolic rules if LM Studio is offline.
     7. Calibrated Faithfulness Score:
-       Standard RAGAS: F_net = max(0, (|V_entailed| - |V_contradicted|) / |S_total|)
-       Status = 'Grounded' if F_net >= 0.80 and |V_contradicted| == 0 else 'Unverified'
+       Standard RAGAS: F = |V_entailed| / |S_total| (primary)
+       Diagnostic-only: F_net = max(0, (|V_entailed| - |V_contradicted|) / |S_total|)
+       Status = 'Grounded' if F >= 0.80 and |V_contradicted| == 0 else 'Unverified'
 """
 
 from __future__ import annotations
@@ -52,7 +53,7 @@ class ClaimVerdict:
 @dataclass
 class FaithfulnessResult:
     """Aggregate faithfulness score for a generated answer."""
-    score: float           # 0.0 – 1.0 (Standard RAGAS Net Faithfulness)
+    score: float           # 0.0 – 1.0 (Standard RAGAS Faithfulness = entailed/total)
     score_percent: float   # 0.0 – 100.0
     status: str            # 'Grounded', 'Unverified', 'Out of Domain'
     claims_total: int
@@ -62,6 +63,8 @@ class FaithfulnessResult:
     verdicts: List[ClaimVerdict] = field(default_factory=list)
     engine: str = "hybrid" # 'hybrid' (Gemma + Symbolic) or 'symbolic_fallback'
     score_weighted: float = 0.0 # Context-aware weighted score Option B
+    score_net: float = 0.0         # 0.0 – 1.0 diagnostic: (entailed-contradicted)/total, floored at 0
+    score_net_percent: float = 0.0 # 0.0 – 100.0 diagnostic counterpart of score_net
 
 
 # 2. DEONTIC MODALITY & POLARITY LEXICON
@@ -251,6 +254,11 @@ CIVIL_LEGAL_SYNONYMS: Dict[str, frozenset] = {
     'property_law': frozenset({
         'property', 'ownership', 'modifications', 'easements', 'nuisance',
         'ari-arian', 'pagmamay-ari', 'co-ownership',
+    }),
+    'animals_pets': frozenset({
+        'animals', 'animal', 'pet', 'pets', 'hayop', 'mga hayop',
+        'animal houses', 'breeding places', 'pigeon-houses', 'beehives', 'fish ponds',
+        'alagang hayop', 'alaga', 'kulungan ng hayop', 'wild animals', 'tame animals',
     }),
     'obligations_contracts': frozenset({
         'obligations', 'contracts', 'sales', 'lease', 'agency', 'loan',
@@ -556,6 +564,68 @@ def _has_polarity_inversion(claim_lower: str, premise_lower: str) -> bool:
     return False
 
 
+def _get_expanded_premise_tokens(premise_lower: str) -> set:
+    """
+    Legal tokens of a premise expanded with bilingual synonym mappings.
+    Shared by single-premise and union coverage so both use identical semantics.
+    """
+    premise_tokens = _get_legal_tokens(premise_lower)
+    expanded = set(premise_tokens)
+    for tok in premise_tokens:
+        if tok in _TOKEN_TO_CONCEPTS:
+            for concept_id in _TOKEN_TO_CONCEPTS[tok]:
+                for s in CIVIL_LEGAL_SYNONYMS[concept_id]:
+                    expanded.update(s.lower().split())
+    return expanded
+
+
+def _compute_union_coverage(
+    claim_lower: str,
+    premise_lowers: List[str],
+    top_k: int = 3,
+) -> tuple[float, List[str]]:
+    """
+    Union-aware entailment coverage: ranks premises by single-premise lexical
+    coverage, takes the top-k relevant ones, and measures the fraction of the
+    claim's legal tokens covered by the UNION of their expanded tokens.
+
+    A claim whose evidence spans several premises (e.g. requisites listed
+    across article paragraphs) can thus be entailed even when no single
+    premise alone passes the gate. Returns (coverage, relevant_premises).
+    Claim-side synonym fallback mirrors _compute_lexical_coverage.
+    """
+    claim_tokens = _get_legal_tokens(claim_lower)
+    if not claim_tokens or not premise_lowers:
+        return 0.0, []
+
+    ranked = sorted(
+        ((_compute_lexical_coverage(claim_lower, p), p) for p in premise_lowers),
+        key=lambda t: t[0],
+        reverse=True,
+    )
+    relevant = [p for cov, p in ranked[:top_k] if cov > 0.0]
+    if not relevant:
+        return 0.0, []
+
+    union_expanded: set = set()
+    union_raw: set = set()
+    for p in relevant:
+        union_expanded |= _get_expanded_premise_tokens(p)
+        union_raw |= _get_legal_tokens(p)
+
+    matched = 0
+    for tok in claim_tokens:
+        if tok in union_expanded:
+            matched += 1
+        elif tok in _TOKEN_TO_CONCEPTS:
+            for concept_id in _TOKEN_TO_CONCEPTS[tok]:
+                if any(syn_word in union_raw for syn in CIVIL_LEGAL_SYNONYMS[concept_id] for syn_word in syn.lower().split()):
+                    matched += 1
+                    break
+
+    return matched / len(claim_tokens), relevant
+
+
 def _compute_lexical_coverage(claim_lower: str, premise_lower: str) -> float:
     """
     Asymmetric Jaccard-like containment: proportion of claim's legal tokens
@@ -568,12 +638,7 @@ def _compute_lexical_coverage(claim_lower: str, premise_lower: str) -> float:
     premise_tokens = _get_legal_tokens(premise_lower)
 
     # Expand premise tokens with bilingual synonym mappings
-    expanded_premise = set(premise_tokens)
-    for tok in premise_tokens:
-        if tok in _TOKEN_TO_CONCEPTS:
-            for concept_id in _TOKEN_TO_CONCEPTS[tok]:
-                for s in CIVIL_LEGAL_SYNONYMS[concept_id]:
-                    expanded_premise.update(s.lower().split())
+    expanded_premise = _get_expanded_premise_tokens(premise_lower)
 
     matched = 0
     for tok in claim_tokens:
@@ -595,7 +660,7 @@ def decompose_claims(text: str) -> List[str]:
     propositions suitable for NLI verification.
 
     Strategy:
-        1. Drop structural Markdown headers (### 📌 Direct Answer...) and breadcrumb navigation lines.
+        1. Drop structural Markdown headers (###  Direct Answer...) and breadcrumb navigation lines.
         2. Strip markdown formatting (bold/italic markers, links, code, and leading bullets/quotes).
         3. Protect abbreviations ('Art.', 'Arts.', 'Artikulo', 'Sec.', 'Secs.', 'G.R. No.', 'No.') from splitting prematurely.
         4. Split on sentence boundaries ([.!?\n]) and legal clause delimiters.
@@ -644,6 +709,7 @@ def decompose_claims(text: str) -> List[str]:
         expanded.extend(sub_parts)
 
     claims = []
+    seen_normalized: set = set()
     _STRUCTURAL_HEADER_RE = re.compile(
         r'^(?:direct answer|legal conclusion|governing statutory basis|statutory basis|'
         r'application to facts|legal analysis|legal action summary|key statutory requisites|'
@@ -694,9 +760,60 @@ def decompose_claims(text: str) -> List[str]:
         )) and not _extract_article_ids(frag):
             continue
 
+        # Skip extra-statutory procedural boilerplate (Katarungang Pambarangay,
+        # forum-shopping certification, filing/docket fees, notarization) that
+        # carries no Civil Code assertion and would otherwise inflate the
+        # claim count with neutral filler that drags the score down.
+        if any(proc_kw in frag_lower for proc_kw in (
+            'katarungang pambarangay', 'lupon tagapamayapa', 'lupon',
+            'forum shopping', 'non-forum', 'certificate against',
+            'verification and certification', 'certification and',
+            'filing fee', 'docket fee', 'legal fee', 'indigent',
+            'pauper litigant', 'notar', 'affidavit of',
+            'conciliation proceeding', 'mediation proceeding',
+        )) and not _extract_article_ids(frag):
+            continue
+
+        # Skip assistant self-identification / greeting / help-offer boilerplate
+        # ("I am CIVIL-LEX, your Philippine Civil Law assistant", "I can help
+        # you understand your rights...", "Hello! ...") that carries no Civil
+        # Code assertion and would otherwise inflate the claim count with
+        # neutral filler that drags the score down. Guarded by the
+        # no-article-anchor condition so a greeting that actually asserts an
+        # article (e.g. "Hello, under Article 77...") is still scored.
+        if (any(intro_kw in frag_lower for intro_kw in (
+            'i am civil', "i'm civil", 'ako si civil', 'civil-lex', 'civil-ex',
+            'law assistant', 'ai assistant', 'language model',
+            'no law degree required', 'no law degree needed',
+            'i can help you', 'how can i help', 'how may i help',
+            'what legal question', 'feel free to ask', 'let me know if',
+            'paano kita matutulungan', 'anong katanungan', 'may maitutulong',
+            'just ask', 'happy to help',
+        )) or (frag_lower.startswith(
+            ('hello', 'hi,', 'hi ', 'kumusta', 'magandang ')
+        ) and any(offer_kw in frag_lower for offer_kw in (
+            'help', 'tanong', 'assist',
+        )))) and not _extract_article_ids(frag):
+            continue
+
         # Skip lines that are purely citation references with no assertion
         if re.match(r'^[\[\(]?(?:art(?:icle)?\.?\s*\d+|g\.?\s*r\.?\s*no)', frag_lower) and len(frag) < 40:
             continue
+
+        # Normalized dedup: template answers repeat the same assertion in the
+        # direct-answer recap and the analysis section. Collapse exact repeats
+        # and substring-contained repeats so one assertion counts once.
+        norm = re.sub(r'\s+', ' ', frag_lower.strip())
+        norm = re.sub(
+            r'\[\s*(?:statutory\s+)?(?:article|jurisprudence|authority)\s+\d+\s*\]', '', norm)
+        norm = re.sub(
+            r'\[(?:art(?:icle)?\.?\s*\d+|g\.?\s*r\.?\s*no[^\]]*)\]', '', norm).strip()
+        norm = re.sub(r'\s+([.,;:!?])', r'\1', norm)  # reattach orphaned punctuation
+        if not norm or norm in seen_normalized:
+            continue
+        if any(norm in kept or kept in norm for kept in seen_normalized):
+            continue
+        seen_normalized.add(norm)
 
         claims.append(frag)
 
@@ -724,9 +841,9 @@ def verify_claim_symbolic(
 
     Rules (applied in priority order):
         Rule 1: Statutory Anchor Validation
-        Rule 2: Deontic / Polarity Contradiction
-        Rule 3: Polarity Inversion Contradiction
-        Rule 4: Asymmetric Lexical Containment (Entailment)
+        Rule 2: Deontic / Polarity Contradiction (checked across all relevant premises)
+        Rule 3: Polarity Inversion Contradiction (checked across all relevant premises)
+        Rule 4: Asymmetric Lexical Containment (Entailment, union-aware across premises)
     """
     claim_lower = _normalize_text(claim)
     claim_article_ids = set(_extract_article_ids(claim))
@@ -745,53 +862,68 @@ def verify_claim_symbolic(
                 matched_premise='',
             )
 
-    # Find the best matching premise for this claim
-    best_coverage = 0.0
-    best_premise = ""
-
-    for premise in context_premises:
-        premise_lower = _normalize_text(premise)
+    # Find the best matching premise for this claim, retaining ranked coverages
+    # so contradiction can be checked across ALL relevant premises, not just one.
+    premise_lowers = [_normalize_text(p) for p in context_premises]
+    ranked_coverages: List[tuple[float, str, str]] = []  # (coverage, premise, premise_lower)
+    for premise, premise_lower in zip(context_premises, premise_lowers):
         coverage = _compute_lexical_coverage(claim_lower, premise_lower)
-        if coverage > best_coverage:
-            best_coverage = coverage
-            best_premise = premise
+        ranked_coverages.append((coverage, premise, premise_lower))
+    ranked_coverages.sort(key=lambda t: t[0], reverse=True)
 
-    best_premise_lower = _normalize_text(best_premise) if best_premise else ""
+    best_coverage = ranked_coverages[0][0] if ranked_coverages else 0.0
+    best_premise = ranked_coverages[0][1] if ranked_coverages else ""
+    best_premise_lower = ranked_coverages[0][2] if ranked_coverages else ""
 
-    # ── Rule 2 & 3: Deontic & Polarity Contradiction ──
-    if best_premise and best_coverage >= 0.25:
-        if _has_polarity_inversion(claim_lower, best_premise_lower):
-            return ClaimVerdict(
-                claim=claim,
-                verdict='contradicted',
-                confidence=-1.0,
-                rule_fired='R2_deontic_polarity_contradiction',
-                statutory_refs=list(claim_article_ids),
-                matched_premise=best_premise[:200],
-            )
+    # Union coverage over the top relevant premises: evidence split across
+    # several premises (e.g. requisites spread over article paragraphs) can
+    # jointly entail the claim even when no single premise passes the gate.
+    union_coverage, union_premises = _compute_union_coverage(claim_lower, premise_lowers)
+    eff_coverage = max(best_coverage, union_coverage)
 
-    # ── Rule 4: Asymmetric Lexical Containment (Entailment) ──
+    # ── Rule 2 & 3: Deontic & Polarity Contradiction (all relevant premises) ──
+    for rel_coverage, rel_premise, rel_premise_lower in ranked_coverages[:3]:
+        if rel_coverage >= 0.25 and rel_premise:
+            if _has_polarity_inversion(claim_lower, rel_premise_lower):
+                return ClaimVerdict(
+                    claim=claim,
+                    verdict='contradicted',
+                    confidence=-1.0,
+                    rule_fired='R2_deontic_polarity_contradiction',
+                    statutory_refs=list(claim_article_ids),
+                    matched_premise=rel_premise[:200],
+                )
+
+    # Premise text for the audit trail: union contributors when the union decided it.
+    if union_coverage > best_coverage and union_premises:
+        matched_text = " | ".join(p[:120] for p in union_premises[:2])[:200]
+        union_decided = True
+    else:
+        matched_text = best_premise[:200] if best_premise else ''
+        union_decided = False
+
+    # ── Rule 4: Asymmetric Lexical Containment (Entailment, union-aware) ──
     # Case A: Explicitly anchored to supported statutory articles with lexical backing
     if claim_article_ids and claim_article_ids <= context_article_ids:
-        if best_coverage >= 0.30 or len(_get_legal_tokens(claim_lower)) <= 3:
+        if eff_coverage >= 0.30 or len(_get_legal_tokens(claim_lower)) <= 3:
             return ClaimVerdict(
                 claim=claim,
                 verdict='entailed',
                 confidence=1.0,
-                rule_fired='R4_lexical_containment_with_anchor',
+                rule_fired='R4_union_coverage_with_anchor' if union_decided else 'R4_lexical_containment_with_anchor',
                 statutory_refs=list(claim_article_ids),
-                matched_premise=best_premise[:200] if best_premise else '',
+                matched_premise=matched_text,
             )
 
     # Case B: General proposition with high lexical containment
-    if best_coverage >= 0.35:
+    if eff_coverage >= 0.35:
         return ClaimVerdict(
             claim=claim,
             verdict='entailed',
             confidence=1.0,
-            rule_fired='R4_lexical_containment',
+            rule_fired='R4_union_coverage' if union_decided else 'R4_lexical_containment',
             statutory_refs=[],
-            matched_premise=best_premise[:200] if best_premise else '',
+            matched_premise=matched_text,
         )
 
     # ── Default: Neutral ──
@@ -807,9 +939,55 @@ def verify_claim_symbolic(
 
 # 7. GEMMA NEURAL NLI VERIFIER (LM STUDIO ENDPOINT)
 
+# Maximum characters of statutory context sent to Gemma per NLI call.
+# Premises are relevance-ranked against the claims under audit so the budget
+# carries the most probative articles instead of blindly truncating context,
+# which previously could cut the governing article and force silent fallback.
+GEMMA_NLI_CONTEXT_BUDGET = 12000
+
+
+def _select_relevant_context(
+    claims_to_verify: List[tuple[int, str]],
+    context_premises: List[str],
+    budget: int = GEMMA_NLI_CONTEXT_BUDGET,
+) -> str:
+    """
+    Ranks context premises by maximum lexical coverage against any claim under
+    audit and greedily packs the highest-ranked premises within the character
+    budget. Guarantees at least the single most relevant premise is included.
+    Falls back to head truncation when no premise scores above zero.
+    """
+    if not context_premises:
+        return ""
+    claim_lowers = [_normalize_text(c) for _, c in claims_to_verify]
+    scored = []
+    for premise in context_premises:
+        p_lower = _normalize_text(premise)
+        best = 0.0
+        for cl in claim_lowers:
+            cov = _compute_lexical_coverage(cl, p_lower)
+            if cov > best:
+                best = cov
+        scored.append((best, premise))
+    scored.sort(key=lambda t: t[0], reverse=True)
+
+    selected: List[str] = []
+    used = 0
+    for score, premise in scored:
+        if selected and (score <= 0.0 or used + len(premise) + 2 > budget):
+            continue
+        selected.append(premise)
+        used += len(premise) + 2
+        if used >= budget:
+            break
+    if not selected:
+        return "\n\n".join(context_premises)[:budget].strip()
+    return "\n\n".join(selected).strip()
+
+
 def _build_gemma_nli_prompt(claims_to_verify: List[tuple[int, str]], context_text: str) -> str:
     """Builds a batched NLI evaluation prompt for Gemma 4 (E4B) in LM Studio."""
-    truncated_context = context_text[:5000].strip()
+    selected_context = context_text[:GEMMA_NLI_CONTEXT_BUDGET].strip()
     claims_formatted = "\n".join([f"[{cid}] {claim}" for cid, claim in claims_to_verify])
     return (
         "You are an expert Philippine Civil Law Natural Language Inference (NLI) evaluator.\n"
@@ -818,7 +996,7 @@ def _build_gemma_nli_prompt(claims_to_verify: List[tuple[int, str]], context_tex
         "- entailed: The premise directly supports or logically necessitates the claim (including valid legal paraphrases, statutory requisites, and direct applications of the statutory rule).\n"
         "- contradicted: The claim asserts a legal rule or factual conclusion that contradicts or inverts the premise (e.g., claiming a party cannot rescind when the premise permits it, or claiming no liability when the premise imposes it).\n"
         "- neutral: The premise neither proves nor disproves the claim (e.g., outside facts, unstated procedural steps, or assumptions not found in the premise).\n\n"
-        f"STATUTORY CONTEXT PREMISES:\n{truncated_context}\n\n"
+        f"STATUTORY CONTEXT PREMISES:\n{selected_context}\n\n"
         f"LEGAL CLAIMS TO EVALUATE:\n{claims_formatted}\n\n"
         "TASK:\n"
         "Evaluate each claim against the premises. Output strictly valid JSON with a list of objects:\n"
@@ -868,6 +1046,7 @@ def verify_claims_gemma_sync(
     claims_to_verify: List[tuple[int, str]],
     context_text: str,
     timeout: float = 30.0,
+    context_premises: Optional[List[str]] = None,
 ) -> Dict[int, dict]:
     """Synchronously queries Gemma in LM Studio for batched NLI evaluation."""
     if not claims_to_verify:
@@ -875,6 +1054,8 @@ def verify_claims_gemma_sync(
 
     from services.llm_client import call_chat_completion_sync
 
+    if context_premises:
+        context_text = _select_relevant_context(claims_to_verify, context_premises)
     prompt = _build_gemma_nli_prompt(claims_to_verify, context_text)
     try:
         raw_text = call_chat_completion_sync(
@@ -895,6 +1076,7 @@ async def verify_claims_gemma_async(
     claims_to_verify: List[tuple[int, str]],
     context_text: str,
     timeout: float = 30.0,
+    context_premises: Optional[List[str]] = None,
 ) -> Dict[int, dict]:
     """Asynchronously queries Gemma in LM Studio for batched NLI evaluation."""
     if not claims_to_verify:
@@ -902,6 +1084,8 @@ async def verify_claims_gemma_async(
 
     from services.llm_client import call_chat_completion_async
 
+    if context_premises:
+        context_text = _select_relevant_context(claims_to_verify, context_premises)
     prompt = _build_gemma_nli_prompt(claims_to_verify, context_text)
     try:
         raw_text = await call_chat_completion_async(
@@ -1017,16 +1201,20 @@ def _compute_faithfulness_result(
     n_neutral = sum(1 for v in verdicts if v.verdict == 'neutral')
     n_contradicted = sum(1 for v in verdicts if v.verdict == 'contradicted')
 
-    # Primary: Standard RAGAS Net Faithfulness with contradiction penalty
+    # Primary: Standard RAGAS Faithfulness = supported (entailed) / total claims.
+    # Net (diagnostic-only): contradiction-penalized variant, floored at zero.
     if n_total > 0:
+        f_std = n_entailed / n_total
         f_net = max(0.0, (n_entailed - n_contradicted) / n_total)
         # Context-aware weighted score Option B (partial credit 0.35 for neutral, 2x contradiction penalty)
         f_weighted = min(100.0, max(0.0, ((n_entailed + 0.35 * n_neutral - 2.0 * n_contradicted) / n_total) * 100.0))
     else:
+        f_std = 0.0
         f_net = 0.0
         f_weighted = 0.0
 
-    score_pct = round(f_net * 100.0, 1)
+    score_pct = round(f_std * 100.0, 1)
+    net_pct = round(f_net * 100.0, 1)
 
     # Status determination: Zero tolerance for contradictions
     if n_contradicted > 0:
@@ -1043,7 +1231,7 @@ def _compute_faithfulness_result(
     )
 
     return FaithfulnessResult(
-        score=f_net,
+        score=f_std,
         score_percent=score_pct,
         status=status,
         claims_total=n_total,
@@ -1053,6 +1241,8 @@ def _compute_faithfulness_result(
         verdicts=verdicts,
         engine=engine,
         score_weighted=round(f_weighted, 1),
+        score_net=f_net,
+        score_net_percent=net_pct,
     )
 
 
@@ -1099,7 +1289,7 @@ def score_faithfulness(
             score=1.0, score_percent=100.0, status='Grounded',
             claims_total=0, claims_entailed=0, claims_neutral=0,
             claims_contradicted=0, verdicts=[], engine=mode,
-            score_weighted=100.0,
+            score_weighted=100.0, score_net=1.0, score_net_percent=100.0,
         )
 
     context_premises = _split_context_to_premises(context_text)
@@ -1119,7 +1309,9 @@ def score_faithfulness(
             if v.verdict == 'neutral' and v.rule_fired != 'R1_unsupported_statutory_anchor'
         ]
         if neutral_candidates:
-            gemma_results = verify_claims_gemma_sync(neutral_candidates, context_text)
+            gemma_results = verify_claims_gemma_sync(
+                neutral_candidates, context_text, context_premises=context_premises
+            )
             verdicts, engine = _arbitrate_hybrid_verdicts(verdicts, gemma_results)
 
     return _compute_faithfulness_result(verdicts, engine)
@@ -1157,7 +1349,7 @@ async def score_faithfulness_async(
             score=1.0, score_percent=100.0, status='Grounded',
             claims_total=0, claims_entailed=0, claims_neutral=0,
             claims_contradicted=0, verdicts=[], engine=mode,
-            score_weighted=100.0,
+            score_weighted=100.0, score_net=1.0, score_net_percent=100.0,
         )
 
     context_premises = _split_context_to_premises(context_text)
@@ -1177,7 +1369,9 @@ async def score_faithfulness_async(
             if v.verdict == 'neutral' and v.rule_fired != 'R1_unsupported_statutory_anchor'
         ]
         if neutral_candidates:
-            gemma_results = await verify_claims_gemma_async(neutral_candidates, context_text)
+            gemma_results = await verify_claims_gemma_async(
+                neutral_candidates, context_text, context_premises=context_premises
+            )
             verdicts, engine = _arbitrate_hybrid_verdicts(verdicts, gemma_results)
 
     return _compute_faithfulness_result(verdicts, engine)

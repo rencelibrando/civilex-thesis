@@ -66,8 +66,10 @@ DECISION CRITERIA:
    - Ultra-vague inquiries (e.g., 'ano pwede ikaso sakin', 'can I be sued?') that provide zero facts.
    - Provide 1 to 2 concise clarification questions with 3 to 4 concrete options each.
 
-BILINGUAL FORMATTING:
-- Questions and options should be bilingual (Tagalog / English) or match the user's language.
+STRICT UNILINGUAL LANGUAGE MATCH:
+- Questions, options, and context_hint MUST STRICTLY match the user's query language with ZERO code-switching:
+  * If the user's query is in Filipino/Tagalog: Write all questions, options, and context_hint ENTIRELY in simplified Tagalog for normal citizens (no English sentences or Taglish mixing).
+  * If the user's query is in English: Write all questions, options, and context_hint ENTIRELY in simple, plain everyday English (no Tagalog words).
 - Use short, simple, everyday words a non-lawyer understands; explain any legal term in plain words on first use.
 - context_hint should briefly state why this matters under the Civil Code (e.g., Art. 1144, Art. 1170, or Art. 2176).
 
@@ -215,6 +217,18 @@ async def detect_ambiguity(
     if len(q_clean.split()) <= 2:
         return AmbiguityResult(original_query=q_clean)
 
+    # 1.5 Fast bypass: single article statutory queries or false-premise lookups are never ambiguous
+    has_specific_article = bool(re.search(r'(?:article|art\.?|artikulo)\s*(?:no\.?\s*)?\d+', q_clean, re.IGNORECASE))
+    dispute_cues = bool(re.search(r'\b(sue|breach|accident|nasaktan|danyos|utang|idemanda|kaso)\b', q_clean, re.IGNORECASE))
+    if has_specific_article and (len(q_clean.split()) <= 20 or not dispute_cues):
+        return AmbiguityResult(
+            is_ambiguous=False,
+            confidence=0.0,
+            category="",
+            original_query=q_clean,
+            reasoning="Specific statutory article inquiry or codal lookup."
+        )
+
     # 2. Build history context to avoid re-asking facts already stated
     history_context = ""
     if history:
@@ -233,7 +247,8 @@ async def detect_ambiguity(
     user_content = (
         f"Analyze this Philippine civil law query for ambiguity:\n\n\"{q_clean}\"\n"
         f"{history_context}\n"
-        "Consider the recent conversation above — do NOT ask about facts already provided there."
+        "Consider the recent conversation above — do NOT ask about facts already provided there. "
+        "Strictly adhere to the unilingual language match rule: write questions, options, and hints entirely in English if the query is in English, or entirely in simplified Tagalog if the query is in Tagalog."
     )
 
     messages = [

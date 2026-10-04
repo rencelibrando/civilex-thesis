@@ -30,6 +30,7 @@ export type RagStage =
   | "thinking"
   | "streaming"
   | "evaluating_nli"
+  | "reconnecting"
   | "clarification_needed"
   | "completed"
   | "error";
@@ -43,7 +44,12 @@ export interface RagStatus {
 
 export interface LegalAnalytics {
   nli_score?: number | null;
+  nli_score_net?: number | null;
+  nli_score_weighted?: number | null;
+  nli_engine?: string;
   nli_status: "Grounded" | "Unverified" | "Out of Domain" | "Pending" | "Evaluating";
+  nli_unavailable?: boolean;
+  nli_timed_out?: boolean;
   top_article_score?: number;
   is_document_legal?: boolean | null;
   is_out_of_domain?: boolean;
@@ -87,6 +93,16 @@ export interface StarterPrompt {
   category: string;
   prompt: string;
   shortTag: string;
+}
+
+// Resolves a stale 'Evaluating' NLI state (e.g. stream ended or recovered from
+// DB without a terminal analytics payload) into a terminal 'Unverified' state
+// so the NLI Grounding card can never spin forever.
+export function settleNliAnalytics<T extends LegalAnalytics | null>(analytics: T): T {
+  if (analytics && analytics.nli_status === "Evaluating") {
+    return { ...analytics, nli_status: "Unverified", nli_unavailable: true } as T;
+  }
+  return analytics;
 }
 
 
@@ -446,18 +462,8 @@ export function getCitationKey(item: any): string {
   return String(item.parent_id || item.id || JSON.stringify(item));
 }
 
-export function mergeCitations(existing: any[], incoming: any[]): any[] {
-  const map = new Map<string, any>();
-  for (const item of incoming || []) {
-    const key = getCitationKey(item);
-    if (key) map.set(key, item);
-  }
-  for (const item of existing || []) {
-    const key = getCitationKey(item);
-    if (key && !map.has(key)) map.set(key, item);
-  }
-  const merged = Array.from(map.values());
-  return merged.sort((a, b) => {
+export function sortCitations(citations: any[]): any[] {
+  return [...(citations || [])].sort((a, b) => {
     const aOut = a.is_in_context === false || a.rank_status === "out_of_rank" ? 1 : 0;
     const bOut = b.is_in_context === false || b.rank_status === "out_of_rank" ? 1 : 0;
     if (aOut !== bOut) return aOut - bOut;
@@ -471,6 +477,19 @@ export function mergeCitations(existing: any[], incoming: any[]): any[] {
       type === "article" || type === "civil_code" ? 1 : type === "user_document" ? 2 : 3;
     return priority(a.parent_type) - priority(b.parent_type);
   });
+}
+
+export function mergeCitations(existing: any[], incoming: any[]): any[] {
+  const map = new Map<string, any>();
+  for (const item of incoming || []) {
+    const key = getCitationKey(item);
+    if (key) map.set(key, item);
+  }
+  for (const item of existing || []) {
+    const key = getCitationKey(item);
+    if (key && !map.has(key)) map.set(key, item);
+  }
+  return sortCitations(Array.from(map.values()));
 }
 
 function buildGreetingMessage(greeting: string): Message[] {
@@ -530,6 +549,15 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const charIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const activeAssistantIdRef = useRef<number | null>(null);
   const isExplicitlyStoppedRef = useRef<boolean>(false);
+  const activeStreamContextRef = useRef<{
+    sessionId: string;
+    assistantId: number;
+    token: string;
+    fullResponse: string;
+  } | null>(null);
+  const backgroundGraceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isReconcilingRef = useRef<boolean>(false);
+  const lastChunkTimeRef = useRef<number>(Date.now());
 
   // ── Load profile + personalize greeting on mount ──────────────────────────
   useEffect(() => {
@@ -650,25 +678,6 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   }, []);
 
 
-  // Background Tab Switching Handler (visibilitychange)
-
-  useEffect(() => {
-    if (typeof document === "undefined") return;
-
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === "hidden") {
-        // Tab moved to background: immediately flush any queued characters
-        flushCharQueueInstantly();
-      }
-    };
-
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    return () => {
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-    };
-  }, [flushCharQueueInstantly]);
-
-
   // Tab-switch / mobile iOS disconnection recovery:
   // When a mobile tab is backgrounded, iOS terminates the SSE stream. The server detached
   // background task continues and commits the message to the DB. This polling loop
@@ -698,32 +707,37 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                 .reverse()
                 .find((m: any) => m.role === "assistant" && m.content && m.content.trim().length > 0);
               if (lastAssistant) {
-                const recoveredCitations = lastAssistant.citations || [];
-                const recoveredAnalytics = lastAssistant.legal_analytics || null;
+                const currentAccumulator = activeStreamContextRef.current?.fullResponse || "";
+                if (lastAssistant.content.length >= currentAccumulator.length || currentAccumulator.length === 0) {
+                  const recoveredCitations = lastAssistant.citations || [];
+                  const recoveredAnalytics = lastAssistant.legal_analytics || null;
 
-                setMessages((prev) =>
-                  prev.map((m) =>
-                    m.id === targetAssistantId
-                      ? {
-                          ...m,
-                          content: lastAssistant.content,
-                          citations: recoveredCitations,
-                          legalAnalytics: recoveredAnalytics,
-                          ragStatus: { stage: "completed", message: "Analysis complete" },
-                        }
-                      : m
-                  )
-                );
-                setCurrentCitations(recoveredCitations);
-                setRetainedCitations((prev) => mergeCitations(prev, recoveredCitations));
-                if (recoveredAnalytics) {
-                  setLegalAnalytics(recoveredAnalytics);
+                  stopCharStream();
+                  setMessages((prev) =>
+                    prev.map((m) =>
+                      m.id === targetAssistantId
+                        ? {
+                            ...m,
+                            content: lastAssistant.content,
+                            citations: recoveredCitations,
+                            legalAnalytics: settleNliAnalytics(recoveredAnalytics),
+                            ragStatus: { stage: "completed", message: "Analysis complete" },
+                          }
+                        : m
+                    )
+                  );
+                  setCurrentCitations(recoveredCitations);
+                  setRetainedCitations((prev) => mergeCitations(prev, recoveredCitations));
+                  if (recoveredAnalytics) {
+                    setLegalAnalytics(settleNliAnalytics(recoveredAnalytics));
+                  }
+                  const followUps = generateFollowUpPrompts(lastAssistant.content, recoveredCitations);
+                  setFollowUpPrompts(followUps);
+                  setRagStatus({ stage: "completed", message: "Analysis complete" });
+                  setIsTyping(false);
+                  activeStreamContextRef.current = null;
+                  return true;
                 }
-                const followUps = generateFollowUpPrompts(lastAssistant.content, recoveredCitations);
-                setFollowUpPrompts(followUps);
-                setRagStatus({ stage: "completed", message: "Analysis complete" });
-                setIsTyping(false);
-                return true;
               }
             }
           }
@@ -733,13 +747,172 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       }
       return false;
     },
-    []
+    [stopCharStream]
   );
 
-  // Stop Generating
+  // Immediate single-shot server reconciliation when app is foregrounded
+  const reconcileWithServer = useCallback(
+    async (
+      targetSessionId: string,
+      targetAssistantId: number,
+      authToken: string
+    ): Promise<boolean> => {
+      if (isExplicitlyStoppedRef.current || !targetSessionId || isReconcilingRef.current) {
+        return false;
+      }
+      isReconcilingRef.current = true;
+      try {
+        const res = await fetch(`${BACKEND_URL}/api/sessions/${targetSessionId}/messages`, {
+          headers: {
+            ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+          },
+        });
+        if (res.ok) {
+          const dbMsgs = await res.json();
+          if (Array.isArray(dbMsgs) && dbMsgs.length > 0) {
+            const lastAssistant = [...dbMsgs]
+              .reverse()
+              .find((m: any) => m.role === "assistant" && m.content && m.content.trim().length > 0);
+            if (lastAssistant) {
+              const currentAccumulator = activeStreamContextRef.current?.fullResponse || "";
+              if (lastAssistant.content.length >= currentAccumulator.length || currentAccumulator.length === 0) {
+                const recoveredCitations = lastAssistant.citations || [];
+                const recoveredAnalytics = lastAssistant.legal_analytics || null;
 
+                if (abortControllerRef.current && !isExplicitlyStoppedRef.current) {
+                  abortControllerRef.current.abort();
+                  abortControllerRef.current = null;
+                }
+
+                stopCharStream();
+                setMessages((prev) =>
+                  prev.map((m) =>
+                    m.id === targetAssistantId
+                      ? {
+                          ...m,
+                          content: lastAssistant.content,
+                          citations: recoveredCitations,
+                          legalAnalytics: settleNliAnalytics(recoveredAnalytics),
+                          ragStatus: { stage: "completed", message: "Analysis complete" },
+                        }
+                      : m
+                  )
+                );
+                setCurrentCitations(recoveredCitations);
+                setRetainedCitations((prev) => mergeCitations(prev, recoveredCitations));
+                if (recoveredAnalytics) {
+                  setLegalAnalytics(settleNliAnalytics(recoveredAnalytics));
+                }
+                const followUps = generateFollowUpPrompts(lastAssistant.content, recoveredCitations);
+                setFollowUpPrompts(followUps);
+                setRagStatus({ stage: "completed", message: "Analysis complete" });
+                setIsTyping(false);
+                activeStreamContextRef.current = null;
+                isReconcilingRef.current = false;
+                return true;
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.warn("Reconciliation check failed:", err);
+      } finally {
+        isReconcilingRef.current = false;
+      }
+      return false;
+    },
+    [stopCharStream]
+  );
+
+  // Background Tab Switching & Lifecycle Handlers (visibilitychange, pagehide, pageshow, freeze, resume)
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof document === "undefined") return;
+
+    const handleVisibilityChange = async () => {
+      if (document.visibilityState === "hidden") {
+        // Tab moved to background: immediately flush any queued characters
+        flushCharQueueInstantly();
+
+        // If an active stream is running and user did not explicitly stop it:
+        if (activeStreamContextRef.current && !isExplicitlyStoppedRef.current) {
+          if (backgroundGraceTimerRef.current) {
+            clearTimeout(backgroundGraceTimerRef.current);
+          }
+          // After 3.5s grace period in background, mobile iOS suspends/stalls TCP sockets.
+          // Explicitly abort client reader so recovery path can take over.
+          backgroundGraceTimerRef.current = setTimeout(() => {
+            if (
+              typeof document !== "undefined" &&
+              document.visibilityState === "hidden" &&
+              abortControllerRef.current &&
+              !isExplicitlyStoppedRef.current
+            ) {
+              console.log("[ChatContext] Background grace elapsed; aborting reader for recovery path.");
+              abortControllerRef.current.abort();
+            }
+          }, 3500);
+        }
+      } else if (document.visibilityState === "visible") {
+        // Tab restored to foreground
+        if (backgroundGraceTimerRef.current) {
+          clearTimeout(backgroundGraceTimerRef.current);
+          backgroundGraceTimerRef.current = null;
+        }
+        flushCharQueueInstantly();
+
+        const streamContext = activeStreamContextRef.current;
+        if (streamContext && !isExplicitlyStoppedRef.current) {
+          await reconcileWithServer(
+            streamContext.sessionId,
+            streamContext.assistantId,
+            streamContext.token
+          );
+        }
+      }
+    };
+
+    const handlePageHide = () => {
+      flushCharQueueInstantly();
+    };
+
+    const handlePageShow = async () => {
+      flushCharQueueInstantly();
+      const streamContext = activeStreamContextRef.current;
+      if (streamContext && !isExplicitlyStoppedRef.current) {
+        await reconcileWithServer(
+          streamContext.sessionId,
+          streamContext.assistantId,
+          streamContext.token
+        );
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    window.addEventListener("pagehide", handlePageHide);
+    window.addEventListener("pageshow", handlePageShow);
+    window.addEventListener("freeze", handlePageHide);
+    window.addEventListener("resume", handlePageShow);
+
+    return () => {
+      if (backgroundGraceTimerRef.current) {
+        clearTimeout(backgroundGraceTimerRef.current);
+      }
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("pagehide", handlePageHide);
+      window.removeEventListener("pageshow", handlePageShow);
+      window.removeEventListener("freeze", handlePageHide);
+      window.removeEventListener("resume", handlePageShow);
+    };
+  }, [flushCharQueueInstantly, reconcileWithServer]);
+
+  // Stop Generating
   const handleStop = useCallback(async () => {
     isExplicitlyStoppedRef.current = true;
+    if (backgroundGraceTimerRef.current) {
+      clearTimeout(backgroundGraceTimerRef.current);
+      backgroundGraceTimerRef.current = null;
+    }
+    activeStreamContextRef.current = null;
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
@@ -858,12 +1031,15 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
     startCharStream(assistantId);
     isExplicitlyStoppedRef.current = false;
+    isReconcilingRef.current = false;
+    lastChunkTimeRef.current = Date.now();
 
     let fullResponseAccumulator = "";
     let receivedCitations: any[] = [];
     let receivedFollowUps = false;
     let activeSessionId: string | null = sessionId;
     let token = "";
+    let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
     try {
       const controller = new AbortController();
@@ -893,6 +1069,13 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           console.error("Session creation error:", sErr);
         }
       }
+
+      activeStreamContextRef.current = {
+        sessionId: activeSessionId || "",
+        assistantId,
+        token,
+        fullResponse: "",
+      };
 
       if (activeSessionId) {
         fetch(`${BACKEND_URL}/api/sessions/${activeSessionId}/messages`, {
@@ -934,19 +1117,42 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       let done = false;
       let buffer = "";
 
+      // Client-side heartbeat watchdog: detects hung/suspended TCP streams
+      lastChunkTimeRef.current = Date.now();
+      heartbeatTimer = setInterval(() => {
+        if (Date.now() - lastChunkTimeRef.current > 30000) {
+          if (abortControllerRef.current && !isExplicitlyStoppedRef.current) {
+            console.warn("[ChatContext] SSE stream heartbeat timeout (30s) — aborting for DB recovery");
+            abortControllerRef.current.abort();
+          }
+        }
+      }, 5000);
+
       while (!done) {
         const { value, done: readerDone } = await reader.read();
         done = readerDone;
         if (value) {
+          lastChunkTimeRef.current = Date.now();
           buffer += decoder.decode(value, { stream: true });
           const lines = buffer.split("\n\n");
           buffer = lines.pop() || "";
 
           for (const line of lines) {
+            // Ignore SSE comment ping lines (: ping)
+            if (line.startsWith(":")) {
+              lastChunkTimeRef.current = Date.now();
+              continue;
+            }
             if (line.startsWith("data: ")) {
               const dataStr = line.slice(6);
               try {
                 const data = JSON.parse(dataStr);
+
+                // Handle ping heartbeat
+                if (data.type === "ping") {
+                  lastChunkTimeRef.current = Date.now();
+                  continue;
+                }
 
                 // Handle Granular RAG Status Events
                 if (data.type === "status") {
@@ -1002,15 +1208,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                     // Retained citations are append-only per session: ignore empty
                     // server events (recall / refusal turns) so earlier turns keep theirs.
                   } else {
-                    const accumulated = incoming.sort((a: any, b: any) => {
-                      const scoreA = Number(a?.suitability_percent) || 0;
-                      const scoreB = Number(b?.suitability_percent) || 0;
-                      const scoreDiff = scoreB - scoreA;
-                      if (scoreDiff !== 0) return scoreDiff;
-                      const priority = (type?: string) =>
-                        type === "article" || type === "civil_code" ? 1 : type === "user_document" ? 2 : 3;
-                      return priority(a.parent_type) - priority(b.parent_type);
-                    });
+                    const accumulated = sortCitations(incoming);
                     setRetainedCitations(accumulated);
                   }
                 } else if (data.type === "follow_ups") {
@@ -1024,6 +1222,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                   }
                 } else if (data.type === "text") {
                   fullResponseAccumulator += data.text;
+                  if (activeStreamContextRef.current) {
+                    activeStreamContextRef.current.fullResponse = fullResponseAccumulator;
+                  }
                   enqueueText(data.text);
                 } else if (data.type === "clarification_needed") {
                   // Backend detected ambiguity: render clarification card
@@ -1058,6 +1259,16 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                     stage: "completed",
                     message: "Analysis complete",
                   });
+                  // Guard: if the stream ended without a terminal NLI payload,
+                  // settle any stale 'Evaluating' state so the card resolves.
+                  setMessages((prev) =>
+                    prev.map((msg) =>
+                      msg.id === assistantId
+                        ? { ...msg, legalAnalytics: settleNliAnalytics(msg.legalAnalytics ?? null) }
+                        : msg
+                    )
+                  );
+                  setLegalAnalytics((prev) => settleNliAnalytics(prev));
                 }
               } catch (e) {
                 console.error("Failed to parse SSE JSON", e, dataStr);
@@ -1067,15 +1278,31 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         }
       }
 
-      // Wait for character queue to drain smoothly
+      if (heartbeatTimer) {
+        clearInterval(heartbeatTimer);
+        heartbeatTimer = null;
+      }
+
+      // Wait for character queue to drain smoothly (with tab background instant flush & fallback timeout)
       const waitForDrain = () =>
         new Promise<void>((resolve) => {
+          if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+            flushCharQueueInstantly();
+            resolve();
+            return;
+          }
+          const startTime = Date.now();
           const check = setInterval(() => {
-            if (charQueueRef.current.length === 0) {
+            if (
+              charQueueRef.current.length === 0 ||
+              (typeof document !== "undefined" && document.visibilityState === "hidden") ||
+              Date.now() - startTime > 2500
+            ) {
               clearInterval(check);
+              flushCharQueueInstantly();
               resolve();
             }
-          }, 50);
+          }, 30);
         });
       await waitForDrain();
       stopCharStream();
@@ -1088,17 +1315,21 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       });
 
       // Generate follow-ups
-      // Generation complete
       if (!receivedFollowUps) {
         const followUps = generateFollowUpPrompts(fullResponseAccumulator, receivedCitations);
         setFollowUpPrompts(followUps);
       }
     } catch (error: any) {
       console.error("Chat streaming error:", error);
+      if (heartbeatTimer) {
+        clearInterval(heartbeatTimer);
+        heartbeatTimer = null;
+      }
       stopCharStream();
       setIsTyping(false);
 
-      if (error.name === "AbortError") {
+      if (error.name === "AbortError" && isExplicitlyStoppedRef.current) {
+        // Legitimate user cancellation via Stop button
         setRagStatus(null);
         setMessages((prev) =>
           prev.map((msg) =>
@@ -1108,11 +1339,21 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           )
         );
       } else if (activeSessionId && !isExplicitlyStoppedRef.current) {
-        // Tab-switch / mobile iOS disconnection recovery: poll session messages from DB
+        // Tab-switch / mobile iOS disconnection recovery / timeout: poll session messages from DB
         setRagStatus({
-          stage: "streaming",
+          stage: "reconnecting",
           message: "Reconnecting to legal analysis...",
         });
+        setMessages((prev) =>
+          prev.map((msg) =>
+            msg.id === assistantId
+              ? {
+                  ...msg,
+                  ragStatus: { stage: "reconnecting", message: "Reconnecting to legal analysis..." },
+                }
+              : msg
+          )
+        );
         const recovered = await pollForRecoveredAssistantMessage(
           activeSessionId,
           assistantId,
@@ -1155,6 +1396,10 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         );
       }
     } finally {
+      if (heartbeatTimer) {
+        clearInterval(heartbeatTimer);
+        heartbeatTimer = null;
+      }
       abortControllerRef.current = null;
     }
   };
@@ -1198,11 +1443,14 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
     startCharStream(assistantId);
     isExplicitlyStoppedRef.current = false;
+    isReconcilingRef.current = false;
+    lastChunkTimeRef.current = Date.now();
 
     let fullResponseAccumulator = "";
     let receivedCitations: any[] = [];
     let receivedFollowUps = false;
     let token = "";
+    let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
     try {
       const controller = new AbortController();
@@ -1212,6 +1460,13 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         data: { session },
       } = await supabase.auth.getSession();
       token = session?.access_token || "";
+
+      activeStreamContextRef.current = {
+        sessionId: sessionId || "",
+        assistantId,
+        token,
+        fullResponse: "",
+      };
 
       // Save clarification answer as user message
       if (sessionId) {
@@ -1256,19 +1511,42 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       let done = false;
       let buffer = "";
 
+      // Client-side heartbeat watchdog: detects hung/suspended TCP streams
+      lastChunkTimeRef.current = Date.now();
+      heartbeatTimer = setInterval(() => {
+        if (Date.now() - lastChunkTimeRef.current > 30000) {
+          if (abortControllerRef.current && !isExplicitlyStoppedRef.current) {
+            console.warn("[ChatContext] SSE clarification stream heartbeat timeout (30s) — aborting for DB recovery");
+            abortControllerRef.current.abort();
+          }
+        }
+      }, 5000);
+
       while (!done) {
         const { value, done: readerDone } = await reader.read();
         done = readerDone;
         if (value) {
+          lastChunkTimeRef.current = Date.now();
           buffer += decoder.decode(value, { stream: true });
           const lines = buffer.split("\n\n");
           buffer = lines.pop() || "";
 
           for (const line of lines) {
+            // Ignore SSE comment ping lines (: ping)
+            if (line.startsWith(":")) {
+              lastChunkTimeRef.current = Date.now();
+              continue;
+            }
             if (line.startsWith("data: ")) {
               const dataStr = line.slice(6);
               try {
                 const data = JSON.parse(dataStr);
+
+                // Handle ping heartbeat
+                if (data.type === "ping") {
+                  lastChunkTimeRef.current = Date.now();
+                  continue;
+                }
 
                 if (data.type === "status") {
                   const statusObj: RagStatus = {
@@ -1321,11 +1599,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                     // Retained citations are append-only per session: ignore empty
                     // server events (recall / refusal turns) so earlier turns keep theirs.
                   } else {
-                    const accumulated = incoming.sort((a: any, b: any) => {
-                      const scoreA = Number(a?.suitability_percent) || 0;
-                      const scoreB = Number(b?.suitability_percent) || 0;
-                      return scoreB - scoreA;
-                    });
+                    const accumulated = sortCitations(incoming);
                     setRetainedCitations(accumulated);
                   }
                 } else if (data.type === "follow_ups") {
@@ -1339,6 +1613,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                   }
                 } else if (data.type === "text") {
                   fullResponseAccumulator += data.text;
+                  if (activeStreamContextRef.current) {
+                    activeStreamContextRef.current.fullResponse = fullResponseAccumulator;
+                  }
                   enqueueText(data.text);
                 } else if (data.type === "error") {
                   const errorMsg = data.message || "An error occurred while generating the legal response.";
@@ -1355,6 +1632,16 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                     stage: "completed",
                     message: "Analysis complete",
                   });
+                  // Guard: if the stream ended without a terminal NLI payload,
+                  // settle any stale 'Evaluating' state so the card resolves.
+                  setMessages((prev) =>
+                    prev.map((msg) =>
+                      msg.id === assistantId
+                        ? { ...msg, legalAnalytics: settleNliAnalytics(msg.legalAnalytics ?? null) }
+                        : msg
+                    )
+                  );
+                  setLegalAnalytics((prev) => settleNliAnalytics(prev));
                 }
               } catch (e) {
                 console.error("Failed to parse SSE JSON", e, dataStr);
@@ -1364,14 +1651,30 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         }
       }
 
+      if (heartbeatTimer) {
+        clearInterval(heartbeatTimer);
+        heartbeatTimer = null;
+      }
+
       const waitForDrain = () =>
         new Promise<void>((resolve) => {
+          if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+            flushCharQueueInstantly();
+            resolve();
+            return;
+          }
+          const startTime = Date.now();
           const check = setInterval(() => {
-            if (charQueueRef.current.length === 0) {
+            if (
+              charQueueRef.current.length === 0 ||
+              (typeof document !== "undefined" && document.visibilityState === "hidden") ||
+              Date.now() - startTime > 2500
+            ) {
               clearInterval(check);
+              flushCharQueueInstantly();
               resolve();
             }
-          }, 50);
+          }, 30);
         });
       await waitForDrain();
       stopCharStream();
@@ -1389,17 +1692,38 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       }
     } catch (error: any) {
       console.error("Clarification re-submit error:", error);
+      if (heartbeatTimer) {
+        clearInterval(heartbeatTimer);
+        heartbeatTimer = null;
+      }
       stopCharStream();
       setIsTyping(false);
 
-      if (error.name === "AbortError") {
+      if (error.name === "AbortError" && isExplicitlyStoppedRef.current) {
         setRagStatus(null);
+        setMessages((prev) =>
+          prev.map((msg) =>
+            msg.id === assistantId
+              ? { ...msg, content: msg.content || "Request cancelled by user." }
+              : msg
+          )
+        );
       } else if (sessionId && !isExplicitlyStoppedRef.current) {
         // Tab-switch / mobile iOS disconnection recovery: poll session messages from DB
         setRagStatus({
-          stage: "streaming",
+          stage: "reconnecting",
           message: "Reconnecting to legal analysis...",
         });
+        setMessages((prev) =>
+          prev.map((msg) =>
+            msg.id === assistantId
+              ? {
+                  ...msg,
+                  ragStatus: { stage: "reconnecting", message: "Reconnecting to legal analysis..." },
+                }
+              : msg
+          )
+        );
         const recovered = await pollForRecoveredAssistantMessage(
           sessionId,
           assistantId,
@@ -1442,6 +1766,10 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         );
       }
     } finally {
+      if (heartbeatTimer) {
+        clearInterval(heartbeatTimer);
+        heartbeatTimer = null;
+      }
       abortControllerRef.current = null;
     }
   };

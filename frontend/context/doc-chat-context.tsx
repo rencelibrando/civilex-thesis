@@ -156,6 +156,17 @@ const DocChatContext = createContext<DocChatContextType | undefined>(undefined);
 export function DocChatProvider({ children }: { children: ReactNode }) {
   const [docChats, setDocChats] = useState<Record<string, DocChatState>>({});
   const abortControllersRef = useRef<Record<string, AbortController | null>>({});
+  const explicitlyStoppedDocsRef = useRef<Record<string, boolean>>({});
+  const activeDocStreamContextRef = useRef<Record<string, {
+    sessionId: string;
+    assistantId: number;
+    token: string;
+    fullResponse: string;
+    filename?: string;
+  } | null>>({});
+  const backgroundGraceTimersRef = useRef<Record<string, ReturnType<typeof setTimeout> | null>>({});
+  const isReconcilingDocRef = useRef<Record<string, boolean>>({});
+  const lastDocChunkTimeRef = useRef<Record<string, number>>({});
 
   // User Profile state for document panel personalization (synchronously hydrated from local storage)
   const initialProfile = typeof window !== "undefined" ? getInitialCachedProfile() : { firstName: "", fullName: "" };
@@ -268,21 +279,289 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  // Background Tab Switching Handler (visibilitychange)
-  useEffect(() => {
-    if (typeof document === "undefined") return;
+  // Polling loop to recover DB-committed answer when tab-switch or iOS suspends stream
+  const pollForRecoveredAssistantMessage = useCallback(
+    async (
+      docId: string,
+      targetSessionId: string,
+      targetAssistantId: number,
+      authToken: string,
+      filename?: string
+    ): Promise<boolean> => {
+      for (let attempt = 0; attempt < 45; attempt++) {
+        if (explicitlyStoppedDocsRef.current[docId]) return false;
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        if (explicitlyStoppedDocsRef.current[docId]) return false;
 
-    const handleVisibilityChange = () => {
+        try {
+          const res = await fetch(`${BACKEND_URL}/api/sessions/${targetSessionId}/messages`, {
+            headers: {
+              ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+            },
+          });
+          if (res.ok) {
+            const dbMsgs = await res.json();
+            if (Array.isArray(dbMsgs) && dbMsgs.length > 0) {
+              const lastAssistant = [...dbMsgs]
+                .reverse()
+                .find((m: any) => m.role === "assistant" && m.content && m.content.trim().length > 0);
+              if (lastAssistant) {
+                const currentAccumulator = activeDocStreamContextRef.current[docId]?.fullResponse || "";
+                if (lastAssistant.content.length >= currentAccumulator.length || currentAccumulator.length === 0) {
+                  let recoveredCitations: any[] = [];
+                  if (lastAssistant.citations) {
+                    try {
+                      recoveredCitations = typeof lastAssistant.citations === "string"
+                        ? JSON.parse(lastAssistant.citations)
+                        : lastAssistant.citations;
+                    } catch (_) {}
+                  }
+                  let recoveredAnalytics: LegalAnalytics | null = null;
+                  if (lastAssistant.legal_analytics) {
+                    try {
+                      recoveredAnalytics = typeof lastAssistant.legal_analytics === "string"
+                        ? JSON.parse(lastAssistant.legal_analytics)
+                        : lastAssistant.legal_analytics;
+                    } catch (_) {}
+                  }
+
+                  const followUps = generateDocFollowUpPrompts(
+                    lastAssistant.content,
+                    recoveredCitations,
+                    filename
+                  );
+
+                  stopCharStream();
+                  setDocChats((prev) => {
+                    const cur = prev[docId] || INITIAL_STATE;
+                    return {
+                      ...prev,
+                      [docId]: {
+                        ...cur,
+                        isTyping: false,
+                        ragStatus: { stage: "completed", message: "Analysis complete" },
+                        followUpPrompts: followUps,
+                        legalAnalytics: recoveredAnalytics || cur.legalAnalytics,
+                        retainedCitations: mergeCitations(cur.retainedCitations || [], recoveredCitations),
+                        messages: cur.messages.map((m) =>
+                          m.id === targetAssistantId
+                            ? {
+                                ...m,
+                                content: lastAssistant.content,
+                                citations: recoveredCitations,
+                                legalAnalytics: recoveredAnalytics || m.legalAnalytics,
+                                ragStatus: { stage: "completed", message: "Analysis complete" },
+                              }
+                            : m
+                        ),
+                      },
+                    };
+                  });
+                  activeDocStreamContextRef.current[docId] = null;
+                  return true;
+                }
+              }
+            }
+          }
+        } catch (pollErr) {
+          console.warn(`[DocChatContext] Polling recovery attempt failed for doc ${docId}:`, pollErr);
+        }
+      }
+      return false;
+    },
+    [stopCharStream]
+  );
+
+  // Immediate single-shot server reconciliation when app is foregrounded
+  const reconcileDocWithServer = useCallback(
+    async (
+      docId: string,
+      targetSessionId: string,
+      targetAssistantId: number,
+      authToken: string,
+      filename?: string
+    ): Promise<boolean> => {
+      if (explicitlyStoppedDocsRef.current[docId] || !targetSessionId || isReconcilingDocRef.current[docId]) {
+        return false;
+      }
+      isReconcilingDocRef.current[docId] = true;
+      try {
+        const res = await fetch(`${BACKEND_URL}/api/sessions/${targetSessionId}/messages`, {
+          headers: {
+            ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+          },
+        });
+        if (res.ok) {
+          const dbMsgs = await res.json();
+          if (Array.isArray(dbMsgs) && dbMsgs.length > 0) {
+            const lastAssistant = [...dbMsgs]
+              .reverse()
+              .find((m: any) => m.role === "assistant" && m.content && m.content.trim().length > 0);
+            if (lastAssistant) {
+              const currentAccumulator = activeDocStreamContextRef.current[docId]?.fullResponse || "";
+              if (lastAssistant.content.length >= currentAccumulator.length || currentAccumulator.length === 0) {
+                let recoveredCitations: any[] = [];
+                if (lastAssistant.citations) {
+                  try {
+                    recoveredCitations = typeof lastAssistant.citations === "string"
+                      ? JSON.parse(lastAssistant.citations)
+                      : lastAssistant.citations;
+                  } catch (_) {}
+                }
+                let recoveredAnalytics: LegalAnalytics | null = null;
+                if (lastAssistant.legal_analytics) {
+                  try {
+                    recoveredAnalytics = typeof lastAssistant.legal_analytics === "string"
+                      ? JSON.parse(lastAssistant.legal_analytics)
+                      : lastAssistant.legal_analytics;
+                  } catch (_) {}
+                }
+
+                if (abortControllersRef.current[docId] && !explicitlyStoppedDocsRef.current[docId]) {
+                  abortControllersRef.current[docId]?.abort();
+                  abortControllersRef.current[docId] = null;
+                }
+
+                const followUps = generateDocFollowUpPrompts(
+                  lastAssistant.content,
+                  recoveredCitations,
+                  filename
+                );
+
+                stopCharStream();
+                setDocChats((prev) => {
+                  const cur = prev[docId] || INITIAL_STATE;
+                  return {
+                    ...prev,
+                    [docId]: {
+                      ...cur,
+                      isTyping: false,
+                      ragStatus: { stage: "completed", message: "Analysis complete" },
+                      followUpPrompts: followUps,
+                      legalAnalytics: recoveredAnalytics || cur.legalAnalytics,
+                      retainedCitations: mergeCitations(cur.retainedCitations || [], recoveredCitations),
+                      messages: cur.messages.map((m) =>
+                        m.id === targetAssistantId
+                          ? {
+                              ...m,
+                              content: lastAssistant.content,
+                              citations: recoveredCitations,
+                              legalAnalytics: recoveredAnalytics || m.legalAnalytics,
+                              ragStatus: { stage: "completed", message: "Analysis complete" },
+                            }
+                          : m
+                      ),
+                    },
+                  };
+                });
+                activeDocStreamContextRef.current[docId] = null;
+                isReconcilingDocRef.current[docId] = false;
+                return true;
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.warn(`[DocChatContext] Reconciliation check failed for doc ${docId}:`, err);
+      } finally {
+        isReconcilingDocRef.current[docId] = false;
+      }
+      return false;
+    },
+    [stopCharStream]
+  );
+
+  // Background Tab Switching & Lifecycle Handlers (visibilitychange, pagehide, pageshow, freeze, resume)
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof document === "undefined") return;
+
+    const handleVisibilityChange = async () => {
       if (document.visibilityState === "hidden") {
         flushCharQueueInstantly();
+
+        // Check running doc streams
+        Object.keys(activeDocStreamContextRef.current).forEach((docId) => {
+          const streamContext = activeDocStreamContextRef.current[docId];
+          if (streamContext && !explicitlyStoppedDocsRef.current[docId]) {
+            if (backgroundGraceTimersRef.current[docId]) {
+              clearTimeout(backgroundGraceTimersRef.current[docId]!);
+            }
+            backgroundGraceTimersRef.current[docId] = setTimeout(() => {
+              if (
+                typeof document !== "undefined" &&
+                document.visibilityState === "hidden" &&
+                abortControllersRef.current[docId] &&
+                !explicitlyStoppedDocsRef.current[docId]
+              ) {
+                console.log(`[DocChatContext] Background grace elapsed for doc ${docId}; aborting reader for recovery path.`);
+                abortControllersRef.current[docId]?.abort();
+              }
+            }, 3500);
+          }
+        });
+      } else if (document.visibilityState === "visible") {
+        Object.keys(backgroundGraceTimersRef.current).forEach((docId) => {
+          if (backgroundGraceTimersRef.current[docId]) {
+            clearTimeout(backgroundGraceTimersRef.current[docId]!);
+            backgroundGraceTimersRef.current[docId] = null;
+          }
+        });
+        flushCharQueueInstantly();
+
+        const activeEntries = Object.entries(activeDocStreamContextRef.current);
+        for (const [docId, streamContext] of activeEntries) {
+          if (streamContext && !explicitlyStoppedDocsRef.current[docId]) {
+            await reconcileDocWithServer(
+              docId,
+              streamContext.sessionId,
+              streamContext.assistantId,
+              streamContext.token,
+              streamContext.filename
+            );
+          }
+        }
+      }
+    };
+
+    const handlePageHide = () => {
+      flushCharQueueInstantly();
+    };
+
+    const handlePageShow = async () => {
+      flushCharQueueInstantly();
+      const activeEntries = Object.entries(activeDocStreamContextRef.current);
+      for (const [docId, streamContext] of activeEntries) {
+        if (streamContext && !explicitlyStoppedDocsRef.current[docId]) {
+          await reconcileDocWithServer(
+            docId,
+            streamContext.sessionId,
+            streamContext.assistantId,
+            streamContext.token,
+            streamContext.filename
+          );
+        }
       }
     };
 
     document.addEventListener("visibilitychange", handleVisibilityChange);
+    window.addEventListener("pagehide", handlePageHide);
+    window.addEventListener("pageshow", handlePageShow);
+    window.addEventListener("freeze", handlePageHide);
+    window.addEventListener("resume", handlePageShow);
+
     return () => {
+      Object.keys(backgroundGraceTimersRef.current).forEach((docId) => {
+        if (backgroundGraceTimersRef.current[docId]) {
+          clearTimeout(backgroundGraceTimersRef.current[docId]!);
+        }
+      });
       document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("pagehide", handlePageHide);
+      window.removeEventListener("pageshow", handlePageShow);
+      window.removeEventListener("freeze", handlePageHide);
+      window.removeEventListener("resume", handlePageShow);
     };
-  }, [flushCharQueueInstantly]);
+  }, [flushCharQueueInstantly, reconcileDocWithServer]);
 
   // Load user profile on mount to personalize document greeting
   useEffect(() => {
@@ -533,6 +812,12 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
   );
 
   const handleStopDocMessage = useCallback((docId: string) => {
+    explicitlyStoppedDocsRef.current[docId] = true;
+    if (backgroundGraceTimersRef.current[docId]) {
+      clearTimeout(backgroundGraceTimersRef.current[docId]!);
+      backgroundGraceTimersRef.current[docId] = null;
+    }
+    activeDocStreamContextRef.current[docId] = null;
     if (abortControllersRef.current[docId]) {
       abortControllersRef.current[docId]?.abort();
       abortControllersRef.current[docId] = null;
@@ -594,6 +879,13 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
         };
       });
 
+      explicitlyStoppedDocsRef.current[docId] = false;
+      isReconcilingDocRef.current[docId] = false;
+      lastDocChunkTimeRef.current[docId] = Date.now();
+      let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+      let token = "";
+      let activeSessionId: string | null = currentState.sessionId;
+
       try {
         const controller = new AbortController();
         abortControllersRef.current[docId] = controller;
@@ -602,12 +894,19 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
         const {
           data: { session },
         } = await supabase.auth.getSession();
-        const token = session?.access_token || "";
+        token = session?.access_token || "";
 
-        let activeSessionId = currentState.sessionId;
         if (!activeSessionId) {
           activeSessionId = await ensureDocSession(docId, filename);
         }
+
+        activeDocStreamContextRef.current[docId] = {
+          sessionId: activeSessionId || "",
+          assistantId,
+          token,
+          fullResponse: "",
+          filename,
+        };
 
         if (activeSessionId) {
           fetch(`${BACKEND_URL}/api/sessions/${activeSessionId}/messages`, {
@@ -693,18 +992,41 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
           }
         };
 
+        // Client-side heartbeat watchdog: detects hung/suspended TCP streams
+        lastDocChunkTimeRef.current[docId] = Date.now();
+        heartbeatTimer = setInterval(() => {
+          if (Date.now() - (lastDocChunkTimeRef.current[docId] || 0) > 30000) {
+            if (abortControllersRef.current[docId] && !explicitlyStoppedDocsRef.current[docId]) {
+              console.warn(`[DocChatContext] SSE heartbeat timeout (30s) for doc ${docId} — aborting for DB recovery`);
+              abortControllersRef.current[docId]?.abort();
+            }
+          }
+        }, 5000);
+
         while (!done) {
           const { value, done: readerDone } = await reader.read();
           done = readerDone;
           if (value) {
+            lastDocChunkTimeRef.current[docId] = Date.now();
             buffer += decoder.decode(value, { stream: true });
             const lines = buffer.split("\n\n");
             buffer = lines.pop() || "";
 
             for (const line of lines) {
+              // Ignore SSE comment ping lines (: ping)
+              if (line.startsWith(":")) {
+                lastDocChunkTimeRef.current[docId] = Date.now();
+                continue;
+              }
               if (line.startsWith("data: ")) {
                 try {
                   const data = JSON.parse(line.slice(6));
+
+                  // Handle ping heartbeat
+                  if (data.type === "ping") {
+                    lastDocChunkTimeRef.current[docId] = Date.now();
+                    continue;
+                  }
 
                   if (data.type === "status") {
                     const statusObj: RagStatus = {
@@ -741,9 +1063,6 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
                       .sort((a: any, b: any) => (Number(b?.suitability_percent) || 0) - (Number(a?.suitability_percent) || 0));
                     const isOutOfDomain = receivedCitations.length === 0;
                     const topScore = receivedCitations[0]?.suitability_percent || 0;
-                    // Trust the server's verified legal_analytics event instead of
-                    // fabricating NLI from display suitability. Set a pending placeholder
-                    // that will be overwritten when the server emits legal_analytics.
                     const calculatedNli: LegalAnalytics = isOutOfDomain ? {
                       nli_score: null,
                       nli_status: "Out of Domain",
@@ -829,6 +1148,9 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
                       commitDocCitations();
                     }
                     fullResponseAccumulator += data.text;
+                    if (activeDocStreamContextRef.current[docId]) {
+                      activeDocStreamContextRef.current[docId]!.fullResponse = fullResponseAccumulator;
+                    }
                     enqueueText(data.text);
                   } else if (data.type === "error") {
                     const errorMsg = data.message || "An error occurred while generating the legal analysis.";
@@ -887,21 +1209,42 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
           }
         }
 
-        // Wait for character queue to drain smoothly (creates the smooth typewriter effect)
+        if (heartbeatTimer) {
+          clearInterval(heartbeatTimer);
+          heartbeatTimer = null;
+        }
+
+        // Wait for character queue to drain smoothly (with tab background instant flush & fallback timeout)
         const waitForDrain = () =>
           new Promise<void>((resolve) => {
+            if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+              flushCharQueueInstantly();
+              resolve();
+              return;
+            }
+            const startTime = Date.now();
             const check = setInterval(() => {
-              if (charQueueRef.current.length === 0) {
+              if (
+                charQueueRef.current.length === 0 ||
+                (typeof document !== "undefined" && document.visibilityState === "hidden") ||
+                Date.now() - startTime > 2500
+              ) {
                 clearInterval(check);
+                flushCharQueueInstantly();
                 resolve();
               }
-            }, 50);
+            }, 30);
           });
         await waitForDrain();
         stopCharStream();
       } catch (err: any) {
+        if (heartbeatTimer) {
+          clearInterval(heartbeatTimer);
+          heartbeatTimer = null;
+        }
         stopCharStream();
-        if (err.name === "AbortError") {
+
+        if (err.name === "AbortError" && explicitlyStoppedDocsRef.current[docId]) {
           setDocChats((prev) => {
             const cur = prev[docId] || INITIAL_STATE;
             return {
@@ -914,6 +1257,57 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
               },
             };
           });
+        } else if (activeSessionId && !explicitlyStoppedDocsRef.current[docId]) {
+          // Tab-switch / mobile iOS disconnection recovery: poll session messages from DB
+          setDocChats((prev) => {
+            const cur = prev[docId] || INITIAL_STATE;
+            return {
+              ...prev,
+              [docId]: {
+                ...cur,
+                ragStatus: { stage: "reconnecting", message: "Reconnecting to legal analysis..." },
+                messages: cur.messages.map((m) =>
+                  m.id === assistantId
+                    ? {
+                        ...m,
+                        ragStatus: { stage: "reconnecting", message: "Reconnecting to legal analysis..." },
+                      }
+                    : m
+                ),
+              },
+            };
+          });
+
+          const recovered = await pollForRecoveredAssistantMessage(
+            docId,
+            activeSessionId,
+            assistantId,
+            token,
+            filename
+          );
+
+          if (!recovered && !explicitlyStoppedDocsRef.current[docId]) {
+            setDocChats((prev) => {
+              const cur = prev[docId] || INITIAL_STATE;
+              return {
+                ...prev,
+                [docId]: {
+                  ...cur,
+                  ragStatus: { stage: "error", message: "Service connection error" },
+                  messages: cur.messages.map((m) =>
+                    m.id === assistantId
+                      ? {
+                          ...m,
+                          content:
+                            m.content ||
+                            "> ⚠️ **Analysis Notice**\n>\n> Unable to connect to the legal analysis service. The model service (LM Studio) may be offline. Please verify that the service is running and try again.",
+                        }
+                      : m
+                  ),
+                },
+              };
+            });
+          }
         } else {
           console.error("Doc chat error:", err);
           setDocChats((prev) => {
@@ -922,6 +1316,7 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
               ...prev,
               [docId]: {
                 ...cur,
+                ragStatus: { stage: "error", message: "Service connection error" },
                 messages: cur.messages.map((m) =>
                   m.id === assistantId
                     ? {
@@ -937,6 +1332,10 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
           });
         }
       } finally {
+        if (heartbeatTimer) {
+          clearInterval(heartbeatTimer);
+          heartbeatTimer = null;
+        }
         stopCharStream();
         setDocChats((prev) => {
           const cur = prev[docId] || INITIAL_STATE;
@@ -951,7 +1350,7 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
         abortControllersRef.current[docId] = null;
       }
     },
-    [docChats, ensureDocSession, userFirstName, startCharStream, stopCharStream, enqueueText]
+    [docChats, ensureDocSession, userFirstName, startCharStream, stopCharStream, enqueueText, pollForRecoveredAssistantMessage]
   );
 
   return (

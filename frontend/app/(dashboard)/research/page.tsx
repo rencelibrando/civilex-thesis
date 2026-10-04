@@ -57,7 +57,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sh
 import { supabase } from "@/lib/supabase";
 import { BACKEND_URL, apiUrl } from "@/lib/config";
 import { useDocChat } from "@/context/doc-chat-context";
-import { RagStatus } from "@/context/chat-context";
+import { RagStatus, sortCitations } from "@/context/chat-context";
 import { getDocPanelCopy, getDocStarters } from "@/lib/user-persona";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -265,6 +265,12 @@ function RagPipelineStepper({ status, isLive }: { status: RagStatus | null; isLi
     if (currentStage === "completed") return "completed";
     if (currentStage === "error") return "error";
 
+    // Reconnecting stage: previous steps are completed, streaming is reconnecting
+    if (currentStage === "reconnecting") {
+      if (stepId === "streaming") return "active";
+      return "completed";
+    }
+
     // When retrieval is finished, both Vectorize and Retrieve are completed
     if (currentStage === "retrieving_done") {
       if (stepId === "embedding" || stepId === "retrieving") return "completed";
@@ -280,14 +286,15 @@ function RagPipelineStepper({ status, isLive }: { status: RagStatus | null; isLi
     return "pending";
   };
 
-  // If live and still before text streaming: show active prominent stepper
+  // If live and still before text streaming or reconnecting: show active prominent stepper
   const isPreStreamingStage =
     currentStage === "queued" ||
     currentStage === "embedding" ||
     currentStage === "retrieving" ||
     currentStage === "retrieving_done" ||
     currentStage === "prompting" ||
-    currentStage === "thinking";
+    currentStage === "thinking" ||
+    currentStage === "reconnecting";
 
   if (isLive && isPreStreamingStage) {
     return (
@@ -296,22 +303,26 @@ function RagPipelineStepper({ status, isLive }: { status: RagStatus | null; isLi
           <span className="flex items-center gap-1.5">
             {currentStage === "queued" ? (
               <Clock className="w-3 h-3 animate-spin text-amber-500" />
+            ) : currentStage === "reconnecting" ? (
+              <Loader2 className="w-3 h-3 animate-spin text-amber-500" />
             ) : (
               <Sparkles className="w-3 h-3 animate-pulse text-emerald-600 dark:text-emerald-400" />
             )}
             Legal Processing
           </span>
-          <span className={`text-[9px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded-full border ${currentStage === "queued"
+          <span className={`text-[9px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded-full border ${currentStage === "queued" || currentStage === "reconnecting"
             ? "bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/30 font-bold animate-pulse"
             : "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-500/20 font-medium"
             }`}>
             {currentStage === "queued"
               ? `Queue #${status?.queue_position || 1}`
-              : currentStage === "retrieving_done"
-                ? "retrieved"
-                : currentStage === "thinking"
-                  ? "reasoning"
-                  : currentStage}
+              : currentStage === "reconnecting"
+                ? "reconnecting"
+                : currentStage === "retrieving_done"
+                  ? "retrieved"
+                  : currentStage === "thinking"
+                    ? "reasoning"
+                    : currentStage}
           </span>
         </div>
 
@@ -361,9 +372,15 @@ function RagPipelineStepper({ status, isLive }: { status: RagStatus | null; isLi
 
         {/* Active Stage Message (when not queued) */}
         {currentStage !== "queued" && (
-          <div className="flex items-center gap-1.5 pt-0.5 text-[11px] text-foreground bg-accent/30 dark:bg-accent/15 px-2 py-1 rounded-lg border border-border/40">
-            <Loader2 className="w-3 h-3 animate-spin text-emerald-600 dark:text-emerald-400 shrink-0" />
-            <span className="line-clamp-1 truncate">{status?.message || "Analyzing query..."}</span>
+          <div className={`flex items-center gap-1.5 pt-0.5 text-[11px] px-2 py-1 rounded-lg border ${
+            currentStage === "reconnecting"
+              ? "text-amber-700 dark:text-amber-300 bg-amber-500/15 border-amber-500/30"
+              : "text-foreground bg-accent/30 dark:bg-accent/15 border-border/40"
+          }`}>
+            <Loader2 className={`w-3 h-3 animate-spin shrink-0 ${
+              currentStage === "reconnecting" ? "text-amber-600 dark:text-amber-400" : "text-emerald-600 dark:text-emerald-400"
+            }`} />
+            <span className="line-clamp-1 truncate">{status?.message || (currentStage === "reconnecting" ? "Reconnecting to document analysis..." : "Analyzing query...")}</span>
           </div>
         )}
       </div>
@@ -584,6 +601,7 @@ export default function ResearchPage() {
   const inputValue = currentChat.inputValue;
   const isTyping = currentChat.isTyping;
   const ragStatus = currentChat.ragStatus;
+  const isGenerating = isTyping || ragStatus?.stage === "reconnecting";
   const retainedCitations = currentChat.retainedCitations;
   const legalAnalytics = currentChat.legalAnalytics;
   const followUpPrompts = currentChat.followUpPrompts || [];
@@ -616,14 +634,14 @@ export default function ResearchPage() {
         prevActiveDocIdRef.current = activeDocument.id;
         hasAutoCollapsedRef.current = false;
       }
-      if ((messages.length > 1 || isTyping) && !hasAutoCollapsedRef.current) {
+      if ((messages.length > 1 || isGenerating) && !hasAutoCollapsedRef.current) {
         hasAutoCollapsedRef.current = true;
         setIsDocListCollapsed(true);
       }
     } else {
       setIsDocListCollapsed(false);
     }
-  }, [activeDocument, messages.length, isTyping]);
+  }, [activeDocument, messages.length, isGenerating]);
 
   // Initialize saved widths from localStorage with screen size awareness
   useEffect(() => {
@@ -1436,7 +1454,7 @@ export default function ResearchPage() {
                   >
                     <MessageSquare className="w-3.5 h-3.5" />
                     <span>Chat</span>
-                    {isTyping && <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse ml-0.5" />}
+                    {isGenerating && <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse ml-0.5" />}
                   </button>
                 </div>
 
@@ -1592,7 +1610,7 @@ export default function ResearchPage() {
                 >
                   <MessageSquare className="w-3.5 h-3.5" />
                   <span>Chat with AI</span>
-                  {isTyping && <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse ml-0.5" />}
+                  {isGenerating && <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse ml-0.5" />}
                 </Button>
               </div>
             </div>
@@ -1664,7 +1682,7 @@ export default function ResearchPage() {
                   >
                     <MessageSquare className="w-3.5 h-3.5" />
                     <span>Chat</span>
-                    {isTyping && <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse ml-0.5" />}
+                    {isGenerating && <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse ml-0.5" />}
                   </button>
                 </div>
                 {/* Desktop: Toggle button to collapse/expand the AI Assistant chat panel */}
@@ -1971,6 +1989,7 @@ export default function ResearchPage() {
           const shouldShowCard =
             legalAnalytics?.nli_score != null ||
             legalAnalytics?.is_out_of_domain ||
+            legalAnalytics?.nli_unavailable ||
             isNliEvaluating;
 
           if (!shouldShowCard) return null;
@@ -2009,13 +2028,15 @@ export default function ResearchPage() {
                     <p className="text-[11px] text-muted-foreground truncate">
                       {isNliEvaluating
                         ? "Auditing claims against Philippine Civil Code..."
-                        : legalAnalytics?.is_out_of_domain || legalAnalytics?.nli_score == null
-                          ? legalAnalytics?.domain_category === "other_legal"
-                            ? "Statutory jurisdiction redirection"
-                            : "Civil law scope boundary"
-                          : legalAnalytics?.is_document_legal === false
-                            ? "Non-Statutory Academic / Technical"
-                            : "Statutory entailment reliability"}
+                        : legalAnalytics?.nli_unavailable
+                          ? "Statutory audit unavailable — answer shown without NLI verification"
+                          : legalAnalytics?.is_out_of_domain || legalAnalytics?.nli_score == null
+                            ? legalAnalytics?.domain_category === "other_legal"
+                              ? "Statutory jurisdiction redirection"
+                              : "Civil law scope boundary"
+                            : legalAnalytics?.is_document_legal === false
+                              ? "Non-Statutory Academic / Technical"
+                              : "Statutory entailment reliability"}
                     </p>
                   </div>
                 </div>
@@ -2129,22 +2150,14 @@ export default function ResearchPage() {
                       </div>
                     </AccordionTrigger>
                     <AccordionContent className="px-2.5 sm:px-3 pb-3 text-xs flex flex-col gap-2 max-h-72 overflow-y-auto overflow-x-hidden overscroll-contain touch-pan-y custom-scrollbar w-full max-w-full">
-                      {[...retainedCitations]
-                        .sort((a: any, b: any) => {
-                          const aOut = a.is_in_context === false || a.rank_status === "out_of_rank" ? 1 : 0;
-                          const bOut = b.is_in_context === false || b.rank_status === "out_of_rank" ? 1 : 0;
-                          if (aOut !== bOut) return aOut - bOut;
-                          const rankDiff = (a?.rank || 999) - (b?.rank || 999);
-                          if (rankDiff !== 0) return rankDiff;
-                          return (Number(b?.suitability_percent) || 0) - (Number(a?.suitability_percent) || 0);
-                        })
+                      {sortCitations(retainedCitations)
                         .map((cit: any, idx: number) => {
                           const isCase =
                             cit.parent_type === "case" ||
                             cit.parent_type === "jurisprudence" ||
                             Boolean(cit.metadata?.gr_number) ||
                             String(cit.parent_id || "").startsWith("GR_");
-                          const isOutOfRank = cit.is_in_context === false;
+                          const isOutOfRank = cit.is_in_context === false || cit.rank_status === "out_of_rank";
                           const rank = cit.rank ?? idx + 1;
 
                           if (isCase) {
@@ -2307,9 +2320,9 @@ export default function ResearchPage() {
             {messages.map((msg, idx) => {
               const isLatestAssistant =
                 msg.role === "assistant" &&
-                (idx === messages.length - 1 || (idx === messages.length - 2 && isTyping));
+                (idx === messages.length - 1 || (idx === messages.length - 2 && isGenerating));
               const effectiveRagStatus =
-                (isLatestAssistant && isTyping ? (ragStatus || msg.ragStatus) : msg.ragStatus) || null;
+                (isLatestAssistant && isGenerating ? (ragStatus || msg.ragStatus) : msg.ragStatus) || null;
 
               const isUser = msg.role === "user";
               const userTurnIndex = isUser
@@ -2364,7 +2377,7 @@ export default function ResearchPage() {
                       {msg.role === 'assistant' && effectiveRagStatus && (
                         <RagPipelineStepper
                           status={effectiveRagStatus}
-                          isLive={isTyping && isLatestAssistant}
+                          isLive={isGenerating && isLatestAssistant}
                         />
                       )}
 
@@ -2379,10 +2392,10 @@ export default function ResearchPage() {
                             <StartingTypewriterMessage key={msg.content} content={msg.content} />
                           ) : msg.content ? (
                             <AssistantMarkdown content={msg.content} />
-                          ) : isTyping && isLatestAssistant ? (
+                          ) : isGenerating && isLatestAssistant ? (
                             <div className="flex items-center gap-2 text-xs text-muted-foreground py-1">
                               <Loader2 className="w-3.5 h-3.5 animate-spin text-primary" />
-                              <span>Formulating legal analysis...</span>
+                              <span>{ragStatus?.stage === "reconnecting" ? "Reconnecting to document analysis..." : "Formulating legal analysis..."}</span>
                             </div>
                           ) : null
                         ) : (
@@ -2398,22 +2411,14 @@ export default function ResearchPage() {
                                 View Sources ({msg.citations.length})
                               </AccordionTrigger>
                               <AccordionContent className="text-xs text-muted-foreground bg-accent/10 p-2.5 sm:p-3 rounded-b-lg border border-t-0 border-border flex flex-col gap-2 max-h-72 overflow-y-auto overflow-x-hidden overscroll-contain touch-pan-y custom-scrollbar w-full max-w-full">
-                                {[...msg.citations]
-                                  .sort((a: any, b: any) => {
-                                    const aOut = a.is_in_context === false || a.rank_status === "out_of_rank" ? 1 : 0;
-                                    const bOut = b.is_in_context === false || b.rank_status === "out_of_rank" ? 1 : 0;
-                                    if (aOut !== bOut) return aOut - bOut;
-                                    const rankDiff = (a?.rank || 999) - (b?.rank || 999);
-                                    if (rankDiff !== 0) return rankDiff;
-                                    return (Number(b?.suitability_percent) || 0) - (Number(a?.suitability_percent) || 0);
-                                  })
+                                {sortCitations(msg.citations)
                                   .map((cit: any, cIdx: number) => {
                                     const isCase =
                                       cit.parent_type === "case" ||
                                       cit.parent_type === "jurisprudence" ||
                                       Boolean(cit.metadata?.gr_number) ||
                                       String(cit.parent_id || "").startsWith("GR_");
-                                    const isOutOfRank = cit.is_in_context === false;
+                                    const isOutOfRank = cit.is_in_context === false || cit.rank_status === "out_of_rank";
                                     const rank = cit.rank ?? cIdx + 1;
 
                                     if (isCase) {
@@ -2593,13 +2598,13 @@ export default function ResearchPage() {
                   type="button"
                   disabled={isDocProcessing || isDocFailed}
                   onClick={() => handleSend(item.prompt)}
-                  className="group flex items-start sm:items-center justify-between gap-2 px-3 py-2 sm:py-2 rounded-xl text-xs bg-accent/40 dark:bg-accent/20 hover:bg-[#100771] dark:hover:bg-blue-600 hover:text-white text-foreground border border-border/70 hover:border-transparent dark:hover:border-transparent transition-all shadow-2xs hover:shadow-xs active:scale-98 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed w-full text-left min-h-[2.5rem]"
+                  className="group flex items-start justify-between gap-2 px-3 py-2 sm:py-2 rounded-xl text-xs bg-accent/40 dark:bg-accent/20 hover:bg-[#100771] dark:hover:bg-blue-600 hover:text-white text-foreground border border-border/70 hover:border-transparent dark:hover:border-transparent transition-all shadow-2xs hover:shadow-xs active:scale-98 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed w-full text-left min-h-[2.5rem]"
                   title={item.prompt}
                 >
-                  <span className="line-clamp-2 sm:line-clamp-2 text-left text-[11px] sm:text-xs leading-snug sm:leading-normal min-w-0 font-normal group-hover:text-white flex-1 break-words">
+                  <span className="text-left text-[11px] sm:text-xs leading-snug sm:leading-normal min-w-0 font-normal group-hover:text-white flex-1 break-words whitespace-normal">
                     {item.prompt}
                   </span>
-                  <ChevronRight className="w-3.5 h-3.5 mt-0.5 sm:mt-0 opacity-50 group-hover:opacity-100 group-hover:text-white group-hover:translate-x-0.5 transition-all shrink-0" />
+                  <ChevronRight className="w-3.5 h-3.5 mt-0.5 opacity-50 group-hover:opacity-100 group-hover:text-white group-hover:translate-x-0.5 transition-all shrink-0" />
                 </button>
               ))}
             </div>
@@ -2607,7 +2612,7 @@ export default function ResearchPage() {
         )}
 
         {/* Suggested Next Inquiries (Dynamic Follow-Up Prompts - Responsive 2-Prompt Grid without Scroll) */}
-        {!isTyping && followUpPrompts.length > 0 && messages.length > 1 && (
+        {!isGenerating && followUpPrompts.length > 0 && messages.length > 1 && (
           <div className="px-2.5 sm:px-3 py-1.5 border-t border-border/40 bg-card/40 space-y-1 animate-fade-in-up transition-all duration-300 ease-out shrink-0">
             <div className="flex items-center justify-between text-[10px] sm:text-[11px] font-semibold text-blue-600 dark:text-blue-400 px-0.5">
               <div className="flex items-center gap-1.5">
@@ -2622,13 +2627,13 @@ export default function ResearchPage() {
                   type="button"
                   disabled={isDocProcessing || isDocFailed}
                   onClick={() => handleSend(prompt)}
-                  className="group flex items-start sm:items-center justify-between gap-2 px-3 py-2 sm:py-2 rounded-xl text-xs bg-accent/40 dark:bg-accent/20 hover:bg-[#100771] dark:hover:bg-blue-600 hover:text-white text-foreground border border-border/70 hover:border-transparent dark:hover:border-transparent transition-all duration-200 shadow-2xs hover:shadow-xs active:scale-98 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed w-full text-left min-h-[2.5rem]"
+                  className="group flex items-start justify-between gap-2 px-3 py-2 sm:py-2 rounded-xl text-xs bg-accent/40 dark:bg-accent/20 hover:bg-[#100771] dark:hover:bg-blue-600 hover:text-white text-foreground border border-border/70 hover:border-transparent dark:hover:border-transparent transition-all duration-200 shadow-2xs hover:shadow-xs active:scale-98 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed w-full text-left min-h-[2.5rem]"
                   title={prompt}
                 >
-                  <span className="line-clamp-2 sm:line-clamp-2 text-left text-[11px] sm:text-xs leading-snug sm:leading-normal min-w-0 group-hover:text-white transition-colors font-normal flex-1 break-words">
+                  <span className="text-left text-[11px] sm:text-xs leading-snug sm:leading-normal min-w-0 group-hover:text-white transition-colors font-normal flex-1 break-words whitespace-normal">
                     {prompt}
                   </span>
-                  <ChevronRight className="w-3.5 h-3.5 mt-0.5 sm:mt-0 opacity-50 group-hover:opacity-100 group-hover:text-white group-hover:translate-x-0.5 transition-all shrink-0" />
+                  <ChevronRight className="w-3.5 h-3.5 mt-0.5 opacity-50 group-hover:opacity-100 group-hover:text-white group-hover:translate-x-0.5 transition-all shrink-0" />
                 </button>
               ))}
             </div>
@@ -2689,7 +2694,7 @@ export default function ResearchPage() {
               }
               className="flex-1 bg-transparent dark:bg-transparent border-none shadow-none outline-none focus:outline-none focus:ring-0 text-foreground placeholder:text-muted-foreground px-3 h-10 sm:h-11 text-xs sm:text-sm disabled:cursor-not-allowed"
             />
-            {isTyping ? (
+            {isGenerating ? (
               <Button
                 type="button"
                 onClick={handleStop}
@@ -2828,6 +2833,18 @@ export default function ResearchPage() {
                       <span>85%+ (Strict Entailment)</span>
                     </div>
                   </div>
+                  {(legalAnalytics.claims_total != null || legalAnalytics.nli_engine) && (
+                    <p className="text-[11px] text-muted-foreground font-mono">
+                      {legalAnalytics.claims_total != null
+                        ? `Claims: ${legalAnalytics.claims_entailed ?? 0}/${legalAnalytics.claims_total} entailed`
+                        : null}
+                      {legalAnalytics.claims_total != null && legalAnalytics.claims_contradicted != null
+                        ? `, ${legalAnalytics.claims_contradicted} contradicted`
+                        : null}
+                      {legalAnalytics.nli_engine ? ` · Engine: ${legalAnalytics.nli_engine}` : null}
+                      {legalAnalytics.nli_score_net != null ? ` · Net: ${legalAnalytics.nli_score_net}%` : null}
+                    </p>
+                  )}
                 </div>
               )}
 

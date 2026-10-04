@@ -41,7 +41,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sh
 import { JurisprudenceModal, JurisprudenceCase } from "@/components/jurisprudence-modal";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { useChat, RagStatus, getCitationKey, ClarificationData } from "@/context/chat-context";
+import { useChat, RagStatus, getCitationKey, ClarificationData, sortCitations } from "@/context/chat-context";
 
 function cleanCaseSummary(text?: string): string {
   if (!text) return "No summary available for this case.";
@@ -186,6 +186,10 @@ function RagPipelineStepper({ status, isLive }: { status: RagStatus | null; isLi
   const getStepState = (stepId: string) => {
     if (currentStage === "completed") return "completed";
     if (currentStage === "error") return "error";
+    if (currentStage === "reconnecting") {
+      if (stepId === "streaming") return "active";
+      return "completed";
+    }
 
     // When retrieval is finished, both Vectorize and Retrieve are completed
     if (currentStage === "retrieving_done") {
@@ -202,7 +206,7 @@ function RagPipelineStepper({ status, isLive }: { status: RagStatus | null; isLi
     return "pending";
   };
 
-  // If live and still before text streaming: show active prominent stepper
+  // If live and still before text streaming or reconnecting: show active prominent stepper
   const isPreStreamingStage =
     currentStage === "queued" ||
     currentStage === "embedding" ||
@@ -210,6 +214,7 @@ function RagPipelineStepper({ status, isLive }: { status: RagStatus | null; isLi
     currentStage === "retrieving_done" ||
     currentStage === "prompting" ||
     currentStage === "thinking" ||
+    currentStage === "reconnecting" ||
     currentStage === "clarification_needed";
 
   if (isLive && isPreStreamingStage) {
@@ -219,22 +224,26 @@ function RagPipelineStepper({ status, isLive }: { status: RagStatus | null; isLi
           <span className="flex items-center gap-1.5">
             {currentStage === "queued" ? (
               <Clock className="w-3 h-3 animate-spin text-amber-500" />
+            ) : currentStage === "reconnecting" ? (
+              <Loader2 className="w-3 h-3 animate-spin text-amber-500" />
             ) : (
               <Sparkles className="w-3 h-3 animate-pulse text-emerald-600 dark:text-emerald-400" />
             )}
             CIVIL-LEX Legal Processing
           </span>
-          <span className={`text-[9px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded-full border ${currentStage === "queued"
+          <span className={`text-[9px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded-full border ${currentStage === "queued" || currentStage === "reconnecting"
             ? "bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/30 font-bold animate-pulse"
             : "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-500/20 font-medium"
             }`}>
             {currentStage === "queued"
               ? `Queue #${status?.queue_position || 1}`
-              : currentStage === "retrieving_done"
-                ? "retrieved"
-                : currentStage === "thinking"
-                  ? "reasoning"
-                  : currentStage}
+              : currentStage === "reconnecting"
+                ? "reconnecting"
+                : currentStage === "retrieving_done"
+                  ? "retrieved"
+                  : currentStage === "thinking"
+                    ? "reasoning"
+                    : currentStage}
           </span>
         </div>
 
@@ -284,9 +293,15 @@ function RagPipelineStepper({ status, isLive }: { status: RagStatus | null; isLi
 
         {/* Active Stage Message (when not queued) */}
         {currentStage !== "queued" && (
-          <div className="flex items-center gap-1.5 pt-0.5 text-[11px] text-foreground bg-accent/30 dark:bg-accent/15 px-2 py-1 rounded-lg border border-border/40">
-            <Loader2 className="w-3 h-3 animate-spin text-emerald-600 dark:text-emerald-400 shrink-0" />
-            <span className="line-clamp-1 truncate">{status?.message || "Analyzing query..."}</span>
+          <div className={`flex items-center gap-1.5 pt-0.5 text-[11px] px-2 py-1 rounded-lg border ${
+            currentStage === "reconnecting"
+              ? "text-amber-700 dark:text-amber-300 bg-amber-500/15 border-amber-500/30"
+              : "text-foreground bg-accent/30 dark:bg-accent/15 border-border/40"
+          }`}>
+            <Loader2 className={`w-3 h-3 animate-spin shrink-0 ${
+              currentStage === "reconnecting" ? "text-amber-600 dark:text-amber-400" : "text-emerald-600 dark:text-emerald-400"
+            }`} />
+            <span className="line-clamp-1 truncate">{status?.message || (currentStage === "reconnecting" ? "Reconnecting to legal analysis..." : "Analyzing query...")}</span>
           </div>
         )}
       </div>
@@ -538,6 +553,8 @@ export default function ChatPage() {
     handleClarificationSubmit,
   } = useChat();
 
+  const isGenerating = isTyping || ragStatus?.stage === "reconnecting";
+
   const [isAutoScrollEnabled, setIsAutoScrollEnabled] = useState(true);
   const [copiedCitation, setCopiedCitation] = useState(false);
   const [isNliModalOpen, setIsNliModalOpen] = useState(false);
@@ -611,7 +628,7 @@ export default function ChatPage() {
                       allCits.push(c);
                     }
                   }
-                  parsedCits.sort((a: any, b: any) => (Number(b?.suitability_percent) || 0) - (Number(a?.suitability_percent) || 0));
+                  parsedCits = sortCitations(parsedCits);
                 }
                 let parsedAnalytics = null;
                 if (m.legal_analytics) {
@@ -631,8 +648,7 @@ export default function ChatPage() {
                 };
               });
 
-              allCits.sort((a, b) => (Number(b?.suitability_percent) || 0) - (Number(a?.suitability_percent) || 0));
-              setRetainedCitations(allCits);
+              setRetainedCitations(sortCitations(allCits));
 
               const lastAssistantWithAnalytics = [...formattedMessages].reverse().find((m: any) => m.role === "assistant" && m.legalAnalytics);
               if (lastAssistantWithAnalytics?.legalAnalytics) {
@@ -760,8 +776,8 @@ export default function ChatPage() {
                       {/* Assistant RAG Pipeline Stepper */}
                       {isAssistant && msg.id !== 1 && (
                         <RagPipelineStepper
-                          status={isLatestAssistant && isTyping ? (ragStatus || msg.ragStatus || null) : msg.ragStatus || null}
-                          isLive={isLatestAssistant && isTyping}
+                          status={isLatestAssistant && isGenerating ? (ragStatus || msg.ragStatus || null) : msg.ragStatus || null}
+                          isLive={isLatestAssistant && isGenerating}
                         />
                       )}
 
@@ -780,7 +796,7 @@ export default function ChatPage() {
                               <ClarificationCard
                                 data={msg.clarificationData}
                                 onSubmit={handleClarificationSubmit}
-                                isSubmitted={!isLatestAssistant || isTyping}
+                                isSubmitted={!isLatestAssistant || isGenerating}
                               />
                             ) : (msg.id === 1 || idx === 0) ? (
                               <StartingTypewriterMessage key={msg.content} content={msg.content} />
@@ -839,13 +855,13 @@ export default function ChatPage() {
                       key={item.id}
                       type="button"
                       onClick={() => handleSend(item.prompt)}
-                      className="group flex items-start sm:items-center justify-between gap-2 px-3 py-2 sm:py-2 rounded-xl text-xs bg-accent/40 dark:bg-accent/20 hover:bg-[#100771] dark:hover:bg-blue-600 hover:text-white text-foreground border border-border/70 hover:border-transparent dark:hover:border-transparent transition-all shadow-2xs hover:shadow-xs active:scale-98 cursor-pointer w-full text-left min-h-[2.5rem]"
+                      className="group flex items-start justify-between gap-2 px-3 py-2 sm:py-2 rounded-xl text-xs bg-accent/40 dark:bg-accent/20 hover:bg-[#100771] dark:hover:bg-blue-600 hover:text-white text-foreground border border-border/70 hover:border-transparent dark:hover:border-transparent transition-all shadow-2xs hover:shadow-xs active:scale-98 cursor-pointer w-full text-left min-h-[2.5rem]"
                       title={item.prompt}
                     >
-                      <span className="line-clamp-2 sm:line-clamp-2 text-left text-[11px] sm:text-xs leading-snug sm:leading-normal font-normal group-hover:text-white flex-1 break-words">
+                      <span className="text-left text-[11px] sm:text-xs leading-snug sm:leading-normal font-normal group-hover:text-white flex-1 break-words whitespace-normal">
                         {item.prompt}
                       </span>
-                      <ChevronRight className="w-3.5 h-3.5 mt-0.5 sm:mt-0 opacity-50 group-hover:opacity-100 group-hover:text-white group-hover:translate-x-0.5 transition-all shrink-0" />
+                      <ChevronRight className="w-3.5 h-3.5 mt-0.5 opacity-50 group-hover:opacity-100 group-hover:text-white group-hover:translate-x-0.5 transition-all shrink-0" />
                     </button>
                   ))}
                 </div>
@@ -853,7 +869,7 @@ export default function ChatPage() {
             )}
 
             {/* 2. Contextual Follow-Up Suggestions - Responsive 2-Prompt Grid without Scroll */}
-            {!isTyping && followUpPrompts.length > 0 && messages.length > 1 && (
+            {!isGenerating && followUpPrompts.length > 0 && messages.length > 1 && (
               <div className="space-y-1 animate-fade-in">
                 <div className="flex items-center justify-between px-0.5 text-[10px] sm:text-[11px] font-semibold text-blue-600 dark:text-blue-400">
                   <div className="flex items-center gap-1.5">
@@ -867,11 +883,11 @@ export default function ChatPage() {
                       key={i}
                       type="button"
                       onClick={() => handleSend(prompt)}
-                      className="group flex items-start sm:items-center justify-between gap-2 px-3 py-2 sm:py-2 rounded-xl text-xs bg-accent/50 dark:bg-accent/20 hover:bg-[#100771] dark:hover:bg-blue-600 hover:text-white text-foreground border border-border/80 hover:border-transparent dark:hover:border-transparent transition-all shadow-2xs hover:shadow-xs active:scale-98 cursor-pointer w-full text-left min-h-[2.5rem]"
+                      className="group flex items-start justify-between gap-2 px-3 py-2 sm:py-2 rounded-xl text-xs bg-accent/50 dark:bg-accent/20 hover:bg-[#100771] dark:hover:bg-blue-600 hover:text-white text-foreground border border-border/80 hover:border-transparent dark:hover:border-transparent transition-all shadow-2xs hover:shadow-xs active:scale-98 cursor-pointer w-full text-left min-h-[2.5rem]"
                       title={prompt}
                     >
-                      <span className="line-clamp-2 sm:line-clamp-2 text-left text-[11px] sm:text-xs leading-snug sm:leading-normal font-normal group-hover:text-white flex-1 break-words">{prompt}</span>
-                      <ChevronRight className="w-3.5 h-3.5 mt-0.5 sm:mt-0 opacity-60 group-hover:opacity-100 group-hover:text-white group-hover:translate-x-0.5 transition-all shrink-0" />
+                      <span className="text-left text-[11px] sm:text-xs leading-snug sm:leading-normal font-normal group-hover:text-white flex-1 break-words whitespace-normal">{prompt}</span>
+                      <ChevronRight className="w-3.5 h-3.5 mt-0.5 opacity-60 group-hover:opacity-100 group-hover:text-white group-hover:translate-x-0.5 transition-all shrink-0" />
                     </button>
                   ))}
                 </div>
@@ -890,7 +906,7 @@ export default function ChatPage() {
                 placeholder="Ask CIVIL-LEX about Philippine Civil Code articles, jurisprudence, or contracts..."
                 className="flex-1 bg-transparent dark:bg-transparent border-none shadow-none outline-none focus:outline-none focus:ring-0 text-foreground placeholder:text-muted-foreground pl-4 sm:pl-5 pr-2 sm:pr-3 h-10 sm:h-11 2xl:h-12 text-xs sm:text-sm 2xl:text-base"
               />
-              {isTyping ? (
+              {isGenerating ? (
                 <Button
                   type="button"
                   onClick={handleStop}
@@ -968,6 +984,7 @@ export default function ChatPage() {
                 const shouldShowCard =
                   legalAnalytics?.nli_score != null ||
                   legalAnalytics?.is_out_of_domain ||
+                  legalAnalytics?.nli_unavailable ||
                   isNliEvaluating;
 
                 if (!shouldShowCard) return null;
@@ -1017,11 +1034,13 @@ export default function ChatPage() {
                           <p className="text-[11px] text-muted-foreground truncate">
                             {isNliEvaluating
                               ? "Auditing claims against Philippine Civil Code..."
-                              : legalAnalytics?.is_out_of_domain || legalAnalytics?.nli_score == null
-                                ? legalAnalytics?.domain_category === "other_legal"
-                                  ? "Statutory jurisdiction redirection"
-                                  : "Civil law scope boundary"
-                                : "Statutory entailment reliability"}
+                              : legalAnalytics?.nli_unavailable
+                                ? "Statutory audit unavailable — answer shown without NLI verification"
+                                : legalAnalytics?.is_out_of_domain || legalAnalytics?.nli_score == null
+                                  ? legalAnalytics?.domain_category === "other_legal"
+                                    ? "Statutory jurisdiction redirection"
+                                    : "Civil law scope boundary"
+                                  : "Statutory entailment reliability"}
                           </p>
                         </div>
                       </div>
@@ -1304,7 +1323,7 @@ export default function ChatPage() {
                   );
                 }
 
-                if (isTyping && displayCitations.length === 0) {
+                if (isGenerating && displayCitations.length === 0) {
                   return (
                     <div className="h-full flex flex-col items-center justify-center text-center text-muted-foreground space-y-2.5 pt-16 animate-fade-in px-4">
                       <Loader2 className="w-6 h-6 text-primary animate-spin opacity-80" />
@@ -1316,7 +1335,7 @@ export default function ChatPage() {
                   );
                 }
 
-                if (messages.length > 1 && !isTyping) {
+                if (messages.length > 1 && !isGenerating) {
                   if (legalAnalytics?.is_out_of_domain) {
                     return (
                       <div className="h-full flex flex-col items-center justify-center text-center text-muted-foreground space-y-2.5 pt-16 px-4 animate-fade-in">

@@ -25,13 +25,23 @@ export const setupProxies = (app) => {
     createProxyMiddleware({
       target: ragServiceUrl,
       changeOrigin: true,
-      timeout: 180000, // 3-minute socket timeout
-      proxyTimeout: 180000, // 3-minute response timeout
+      timeout: 0, // Disable proxy socket timeout for continuous SSE streaming
+      proxyTimeout: 0, // Disable response timeout for long-running legal reasoning
       pathRewrite: {
         '^/api/chat': '/search',
       },
       on: {
         proxyReq: (proxyReq, req, res) => {
+          // Disable socket timeout on outgoing proxy request for continuous SSE streaming
+          if (proxyReq.socket) {
+            proxyReq.socket.setTimeout(0);
+          } else {
+            proxyReq.on('socket', (socket) => {
+              socket.setTimeout(0);
+            });
+          }
+          proxyReq.setHeader('Connection', 'keep-alive');
+
           if (req.user) {
             proxyReq.setHeader('x-user-id', req.user.id);
             if (req.user.email) {
@@ -48,10 +58,14 @@ export const setupProxies = (app) => {
           }
         },
         proxyRes: (proxyRes, req, res) => {
-          // Prevent proxy buffering on SSE streams so chunks reach the frontend immediately
+          // Prevent proxy buffering on SSE streams so chunks and heartbeats reach the frontend immediately
           res.setHeader('X-Accel-Buffering', 'no');
           res.setHeader('Cache-Control', 'no-cache, no-transform');
+          res.setHeader('Connection', 'keep-alive');
           req.socket.setTimeout(0);
+          if (proxyRes.socket) {
+            proxyRes.socket.setTimeout(0);
+          }
         },
         error: (err, req, res) => {
           // If the downstream client disconnected or aborted, this error is an expected result of proxyReq.destroy()

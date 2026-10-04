@@ -206,7 +206,8 @@ def calculate_context_precision(retrieved_chunks, expected_articles):
 def calculate_llm_faithfulness(generated_response, retrieved_chunks):
     """
     Standard RAGAS Faithfulness via Neuro-Symbolic Hybrid NLI engine (Gemma + Symbolic).
-    F = |V_entailed| / |S_total|  (with contradiction penalty).
+    F_standard = |V_entailed| / |S_total| (primary; contradiction-penalized
+    net and 0.35-neutral weighted variants are diagnostic-only on the result).
     """
     if not retrieved_chunks or not generated_response:
         return 0.0

@@ -34,7 +34,7 @@ logging.basicConfig(
 
 from services.document import extract_and_process_document
 from services.llm_client import generate_response_stream
-from services.nli import score_faithfulness_async as nli_score_faithfulness_async
+from services.nli import score_faithfulness_async as nli_score_faithfulness_async, score_faithfulness as nli_score_faithfulness_sync, _compute_lexical_coverage
 from services.ambiguity import detect_ambiguity, enrich_query_with_clarification
 from sentence_transformers import SentenceTransformer
 
@@ -368,7 +368,7 @@ async def cancel_generation(cancel_req: CancelRequest):
     return {"status": "not_found_or_already_done", "session_id": session_id}
 
 # Stopwords for both English and conversational Filipino/Tagalog
-SEARCH_STOPWORDS = {
+ENGLISH_STOPWORDS = {
     # English
     'a', 'about', 'above', 'after', 'again', 'against', 'all', 'am', 'an', 'and', 'any', 'are', 'aren',
     'as', 'at', 'be', 'because', 'been', 'before', 'being', 'below', 'between', 'both', 'but', 'by',
@@ -380,14 +380,104 @@ SEARCH_STOPWORDS = {
     'that', 'the', 'their', 'theirs', 'them', 'themselves', 'then', 'there', 'these', 'they', 'this',
     'those', 'through', 'to', 'too', 'under', 'until', 'up', 'very', 'was', 'we', 'were', 'what', 'when',
     'where', 'which', 'while', 'who', 'whom', 'why', 'with', 'would', 'you', 'your', 'yours', 'yourself',
+    'tell', 'explain', 'contract', 'agreement', 'tenant', 'landlord', 'damage', 'damages', 'rights',
+    'property', 'lease', 'obligation', 'civil', 'code', 'article', 'law', 'legal', 'sue', 'court',
+    'statute', 'provision', 'section', 'stipulated', 'regarding', 'concerning'
+}
+
+TAGALOG_STOPWORDS = {
     # Filipino / Tagalog Conversational
     'ang', 'mga', 'ng', 'sa', 'ko', 'mo', 'niya', 'namin', 'nila', 'ninyo', 'ito', 'iyan', 'iyon',
     'na', 'pa', 'ba', 'din', 'rin', 'naman', 'kasi', 'kaya', 'kung', 'kapag', 'pag', 'at', 'o',
     'ano', 'ano-ano', 'sino', 'sino-sino', 'saan', 'kailan', 'bakit', 'paano', 'gaano',
     'pwede', 'puwede', 'maaari', 'dapat', 'gusto', 'nais', 'may', 'mayroon', 'wala',
     'ako', 'ikaw', 'siya', 'kami', 'tayo', 'kayo', 'sila', 'akin', 'iyo', 'kaniya', 'amin', 'atin',
-    'inyo', 'kanila', 'yung', 'ung', 'eh', 'oh', 'po', 'opo', 'ho', 'oho'
+    'inyo', 'kanila', 'yung', 'ung', 'eh', 'oh', 'po', 'opo', 'ho', 'oho',
+    'lahat', 'hindi', 'ay', 'pala', 'talaga', 'paki', 'buod', 'paikliin',
+    'utang', 'upa', 'asawa', 'anak', 'mana', 'bahay', 'lupa', 'kasunduan', 'kasulatan',
+    'korte', 'demanda', 'habla', 'ikaso', 'nabangga', 'sinuntok', 'perwisyo', 'pinsala',
+    'danyos', 'krimen', 'hukuman', 'abogado', 'paliwanag', 'ipaliwanag', 'sabihin',
+    'sustento', 'bata', 'magulang', 'mag-asawa', 'kasal', 'hiwalay', 'hati',
+    'batas', 'nasa', 'tungkol', 'ukol', 'salig', 'probisyon', 'artikulo', 'seksyon',
+    'sinasabi', 'nilalaman', 'nakasaad', 'nakasulat', 'patungkol'
 }
+
+SEARCH_STOPWORDS = ENGLISH_STOPWORDS | TAGALOG_STOPWORDS
+
+EXPLICIT_TAGALOG_PATTERN = re.compile(
+    r'\b(in tagalog|sa tagalog|tagalog please|ipaliwanag sa tagalog|paliwanag sa tagalog|tagalog po|isalin sa tagalog|paki-tagalog|tagalog explanation)\b',
+    re.IGNORECASE
+)
+EXPLICIT_ENGLISH_PATTERN = re.compile(
+    r'\b(in english|english please|explain in english|translate to english|english po|english explanation)\b',
+    re.IGNORECASE
+)
+
+TAGALOG_CORE_GRAMMAR = {
+    'ang', 'mga', 'ng', 'sa', 'kung', 'kapag', 'ano', 'bakit', 'paano', 'kailan', 'saan',
+    'pwede', 'puwede', 'maaari', 'dapat', 'wala', 'mayroon', 'po', 'opo', 'namin', 'nila',
+    'ninyo', 'kanila', 'akin', 'atin', 'amin', 'inyo', 'paliwanag', 'ipaliwanag', 'sustento',
+    'mana', 'utang', 'upa', 'kasunduan', 'nabangga'
+}
+
+
+def detect_query_language(query: str) -> str:
+    """
+    Detects whether the incoming query is Tagalog ('tl') or English ('en').
+    Returns 'tl' if Tagalog/Filipino is explicitly requested or if Filipino grammatical
+    markers/particles dominate or are present in a question structure.
+    Returns 'en' if English is requested, predominantly used, or as default.
+    """
+    if not query or not query.strip():
+        return "en"
+    q = query.strip()
+
+    if EXPLICIT_TAGALOG_PATTERN.search(q):
+        return "tl"
+    if EXPLICIT_ENGLISH_PATTERN.search(q):
+        return "en"
+
+    words = [w.lower() for w in re.findall(r'[a-zA-Z\u00c0-\u024f-]+', q)]
+    if not words:
+        return "en"
+
+    tagalog_count = sum(1 for w in words if w in TAGALOG_STOPWORDS)
+    english_count = sum(1 for w in words if w in ENGLISH_STOPWORDS)
+    core_grammar_count = sum(1 for w in words if w in TAGALOG_CORE_GRAMMAR)
+
+    if core_grammar_count >= 1 and tagalog_count >= english_count:
+        return "tl"
+    if core_grammar_count >= 2:
+        return "tl"
+    if tagalog_count > english_count:
+        return "tl"
+
+    return "en"
+
+
+def get_language_directive(lang: str) -> str:
+    """
+    Returns the strict unilingual instruction block injected into every system prompt
+    to prevent code-switching, Taglish mixing, and archaic/deep phrasing.
+    """
+    if lang == "tl":
+        return (
+            "### 🌐 MANDATORY STRICT LANGUAGE DIRECTIVE: FULL SIMPLIFIED TAGALOG FOR CITIZENS\n"
+            "- The user asked in Filipino/Tagalog. You MUST write your ENTIRE response in natural, simplified Tagalog that an ordinary Filipino citizen without a legal background can easily understand.\n"
+            "- STRICT UNILINGUAL RULE: Do NOT mix English and Tagalog (STRICTLY NO Taglish, code-switching, or hybrid English-Tagalog sentences). Every sentence, heading, explanation, and recommendation must be in Tagalog.\n"
+            "- ONLY ACCEPTABLE ENGLISH: Official statutory numbers/citations (e.g., 'Republic Act No. 386', '[Art. 1191]', '[Art. 2176]', '[G.R. No. 123456]') and standard institutional acronyms (RTC, MTC, PNP, BIR, DOLE).\n"
+            "- AVOID DEEP / ARCHAIC WORDS: Do not use deep, obscure, or archaic Tagalog words. Use everyday, modern Filipino words (e.g., 'kasunduan' for contract, 'bayad-pinsala / danyos' for damages, 'karapatan' for rights, 'paglabag' for breach, 'hukuman' for court).\n"
+            "- EXPLAIN EVERY LEGAL TERM: If a technical legal concept is referenced, explain what it means in plain, everyday Tagalog.\n\n"
+        )
+    else:
+        return (
+            "### 🌐 MANDATORY STRICT LANGUAGE DIRECTIVE: FULL PLAIN ENGLISH FOR CITIZENS\n"
+            "- The user asked in English. You MUST write your ENTIRE response in clear, plain, everyday English that an ordinary citizen without a legal background can easily understand.\n"
+            "- STRICT UNILINGUAL RULE: Do NOT mix Filipino/Tagalog words or phrases anywhere in your response (STRICTLY NO Taglish, code-switching, or Filipino filler words).\n"
+            "- NO DEEP OR OBSCURANT LEGALESE: Do NOT use complex, dense, Latin, or archaic lawyer jargon without an immediate plain-language translation right beside it. Keep sentences short and clear.\n"
+            "- PRESERVE STATUTORY CITATIONS: Always retain bracketed citations (e.g., [Art. 1191], [Art. 1654]).\n"
+            "- EXPLAIN EVERY LEGAL TERM: Whenever a legal term is used (e.g., quasi-delict, rescission, moral damages, solidary liability), immediately define and explain what it means in simple everyday English beside it.\n\n"
+        )
 
 PHILIPPINE_LEGAL_EXPANSIONS = [
     # Reciprocal obligations / breach of contract / cancellation / rescission / resolution
@@ -813,6 +903,154 @@ def classify_query_intent(
         "reason": "In-domain Philippine Civil Law inquiry."
     }
 
+def is_simple_lookup(query: str, history: Optional[List[Any]] = None) -> bool:
+    """
+    Determines if the query is a focused single-article lookup (definition, explanation, 
+    codal text, or simple statutory inquiry) rather than a complex multi-party factual dispute.
+    """
+    q_clean = query.strip()
+    q_lower = q_clean.lower()
+
+    # 1. Check for single article reference
+    art_matches = re.findall(r'(?:article|art\.?|artikulo)\s*(?:no\.?\s*)?(\d+)', q_clean, re.IGNORECASE)
+    unique_art_nums = list(dict.fromkeys(art_matches))
+
+    if len(unique_art_nums) != 1:
+        # If no article or multiple articles (e.g. comparison queries like "Art 445 vs Art 415"), not a single-article simple lookup
+        return False
+
+    # 2. Check for complex dispute indicators (facts, injury, lawsuit, multi-party conflict)
+    dispute_patterns = [
+        r'\b(?:sue|suing|lawsuit|complaint|breached|breach|refused|demanded|damage|damages|accident|negligence|injury|injured|death|killed|hospital|debt|borrowed|loaned|foreclosure|ejectment|unlawful detainer)\b',
+        r'\b(?:kaso|ikaso|kakaso|idemanda|nagsampa|sinuntok|binugbog|nabangga|nasaktan|pinsala|danyos|utang|ayaw\s+magbayad|hindi\s+nagbayad|pinalayas|aksidente|pagkamatay)\b',
+        r'\b(?:contractor|subcontractor|developer|tenant|landlord|employer|employee|buyer|seller|plaintiff|defendant)\b'
+    ]
+    is_dispute = any(bool(re.search(p, q_lower)) for p in dispute_patterns)
+
+    # If the user query is very long (> 35 words) and describes an active dispute, keep as complex dispute
+    word_count = len(q_clean.split())
+    if word_count > 35 and is_dispute:
+        return False
+
+    return True
+
+
+def detect_article_distractor(
+    query: str,
+    exact_article: Optional[Dict[str, Any]],
+    candidate_articles: Optional[List[Dict[str, Any]]] = None
+) -> Optional[Dict[str, Any]]:
+    """
+    Detects if the user is asking about a specific Civil Code article with a false premise 
+    (topic mismatch/distractor), e.g., 'Article 445 about pets' when Article 445 actually 
+    governs accession/improvements on land of another, and pets/animals are governed under Art 415(6).
+    
+    Symbolic, deterministic, zero-LLM call.
+    Trigger only if single Art num + remainder non-empty. Else skip (protects 445 vs 415 comparisons).
+
+    Explanation-intent guard: "ano ang ibig sabihin ng Article X" / "ano ang sakop
+    nito" (including common misspellings like "ibigsabihin", "ibigsahin", "sakot")
+    are requests for the article's meaning/scope, NOT false premises. Such generic
+    meaning/scope tokens are stripped before topic extraction; if nothing
+    substantive remains, this is a pure explanation request -> return None so the
+    caller routes to the simple-lookup path instead of the refusal template.
+    """
+    # Common Filipino misspellings / joined forms -> normalized before tokenizing,
+    # so typos never leak into queried_topic or break coverage computation.
+    _TYPO_NORMALIZATION = (
+        (r'\bibigsahin\b', 'ibig sabihin'),
+        (r'\bibigsabihn\b', 'ibig sabihin'),
+        (r'\bibigsabihin\b', 'ibig sabihin'),
+        (r'\bibigsabhn\b', 'ibig sabihin'),
+        (r'\bsakot\b', 'sakop'),
+        (r'\bsakup\b', 'sakop'),
+        (r'\bkahulogan\b', 'kahulugan'),
+    )
+    # Generic meaning/scope/explanation-intent tokens: never a "topic".
+    _MEANING_INTENT_TOKENS = frozenset({
+        'ibig', 'sabihin', 'kahulugan', 'meaning', 'means', 'mean', 'meant',
+        'sakop', 'scope', 'coverage', 'saklaw', 'nilalaman',
+        # Demonstrative / possessive fillers with no topical content
+        # (e.g. "...ang mga sakop nito" -> "nito" must not become a topic).
+        'nito', 'niyan', 'niyon', 'dito', 'diyan', 'doon',
+        'rito', 'riyan', 'roon', 'ganito', 'ganyan', 'ganoon',
+    })
+
+    q_clean = query.strip()
+    for _pat, _repl in _TYPO_NORMALIZATION:
+        q_clean = re.sub(_pat, _repl, q_clean, flags=re.IGNORECASE)
+    art_matches = re.findall(r'(?:article|art\.?|artikulo)\s*(?:no\.?\s*)?(\d+)', q_clean, re.IGNORECASE)
+    unique_art_nums = list(dict.fromkeys(art_matches))
+
+    # Trigger only if single Art num. Else skip (protects 445 vs 415 comparisons)
+    if len(unique_art_nums) != 1 or not exact_article:
+        return None
+
+    art_num = unique_art_nums[0]
+
+    # Extract remainder words after stripping article pattern and search stopwords
+    remainder_clean = re.sub(r'(?:article|art\.?|artikulo)\s*(?:no\.?\s*)?\d+', '', q_clean, flags=re.IGNORECASE)
+    raw_tokens = re.findall(r'\b[a-zA-Z]{3,}\b', remainder_clean.lower())
+    remainder_tokens = [
+        w for w in raw_tokens
+        if w not in SEARCH_STOPWORDS
+        and w not in _MEANING_INTENT_TOKENS
+        and not w.isdigit()
+    ]
+
+    # If remainder is empty, this is a pure article query (e.g. "what is article 445"), no false premise
+    if not remainder_tokens:
+        return None
+
+    remainder_str = " ".join(remainder_tokens)
+
+    # Build signature for exact article (hierarchy + content)
+    exact_content = str(exact_article.get('content', '')).lower()
+    exact_hier = exact_article.get('hierarchy') or (exact_article.get('metadata') or {}).get('hierarchy', '')
+    if isinstance(exact_hier, dict):
+        exact_hier_str = f"{exact_hier.get('book_name', '')} {exact_hier.get('title_name', '')} {exact_hier.get('chapter_name', '')} {exact_hier.get('section_name', '')}".lower()
+    else:
+        exact_hier_str = str(exact_hier).lower()
+
+    exact_full_sig = f"{exact_hier_str} {exact_content}"
+
+    # Compute coverage of remainder on exact article
+    cov_exact = _compute_lexical_coverage(remainder_str, exact_full_sig)
+    if cov_exact > 0.25:
+        # Queried article genuinely covers the topic
+        return None
+
+    # Check candidates for topic alignment (confirm remainder in hybrid_top.content and not in exact.content)
+    redirect_cand = None
+    if candidate_articles:
+        for cand in candidate_articles:
+            cand_pid = str(cand.get('parent_id') or '')
+            if cand_pid == f"RA386-ART{art_num}" or cand_pid == exact_article.get('parent_id'):
+                continue
+            cand_content = str(cand.get('content', '')).lower()
+            cand_cov = _compute_lexical_coverage(remainder_str, cand_content)
+            if cand_cov > 0.0:
+                redirect_cand = cand
+                break
+
+    redirect_art_num = None
+    redirect_pid = None
+    if redirect_cand:
+        redirect_pid = str(redirect_cand.get('parent_id', ''))
+        m = re.search(r'RA386-ART(\d+)', redirect_pid)
+        if m:
+            redirect_art_num = m.group(1)
+
+    return {
+        "is_mismatch": True,
+        "queried_article": art_num,
+        "queried_article_id": f"RA386-ART{art_num}",
+        "queried_topic": remainder_str,
+        "redirect_article": redirect_art_num,
+        "redirect_article_id": redirect_pid,
+        "redirect_content": redirect_cand.get('content', '') if redirect_cand else ""
+    }
+
 def expand_legal_query(query: str) -> str:
     """Enriches conversational and Filipino/layman queries with relevant statutory terms and article hints."""
     expanded_terms = []
@@ -1015,7 +1253,9 @@ STATUTORY_COMPANION_GRAPH: Dict[str, List[str]] = {
 def rank_and_stratify_citations(
     items: List[Dict[str, Any]], 
     query: str = "",
-    context_budget: int = 15
+    context_budget: int = 15,
+    distractor_info: Optional[Dict[str, Any]] = None,
+    is_simple: bool = False
 ) -> List[Dict[str, Any]]:
     """
     Unified high-accuracy ranking, scoring, and context stratification.
@@ -1023,9 +1263,11 @@ def rank_and_stratify_citations(
     1. Deduplicates candidate authorities by chunk/parent key while preserving top scores.
     2. Computes composite relevance scores prioritizing exact statutory matches,
        high vector/FTS fusion, and statutory Civil Code primacy.
-    3. Retains and outputs ALL retrieved documents (never discards candidates).
-    4. Tags each item with sequential rank, calibrated suitability percentage,
-       and context status (is_in_context=True for top context budget, False for out-of-rank).
+    3. Handles distractor queries and simple lookups: prunes noise so only 1-3 citations
+       are retained, prioritizing the queried article and gating non-exact citations.
+    4. Calibrates suitability to score-derived values with a sim > 0.55 gate for active grounding.
+    5. Tags each item with sequential rank, calibrated suitability percentage,
+       and context status (is_in_context=True for active citations, False for out-of-rank).
     """
     if not items:
         return []
@@ -1064,6 +1306,44 @@ def rank_and_stratify_citations(
     # Extract explicit article / case mentions from query for anchor weighting
     explicit_art_nums = set(re.findall(r'(?:article|art\.?|artikulo)\s*(?:no\.?\s*)?(\d+)', query, re.IGNORECASE)) if query else set()
     query_lower = query.lower() if query else ""
+
+    # Special handling for false-premise topic distractor:
+    # Only keep the queried article and the redirect article (if found), discarding all unrelated noise
+    if distractor_info and distractor_info.get("is_mismatch"):
+        queried_id = distractor_info.get("queried_article_id")
+        redirect_id = distractor_info.get("redirect_article_id")
+        filtered_items = []
+        for it in unique_items:
+            pid = str(it.get('parent_id') or '')
+            if pid == queried_id or (distractor_info.get("queried_article") and f"ART{distractor_info['queried_article']}" in pid):
+                it['is_exact'] = True
+                filtered_items.append(it)
+                break
+        if redirect_id:
+            for it in unique_items:
+                pid = str(it.get('parent_id') or '')
+                if pid == redirect_id or (distractor_info.get("redirect_article") and f"ART{distractor_info['redirect_article']}" in pid):
+                    if it not in filtered_items:
+                        it['is_exact'] = False
+                        it['is_redirect_reference'] = True
+                        filtered_items.append(it)
+                        break
+        if filtered_items:
+            unique_items = filtered_items
+
+    elif is_simple and len(explicit_art_nums) == 1:
+        single_num = list(explicit_art_nums)[0]
+        exact_match = None
+        other_cands = []
+        for it in unique_items:
+            pid = str(it.get('parent_id') or '')
+            if f"ART{single_num}" in pid:
+                it['is_exact'] = True
+                exact_match = it
+            else:
+                other_cands.append(it)
+        if exact_match:
+            unique_items = [exact_match] + other_cands[:1]
 
     def calculate_sort_score(it: dict) -> float:
         ptype = it.get('parent_type', 'source')
@@ -1117,36 +1397,61 @@ def rank_and_stratify_citations(
     # Sort all retrieved items by accuracy score descending
     unique_items.sort(key=calculate_sort_score, reverse=True)
 
-    # Assign rank, calibrated suitability percentage, and 80k context stratification
+    # Assign rank, calibrated suitability percentage, and context stratification
     prev_suitability = 100.0
     for idx, item in enumerate(unique_items):
         item['rank'] = idx + 1
-        
-        # Strictly monotonic, calibrated suitability score for UI
-        if item.get('is_exact') or (idx == 0 and item.get('parent_type') == 'article'):
+        base_sim = float(item.get('similarity', 0.0) or 0.0)
+        is_exact = item.get('is_exact', False)
+        pid = str(item.get('parent_id') or '')
+        art_match = re.search(r'RA386-ART(\d+)', pid)
+        if art_match and art_match.group(1) in explicit_art_nums:
+            is_exact = True
+            item['is_exact'] = True
+
+        # False-premise distractor mode: exactly 1 active citation (the queried article), redirect article is out_of_rank < 70%
+        if distractor_info and distractor_info.get("is_mismatch"):
+            if is_exact or idx == 0:
+                suitability = 98.5
+                item['is_in_context'] = True
+                item['rank_status'] = 'primary'
+            else:
+                # Redirect candidate: strictly out_of_rank and < 70.0%
+                if base_sim > 0:
+                    suitability = round(min(68.5, max(45.0, base_sim * 100.0)), 1)
+                else:
+                    suitability = 68.0
+                item['is_in_context'] = False
+                item['rank_status'] = 'out_of_rank'
+
+        elif is_exact or (idx == 0 and item.get('parent_type') == 'article' and (is_simple or len(explicit_art_nums) > 0)):
             suitability = round(max(95.0, 98.5 - (idx * 0.5)), 1)
-        elif idx < context_budget:
-            # Active Grounding authorities: strictly within [80.0%, 97.5%]
-            slot_step = 17.5 / max(1, context_budget - 1)
-            target = 97.5 - (idx * slot_step)
-            suitability = round(max(80.0, min(prev_suitability - 0.2, target)), 1)
+            item['is_in_context'] = True
+            item['rank_status'] = 'primary'
+
         else:
-            # Out-of-rank authorities: strictly < 80.0% (within [50.0%, 78.5%])
-            out_idx = idx - context_budget
-            target = 78.5 - (out_idx * 1.5)
-            suitability = round(max(50.0, min(prev_suitability - 0.2, target)), 1)
+            # Score-derived suitability with sim > 0.55 gate
+            passes_gate = base_sim >= 0.55
+            if passes_gate and idx < context_budget:
+                # Active Grounding authorities: calibrated score-derived within [80.0%, 97.5%]
+                score_derived = 75.0 + ((base_sim - 0.55) / 0.45) * 22.5
+                suitability = round(max(80.0, min(prev_suitability - 0.2, score_derived)), 1)
+                item['is_in_context'] = True
+                item['rank_status'] = 'primary'
+            else:
+                # Out-of-rank authorities: strictly < 80.0% (and if sim < 0.55, strictly < 70.0%)
+                if base_sim > 0:
+                    score_derived = min(69.0, max(45.0, base_sim * 100.0))
+                else:
+                    out_idx = idx - context_budget
+                    score_derived = 68.0 - (out_idx * 1.5)
+                suitability = round(max(40.0, min(prev_suitability - 0.2, score_derived)), 1)
+                item['is_in_context'] = False
+                item['rank_status'] = 'out_of_rank'
 
         prev_suitability = suitability
         item['suitability_percent'] = suitability
         item['display_suitability'] = suitability
-
-        # Context stratification: top context_budget items enter the 80k prompt context
-        if idx < context_budget:
-            item['is_in_context'] = True
-            item['rank_status'] = 'primary'
-        else:
-            item['is_in_context'] = False
-            item['rank_status'] = 'out_of_rank'
 
     return unique_items
 
@@ -1163,8 +1468,10 @@ def search_with_embedding(q_emb: list, query: str, document_id: Optional[str] = 
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             def hybrid_search(parent_type, limit=20, parent_id=None):
                 raw_words = [w for w in re.split(r'\W+', query) if w]
-                filtered_words = [w for w in raw_words if len(w) > 2 and w.lower() not in SEARCH_STOPWORDS]
-                search_words = filtered_words if filtered_words else [w for w in raw_words if len(w) > 1]
+                filtered_words = [w for w in raw_words if len(w) > 2 and not w.isdigit() and w.lower() not in SEARCH_STOPWORDS]
+                search_words = filtered_words if filtered_words else [w for w in raw_words if len(w) > 1 and not w.isdigit()]
+                if not search_words:
+                    search_words = [w for w in raw_words if len(w) > 1]
                 or_query = " OR ".join(search_words) if search_words else query
                 
                 if parent_id:
@@ -1382,6 +1689,44 @@ def search_with_embedding(q_emb: list, query: str, document_id: Optional[str] = 
                     if a['parent_id'] in art_meta_map:
                         a['metadata'] = art_meta_map[a['parent_id']]
             
+            # Check for simple single-article lookup and false-premise topic distractor
+            simple_lookup = is_simple_lookup(query)
+            distractor_info = None
+            if exact_articles:
+                distractor_info = detect_article_distractor(query, exact_articles[0], hybrid_articles)
+
+            if distractor_info and distractor_info.get("is_mismatch"):
+                logging.info(f"Symbolic distractor detected in search: {distractor_info}")
+                exact_articles[0]['distractor_info'] = distractor_info
+                redirect_cand = []
+                if distractor_info.get('redirect_article_id'):
+                    for ha in hybrid_articles:
+                        if ha.get('parent_id') == distractor_info['redirect_article_id']:
+                            redirect_cand.append(ha)
+                            break
+                # Only keep exact queried article + optional redirect reference
+                all_found = exact_articles + redirect_cand
+                return rank_and_stratify_citations(
+                    all_found, 
+                    query, 
+                    context_budget=1, 
+                    distractor_info=distractor_info, 
+                    is_simple=True
+                )
+
+            if simple_lookup and exact_articles:
+                logging.info(f"Simple lookup detected for query: {query}")
+                exact_articles[0]['is_simple_lookup'] = True
+                top_hybrid = [ha for ha in hybrid_articles if ha.get('parent_id') not in exact_ids_set]
+                all_found = exact_articles + top_hybrid[:1]
+                return rank_and_stratify_citations(
+                    all_found, 
+                    query, 
+                    context_budget=1, 
+                    distractor_info=None, 
+                    is_simple=True
+                )
+            
             # 3. Graph-Augmented RAG: Retrieve linked jurisprudence for the top articles (strictly secondary)
             linked_cases = []
             if articles:
@@ -1564,25 +1909,41 @@ async def search_documents(request: SearchRequest, raw_req: Request = None):
             user_name = urllib.parse.unquote(user_name_raw) if user_name_raw else ""
         except Exception:
             user_name = user_name_raw
-        def build_user_persona_prefix(name: str) -> str:
+        detected_lang = detect_query_language(request.query)
+        lang_directive = get_language_directive(detected_lang)
+
+        def build_user_persona_prefix(name: str, lang: str = "en") -> str:
             """
             Returns a concise persona prefix injected at the top of every system prompt,
             greeting the user by first name if available and setting a clear, accessible
-            Philippine Civil Code analysis tone.
+            Philippine Civil Code analysis tone with strict unilingual adherence.
             """
             first_name = (name.split(" ")[0] if name else "").strip()
             greeting = f"The user's first name is {first_name}. " if first_name else ""
+            if lang == "tl":
+                lang_rule = (
+                    "- LANGUAGE ENFORCEMENT: The user communicated in Filipino/Tagalog. "
+                    "Provide your ENTIRE response in simplified, natural Tagalog for normal citizens. "
+                    "Strictly NO English sentences or Taglish mixing (except statutory article numbers like [Art. 1191])."
+                )
+            else:
+                lang_rule = (
+                    "- LANGUAGE ENFORCEMENT: The user communicated in English. "
+                    "Provide your ENTIRE response in simple, plain everyday English for normal citizens. "
+                    "Strictly NO Tagalog or Taglish words anywhere in the response."
+                )
+
             return (
                 f"USER PROFILE:\n"
                 f"{greeting}"
                 f"COMMUNICATION STYLE FOR THIS SESSION:\n"
-                f"- Write in clear, structured, and accessible language.\n"
+                f"- Write in clear, structured, and accessible language for normal citizens.\n"
                 f"- Prioritize statutory precision: cite the exact Article number and Title from the Philippine Civil Code (RA 386).\n"
-                f"- Clearly explain legal concepts, requisites, and practical remedies in straightforward terms.\n"
-                f"- If the user's query is in Filipino/Tagalog, respond in clear, professional Filipino/Tagalog.\n\n"
+                f"- Clearly explain legal concepts, requisites, and practical remedies in straightforward terms without deep jargon.\n"
+                f"{lang_rule}\n\n"
             )
 
-        user_persona_prefix = build_user_persona_prefix(user_name)
+        user_persona_prefix = build_user_persona_prefix(user_name, detected_lang)
 
         logging.info(
             f"Received search request from user [{user_name or user_email or user_identifier}]: {request.query[:80]}"
@@ -1811,7 +2172,7 @@ async def search_documents(request: SearchRequest, raw_req: Request = None):
                             'target_domain': None,
                         }
 
-                        system_prompt = f"""You are CIVIL-LEX, a specialized Philippine Legal AI Assistant dedicated exclusively to the Philippine Civil Code (Republic Act No. 386) and civil jurisprudence.
+                        system_prompt = f"""{user_persona_prefix}{lang_directive}You are CIVIL-LEX, a specialized Philippine Legal AI Assistant dedicated exclusively to the Philippine Civil Code (Republic Act No. 386) and civil jurisprudence.
 
 ACTIVE DOCUMENT: "{doc_display_name}"
 USER QUERY: "{request.query}"
@@ -1833,7 +2194,7 @@ YOUR MANDATORY REFUSAL RULES:
    - Affidavits & Civil Claims (e.g., Affidavits of Loss/Undertaking, Compromise Agreements, Quasi-Delicts/Damages under RA 386).
 5. CALL TO ACTION: Invite the user to upload a valid Philippine civil law contract or legal document to proceed with statutory cross-examination and compliance analysis.
 6. NO CITATIONS: Do NOT cite any Civil Code articles or court cases, as no statutory provisions apply to this non-legal material.
-7. LANGUAGE: If the user's query is in Filipino/Tagalog, provide this refusal response in professional, respectful Filipino/Tagalog.
+7. LANGUAGE: Follow the MANDATORY STRICT LANGUAGE DIRECTIVE: write this refusal entirely in the detected language (simplified Tagalog if query is Tagalog, or plain simple English if query is English) with zero code-switching.
 """
                         full_text = ""
                         is_first_chunk = True
@@ -1898,7 +2259,7 @@ Please upload a legal document falling under Philippine Civil Law to proceed wit
                             'target_domain': target_domain,
                         }
 
-                        system_prompt = f"""You are CIVIL-LEX, a specialized Philippine Legal AI Assistant dedicated exclusively to the Philippine Civil Code (Republic Act No. 386) and civil jurisprudence.
+                        system_prompt = f"""{user_persona_prefix}{lang_directive}You are CIVIL-LEX, a specialized Philippine Legal AI Assistant dedicated exclusively to the Philippine Civil Code (Republic Act No. 386) and civil jurisprudence.
 
 ACTIVE DOCUMENT: "{doc_display_name}"
 USER QUERY: "{request.query}"
@@ -1931,7 +2292,7 @@ YOUR MANDATORY REDIRECTION RULES:
    - Clarify any potential concurrent civil liability or independent civil action under the Civil Code (such as civil liability ex delicto under Art. 100 RPC, or independent civil actions under Arts. 32, 33, 34 of the Civil Code, or quasi-delict/contractual claims), while reiterating that primary administrative or criminal jurisdiction rests with the specialized governing body.
 5. NO ARBITRARY CIVIL CODE CITATIONS: Do NOT cite arbitrary Civil Code articles as controlling authority for this non-civil matter.
 6. CALL TO ACTION: Conclude by welcoming the user to upload Philippine civil law contracts, deeds, leases, wills, or damage settlements for Civil Code analysis.
-7. LANGUAGE: If the user's query is in Filipino/Tagalog, provide this redirection in professional, respectful Filipino/Tagalog.
+7. LANGUAGE: Follow the MANDATORY STRICT LANGUAGE DIRECTIVE: write this redirection entirely in the detected language (simplified Tagalog if query is Tagalog, or plain simple English if query is English) with zero code-switching.
 """
                         full_text = ""
                         is_first_chunk = True
@@ -1995,7 +2356,7 @@ CIVIL-LEX is strictly specialized in Philippine Civil Law (RA 386). Please uploa
                         'target_domain': None,
                     }
 
-                    system_prompt = """You are CIVIL-LEX, a specialized Philippine Legal AI Assistant dedicated exclusively to the Philippine Civil Code (Republic Act No. 386) and civil jurisprudence.
+                    system_prompt = f"""{user_persona_prefix}{lang_directive}You are CIVIL-LEX, a specialized Philippine Legal AI Assistant dedicated exclusively to the Philippine Civil Code (Republic Act No. 386) and civil jurisprudence.
 
 The user's inquiry is completely non-legal or outside the field of law (e.g., computer programming, software code, mathematics, natural sciences, cooking/recipes, pop culture, sports, or general chat).
 
@@ -2010,6 +2371,7 @@ YOUR MANDATORY RESPONSE RULES:
    - Torts / Quasi-Delicts and Civil Damages under RA 386.
 4. Do NOT attempt to answer the non-legal question (do not write code, math solutions, recipes, or casual essays).
 5. Do NOT cite any Civil Code articles or Supreme Court cases, as no statutory provisions apply.
+6. LANGUAGE: Follow the MANDATORY STRICT LANGUAGE DIRECTIVE: write this boundary notice entirely in the detected language (simplified Tagalog if query is Tagalog, or plain simple English if query is English) with zero code-switching.
 """
                     full_text = ""
                     is_first_chunk = True
@@ -2052,7 +2414,7 @@ YOUR MANDATORY RESPONSE RULES:
                         'target_domain': target_domain,
                     }
 
-                    system_prompt = f"""You are CIVIL-LEX, a specialized Philippine Legal AI Assistant dedicated to the Philippine Civil Code (Republic Act No. 386).
+                    system_prompt = f"""{user_persona_prefix}{lang_directive}You are CIVIL-LEX, a specialized Philippine Legal AI Assistant dedicated to the Philippine Civil Code (Republic Act No. 386).
 
 The user's query primarily falls under another specialized branch of Philippine law: {target_domain}.
 
@@ -2063,6 +2425,7 @@ YOUR MANDATORY REDIRECTION RULES:
 4. Note any concurrent civil action or civil liability for damages that might arise under the Civil Code (such as independent civil actions or breach of contract), while clarifying that the primary administrative or statutory remedy lies with the specialized body.
 5. Do NOT cite arbitrary Civil Code articles as controlling authority for this non-civil matter.
 6. Conclude by welcoming any civil law questions or issues governed by the Philippine Civil Code.
+7. LANGUAGE: Follow the MANDATORY STRICT LANGUAGE DIRECTIVE: write this redirection entirely in the detected language (simplified Tagalog if query is Tagalog, or plain simple English if query is English) with zero code-switching.
 """
                     full_text = ""
                     is_first_chunk = True
@@ -2153,17 +2516,32 @@ YOUR MANDATORY REDIRECTION RULES:
                 for r in results:
                     seen_cit_keys.add(get_citation_key(r))
 
-                retained_prior = []
-                for pc in merged_prior_citations:
-                    ckey = get_citation_key(pc)
-                    if ckey not in seen_cit_keys:
-                        seen_cit_keys.add(ckey)
-                        retained_prior.append(pc)
+                is_simple = is_simple_lookup(request.query, canonical_msgs)
+                distractor_info = None
+                for r in results:
+                    if r.get('distractor_info'):
+                        distractor_info = r['distractor_info']
+                        break
+                if not distractor_info:
+                    exact_cand = next((r for r in results if r.get('is_exact')), None)
+                    if exact_cand:
+                        distractor_info = detect_article_distractor(request.query, exact_cand, results)
 
-                # Cap retained prior citations to top 6 to preserve memory without context explosion
-                retained_prior = retained_prior[:6]
-                accumulated_citations = results + retained_prior
-                accumulated_citations.sort(key=lambda x: float(x.get('suitability_percent', 0.0)), reverse=True)
+                if (is_simple or distractor_info) and not request.document_id:
+                    retained_prior = []
+                    accumulated_citations = results
+                else:
+                    retained_prior = []
+                    for pc in merged_prior_citations:
+                        ckey = get_citation_key(pc)
+                        if ckey not in seen_cit_keys:
+                            seen_cit_keys.add(ckey)
+                            retained_prior.append(pc)
+
+                    # Cap retained prior citations to top 6 to preserve memory without context explosion
+                    retained_prior = retained_prior[:6]
+                    accumulated_citations = results + retained_prior
+                    accumulated_citations.sort(key=lambda x: float(x.get('suitability_percent', 0.0)), reverse=True)
 
                 # Send retrieval completion status (Citations are deferred until streaming starts)
                 ret_done_msg = (
@@ -2262,7 +2640,7 @@ YOUR MANDATORY REDIRECTION RULES:
 
                 if request.document_id:
                     doc_display_name = doc_filename or "Uploaded Legal Document"
-                    system_prompt = f"""You are CIVIL-LEX, a specialized Philippine Legal AI Assistant analyzing the uploaded civil document: "{doc_display_name}".
+                    system_prompt = f"""{lang_directive}You are CIVIL-LEX, a specialized Philippine Legal AI Assistant analyzing the uploaded civil document: "{doc_display_name}".
 
 YOUR TASK IN THIS ACTIVE SESSION:
 1. Examine the user's questions in direct relation to the uploaded document "{doc_display_name}".
@@ -2276,7 +2654,7 @@ YOUR TASK IN THIS ACTIVE SESSION:
 5. PLAIN LANGUAGE FOR ORDINARY CITIZENS (THESIS REQUIREMENT — applies to every section below):
    - Your reader is a normal Filipino citizen, not a lawyer. Write in short, simple sentences using everyday words.
    - Every time you use a legal term (e.g., quasi-delict, rescission, moral damages, jurisdiction), immediately explain what it means in plain words beside it.
-   - Never use Latin or lawyer jargon without a plain explanation. Match the user's language: a Tagalog/Taglish query gets a Tagalog/Taglish answer.
+   - Never use Latin or lawyer jargon without a plain explanation. STRICT UNILINGUAL OUTPUT: If the query is in English, write entirely in simple plain English with zero Tagalog words. If the query is in Tagalog, write entirely in simplified Tagalog with zero English (except statutory Article numbers). NEVER mix languages or produce Taglish.
    - ALWAYS keep the bracketed citations ([Art. XXXX]) — plain wording never removes legal grounding.
 
 6. MANDATORY RESPONSE FORMATTING & MARKDOWN STRUCTURE:
@@ -2296,7 +2674,7 @@ YOUR TASK IN THIS ACTIVE SESSION:
    - **[Stipulation 2]**: [Explanation]
 
    ### ⚖️ Legal Analysis & Application
-   [Detailed analysis applying statutory provisions to the document. If the user requested a Tagalog explanation ("explain in tagalog" / "paliwanag sa tagalog"), provide this analysis in clear, professional Tagalog while preserving statutory Article numbers.]
+   [Detailed analysis applying statutory provisions to the document. Strictly follow the active MANDATORY STRICT LANGUAGE DIRECTIVE: explain fully in simplified Tagalog if the query is in Tagalog, or fully in simple plain English if the query is in English. Never mix languages.]
 
    ### 📋 Legal Action Summary
    (Include this section ONLY if the document review reveals actionable violations, contractual breaches, or enforceable remedies. Omit completely if the inquiry is purely descriptive or informational. Write every bullet in plain, non-lawyer language: technical title first, then what it means and what the citizen must actually do, in one simple sentence.)
@@ -2312,8 +2690,61 @@ Document ID: {request.document_id}
 CONTEXT:
 {context_str}
 """
+                elif distractor_info and distractor_info.get("is_mismatch"):
+                    queried_art = distractor_info.get("queried_article", "")
+                    queried_topic = distractor_info.get("queried_topic", "")
+                    redirect_art = distractor_info.get("redirect_article", "")
+
+                    if redirect_art:
+                        redirect_directive = (
+                            f"Redirect the user to the correct provision: Article {redirect_art} "
+                            f"(e.g. in Tagalog: 'Ang tamang probisyon kaugnay ng mga hayop/pets ay Artikulo {redirect_art} (talata 6 kaugnay ng mga kulungan ng hayop)...' / "
+                            f"in English: 'The governing provision regarding animal houses/pets is Article {redirect_art} (paragraph 6)...')."
+                        )
+                    else:
+                        redirect_directive = "State that the queried topic is not governed under this article."
+
+                    system_prompt = f"""{lang_directive}You are CIVIL-LEX, a specialized Philippine Legal Assistant.
+
+CRITICAL FALSE-PREMISE REFUSAL & REDIRECTION DIRECTIVE:
+The user is inquiring about "{queried_topic}" under Article {queried_art}.
+FACTUAL TRUTH: Article {queried_art} DOES NOT govern or mention "{queried_topic}".
+1. Under `### 📌 Direct Answer & Legal Conclusion`: You MUST explicitly state in your very first sentence that Article {queried_art} is NOT about "{queried_topic}" (in Tagalog: "Ang Artikulo {queried_art} ng Civil Code ay HINDI tungkol sa {queried_topic}..." / in English: "Article {queried_art} of the Civil Code does not govern {queried_topic}...").
+2. State clearly what Article {queried_art} actually covers in 1 simple sentence.
+3. {redirect_directive}
+4. NEVER affirm, agree with, or adopt the false premise that Article {queried_art} pertains to "{queried_topic}".
+
+BREVITY REQUIREMENT: Keep total response strictly under 120 words. Provide only a 1-2 sentence direct answer and the verbatim quote. Do NOT include Analysis or Legal Action Summary sections.
+
+MANDATORY MARKDOWN FORMAT:
+### 📌 Direct Answer & Legal Conclusion
+[1-2 clear, direct sentences explicitly stating Article {queried_art} is NOT about "{queried_topic}", explaining what Article {queried_art} actually is, and redirecting to Article {redirect_art or 'the correct article'}.]
+
+### 📚 Governing Statutory Basis
+> **Article {queried_art} (Republic Act No. 386)**
+> "[Quote the core statutory text of Article {queried_art} verbatim from CONTEXT]"
+
+CONTEXT:
+{context_str}
+"""
+                elif is_simple:
+                    system_prompt = f"""{lang_directive}You are CIVIL-LEX, a specialized Philippine Legal Assistant providing an accurate, concise statutory answer.
+
+BREVITY REQUIREMENT: Keep total response strictly under 120 words. Provide only a direct 1-2 sentence explanation and the exact governing article quote. Do NOT include lengthy Analysis or Legal Action Summary sections.
+
+MANDATORY MARKDOWN FORMAT:
+### 📌 Direct Answer & Legal Conclusion
+[1-2 clear, direct sentences explaining the provision directly in everyday plain language.]
+
+### 📚 Governing Statutory Basis
+> **Article [Number] (Republic Act No. 386)**
+> "[Quote the core statutory text verbatim from CONTEXT]"
+
+CONTEXT:
+{context_str}
+"""
                 else:
-                    system_prompt = f"""You are CIVIL-LEX, a specialized Philippine Legal Assistant. Your PRIMARY AND EXCLUSIVE MISSION is to analyze and answer legal inquiries strictly through the lens of the Philippine Civil Code (Republic Act No. 386) and Philippine civil jurisprudence.
+                    system_prompt = f"""{lang_directive}You are CIVIL-LEX, a specialized Philippine Legal Assistant. Your PRIMARY AND EXCLUSIVE MISSION is to analyze and answer legal inquiries strictly through the lens of the Philippine Civil Code (Republic Act No. 386) and Philippine civil jurisprudence.
 
 MANDATORY RAGAS COMPLIANCE & LEGAL ACCURACY RULES:
 
@@ -2368,7 +2799,7 @@ MANDATORY RAGAS COMPLIANCE & LEGAL ACCURACY RULES:
    - **[Element / Requisite 2]**: [Explanation]
 
    ### ⚖️ Legal Analysis & Application
-   [Detailed analysis applying the statutory elements directly to the factual scenario. If the query is in Tagalog or asks for a Tagalog explanation ("explain in tagalog" / "paliwanag sa tagalog"), write this analysis in clear, professional Tagalog while retaining statutory Article numbers and legal terms.]
+   [Detailed analysis applying the statutory elements directly to the factual scenario. Strictly follow the active MANDATORY STRICT LANGUAGE DIRECTIVE: explain fully in simplified Tagalog if the query is in Tagalog, or fully in simple plain English if the query is in English. Never mix languages.]
 
    ### 📋 Legal Action Summary
    (CRITICAL RULE FOR THIS SECTION: Include `### 📋 Legal Action Summary` ONLY when the query presents an actionable dispute, breach, claim, injury, or legal conflict requiring judicial or barangay proceedings. If the query is purely informational, conceptual, or structural—such as asking for the total number of articles, codal breakdown, definitions, or history—OMIT THIS ENTIRE SECTION COMPLETELY. Do not output N/A placeholders; simply end the response after `### ⚖️ Legal Analysis & Application`.)
@@ -2380,7 +2811,7 @@ MANDATORY RAGAS COMPLIANCE & LEGAL ACCURACY RULES:
 7. PLAIN LANGUAGE FOR ORDINARY CITIZENS (THESIS REQUIREMENT — applies to every section above):
    - Your reader is a normal Filipino citizen, not a lawyer. Write in short, simple sentences using everyday words.
    - Every time you use a legal term (e.g., quasi-delict, rescission, moral damages, jurisdiction), immediately explain what it means in plain words beside it.
-   - Never use Latin or lawyer jargon without a plain explanation. Match the user's language: a Tagalog/Taglish query gets a Tagalog/Taglish answer.
+   - Never use Latin or lawyer jargon without a plain explanation. STRICT UNILINGUAL OUTPUT: If the query is in English, write entirely in simple plain English with zero Tagalog words. If the query is in Tagalog, write entirely in simplified Tagalog with zero English (except statutory Article numbers). NEVER mix languages or produce Taglish.
    - ALWAYS keep the bracketed citations ([Art. XXXX]) — plain wording never removes legal grounding.
 
 CONTEXT:
@@ -2410,7 +2841,9 @@ CONTEXT:
                 full_text = ""
                 is_first_chunk = True
 
-                async for chunk in generate_response_stream(system_prompt, request.query, history_dicts):
+                max_tokens_val = 1024 if ((is_simple or distractor_info) and not request.document_id) else 2048
+
+                async for chunk in generate_response_stream(system_prompt, request.query, history_dicts, max_tokens=max_tokens_val):
                     if is_first_chunk:
                         is_first_chunk = False
                         yield f"data: {dumps({'type': 'status', 'stage': 'streaming', 'message': 'Streaming legal analysis...'})}\n\n"
@@ -2478,12 +2911,49 @@ CONTEXT:
                     yield f"data: {dumps({'type': 'legal_analytics', 'data': evaluating_payload})}\n\n"
 
                     try:
-                        nli_result = await nli_score_faithfulness_async(
-                            full_text, results, mode="hybrid"
-                        )
+                        # RAGAS-compliant: score against the FULL in-context evidence
+                        # actually given to the generator (statutory + doc + case items),
+                        # not just this turn's `results` (which omits retained priors and
+                        # may include out-of-context ranked items never shown to the LLM).
+                        nli_context_items = statutory_items + doc_items + case_items
+                        if not nli_context_items:
+                            nli_context_items = [
+                                c for c in all_citations
+                                if c.get('is_in_context') is not False
+                            ] or results
+                        # Hard budget: the NLI audit must never stall the SSE stream.
+                        # On timeout/failure we fall back to symbolic-only scoring
+                        # (threadpool, never blocking the event loop) and ALWAYS emit
+                        # a terminal analytics payload so the frontend never sticks
+                        # on 'Evaluating'.
+                        nli_timed_out = False
+                        try:
+                            nli_result = await asyncio.wait_for(
+                                nli_score_faithfulness_async(
+                                    full_text, nli_context_items, mode="hybrid"
+                                ),
+                                timeout=60.0,
+                            )
+                        except asyncio.TimeoutError:
+                            logging.warning("Post-gen hybrid NLI exceeded 60s budget; using symbolic fallback.")
+                            nli_result = await asyncio.to_thread(
+                                nli_score_faithfulness_sync,
+                                full_text, nli_context_items, "symbolic",
+                            )
+                            nli_timed_out = True
+                        except Exception as nli_hybrid_err:
+                            logging.warning(f"Post-gen hybrid NLI failed ({nli_hybrid_err}); using symbolic fallback.")
+                            nli_result = await asyncio.to_thread(
+                                nli_score_faithfulness_sync,
+                                full_text, nli_context_items, "symbolic",
+                            )
+                            nli_timed_out = True
                         analytics_payload = {
                             'nli_score': nli_result.score_percent,
+                            'nli_score_net': nli_result.score_net_percent,
+                            'nli_score_weighted': nli_result.score_weighted,
                             'nli_status': nli_result.status,
+                            'nli_timed_out': nli_timed_out,
                             'top_article_score': top_display,
                             'is_document_legal': is_doc_legal_flag if is_doc_analysis else None,
                             'is_out_of_domain': False,
@@ -2498,7 +2968,21 @@ CONTEXT:
                         # Emit the verified analytics to the frontend
                         yield f"data: {dumps({'type': 'legal_analytics', 'data': analytics_payload})}\n\n"
                     except Exception as nli_err:
-                        logging.error(f"Post-gen Hybrid NLI failed: {nli_err}")
+                        # Last resort: even the symbolic fallback failed. Emit a
+                        # terminal 'unavailable' payload (never a fake score) so the
+                        # NLI card resolves instead of spinning forever.
+                        logging.error(f"Post-gen NLI failed: {nli_err}")
+                        analytics_payload = {
+                            'nli_score': None,
+                            'nli_status': 'Unverified',
+                            'nli_unavailable': True,
+                            'top_article_score': top_display,
+                            'is_document_legal': is_doc_legal_flag if is_doc_analysis else None,
+                            'is_out_of_domain': False,
+                            'domain_category': 'civil',
+                            'target_domain': None,
+                        }
+                        yield f"data: {dumps({'type': 'legal_analytics', 'data': analytics_payload})}\n\n"
 
                 # ── LLM-generated follow-up suggestions (best-effort) ──
                 if followup_task is not None:
@@ -2569,7 +3053,13 @@ CONTEXT:
         async def sse_consumer():
             try:
                 while True:
-                    item = await sse_queue.get()
+                    try:
+                        item = await asyncio.wait_for(sse_queue.get(), timeout=12.0)
+                    except asyncio.TimeoutError:
+                        # iOS Safari / Dev Tunnel / reverse proxy keepalive heartbeat
+                        yield f": ping\n\ndata: {dumps({'type': 'ping'})}\n\n"
+                        continue
+
                     if item is None:
                         break
                     yield item

@@ -20,6 +20,12 @@ from core.config import (
     LM_STUDIO_URL,
 )
 from core.queue_manager import queue_manager
+from core.article_parser import (
+    parse_article_numbers, 
+    is_dispute_query, 
+    is_matching_article_id,
+    is_compound_or_multi_intent_query
+)
 from services import memory as session_memory
 from services import followups as followup_svc
 
@@ -611,7 +617,13 @@ NON_LEGAL_PATTERNS = [
     # Culinary, Food & Recipes
     r'\b(recipe|recipes|how\s+to\s+cook|how\s+to\s+bake|how\s+to\s+make\s+a\s+|ingredients\s+for|adobo\s+recipe|sinigang\s+recipe|bake\s+a\s+cake|chocolate\s+cake|cake|cookies|marinate|seasoning|fried\s+chicken|pasta\s+recipe)\b',
     # Pop Culture, Fiction, Comics, Fantasy, Creative Writing, Sports & Lifestyle
-    r'\b(harry\s+potter|voldemort|hogwarts|jedi|sith|star\s+wars|lightsaber|marvel|avengers|thanos|batman|superman|spider-?man|iron\s*man|anime|goku|naruto|pokemon|manga|lord\s+of\s+the\s+rings|gandalf|frodo|middle-?earth|superhero|superheroes|time\s+travel|multiverse|teleportation|write\s+a\s+poem|write\s+a\s+song|write\s+a\s+story|write\s+an\s+essay|movie\s+recommendation|who\s+won\s+the\s+(?:game|match|finals|world\s*cup)|nba\s+finals|pba\s+finals|celebrity\s+gossip|horoscope|zodiac\s+sign|lyrics\s+of|weather\s+in|forecast\s+for|capital\s+of|translate\s+(?:this\s+)?to|workout\s+routine|diet\s+plan)\b',
+    r'\b(harry\s+potter|voldemort|hogwarts|jedi|sith|star\s+wars|lightsaber|marvel|avengers|thanos|batman|superman|spider-?man|iron\s*man|anime|goku|naruto|pokemon|manga|lord\s+of\s+the\s+rings|gandalf|frodo|middle-?earth|superhero|superheroes|time\s+travel|multiverse|teleportation|write\s+a\s+poem|write\s+a\s+song|write\s+a\s+story|write\s+an\s+essay|movie\s+recommendation|who\s+won\s+the\s+(?:game|match|finals|world\s*cup)|nba\s+finals|pba\s+finals|celebrity\s+gossip|horoscope|zodiac\s+sign|lyrics\s+of|capital\s+of|translate\s+(?:this\s+)?to|workout\s+routine|diet\s+plan)\b',
+    # Real-Time Data, Date, Time, Weather, Climate & Environmental Inquiries
+    r'\b(?:(?:what(?:\'s|\s+is)\s+(?:the\s+)?(?:date|time|day|year|weather|temperature|forecast)(?:\s+today|\s+now|\s+currently)?)|(?:whats?\s+(?:is\s+)?(?:the\s+)?(?:date|time|weather))|anong\s+(?:oras|petsa|araw|panahon)\s+ngayon|current\s+(?:date|time|weather|temperature)|weather\s+today|date\s+today|time\s+now|forecast\s+today)\b',
+    r'\b(?:weather\s+forecast|local\s+weather|current\s+weather|check\s+the\s+weather|tell\s+me\s+the\s+weather|whats?\s+(?:the\s+)?weather)\b',
+    r'\b(?:latest\s+news|stock\s+price|bitcoin\s+price|crypto\s+price|convert\s+\d+\s*(?:usd|php|eur)|who\s+is\s+(?:the\s+)?president\s+of\s+(?!the\s+philippines)|tell\s+me\s+about\s+(?:yourself|your\s+life)|how\s+are\s+you\s+doing)\b',
+    # Commercial Retail, Shopping, Vehicle / Gadget Pricing & Store Inquiries
+    r'\b(?:(?:what(?:\'s|\s+is)\s+(?:the\s+)?(?:price|cost|rate|pricing)\s+of)|magkano\s+(?:ang\s+)?(?:presyo|kotse|sasakyan|benta|phone|laptop)|price\s+of\s+(?:toyota|honda|cars?|vehicles?|motorcycles?|phones?|gadgets?)|how\s+much\s+(?:is|does\s+it\s+cost\s+for|are)\s+(?:a\s+|an\s+|the\s+)?(?:car|cars|vehicle|phone|laptop|toyota|product)|just\s+want\s+to\s+know\s+the\s+price)\b',
 ]
 
 NON_CIVIL_LEGAL_DOMAINS = [
@@ -832,8 +844,43 @@ def is_refusal_or_out_of_scope(text: str) -> bool:
         r'\bfalls?\s+outside\s+(?:of\s+)?(?:my|the)\s+(?:scope|purview|specialization)\b',
         r'\boutside\s+(?:my|the)\s+(?:specialized\s+)?scope\b',
         r'\b(?:hindi\s+ako\s+makakapagbigay|hindi\s+ako\s+makakatulong)\s+sa\s+(?:mga\s+)?(?:programming|teknolohiya|code)\b',
+        # AI Language Model Real-time / Out-of-Domain Refusal Patterns
+        r'\bas\s+an\s+ai\s+(?:language\s+)?model\b',
+        r'\b(?:do\s+not|don\'t)\s+have\s+access\s+to\s+real[- ]time\s+information\b',
+        r'\b(?:do\s+not|don\'t)\s+have\s+access\s+to\s+(?:the\s+)?current\s+(?:date|weather|time)\b',
+        r'\b(?:cannot|can\'t|am\s+unable\s+to)\s+provide\s+(?:real[- ]time|current|live)\s+(?:information|data|updates?)\b',
+        r'\b(?:i\s+)?apologize,?\s+but\s+(?:as\s+an\s+ai|i\s+do\s+not\s+have|i\s+cannot|i\s+can\'t)\b',
+        r'\bcheck\s+a\s+reliable\s+source\s+like\s+a\s+(?:weather|news)\b',
+        r'\b(?:current\s+date\s+or\s+local\s+weather|current\s+date|local\s+weather)\b',
+        r'\b(?:i\s+)?cannot\s+(?:provide|tell|give)\s+(?:you\s+)?(?:the\s+)?(?:current\s+date|current\s+time|weather)\b',
+        r'\bdo\s+not\s+have\s+real[- ]time\s+(?:browsing|data|capabilities|info)\b',
+        r'\bscope\s+boundary\s+notice\b',
+        r'\bscope\s*&\s*governing\s+jurisdiction\b',
+        r'\bproper\s+governing\s+body\b',
+        r'\bprimarily\s+commercial(?:\s+in\s+nature)?\b',
+        r'\boutside\s+(?:the\s+)?scope\s+of\s+(?:philippine\s+)?civil\s+law\b',
+        r'\bcommercial\s+(?:price|inquiry|matter|nature|transaction)\b',
+        r'\bnot\s+involve\s+a\s+specific\s+legal\s+transaction\b',
+        r'\b(?:there\s+is\s+)?no\s+applicable\s+(?:law|article|statute|provision)\b',
+        r'\bno\s+particular\s+article\s+governs?\b',
+        r'\b(?:recommend\s+)?checking\s+official\s+.*(?:dealers?|dealerships?|sellers?|websites?|showroom)\b',
+        r'\b(?:dealerships?|dealers?)\s+or\s+authorized\s+sellers?\b',
+        r'\b(?:pricing\s+and\s+availability|current\s+pricing)\b',
+        r'\bgoverned\s+under\s+philippine\s+(?:criminal|labor|tax|corporate)\s+law\b',
+        r'\bgoverned\s+by\s+specialized\s+philippine\s+law\b',
     ]
-    return any(bool(re.search(p, text, re.IGNORECASE)) for p in refusal_patterns)
+    if any(bool(re.search(p, text, re.IGNORECASE)) for p in refusal_patterns):
+        return True
+
+    # Deterministic fallback: if response states there is no applicable law or no article,
+    # and cites zero Civil Code articles, it is strictly out-of-scope / refusal.
+    cleaned = text.strip()
+    has_no_articles = len(parse_article_numbers(cleaned)) == 0
+    mentions_no_law = bool(re.search(r'\b(?:no\s+applicable|not\s+applicable|no\s+governing|outside|commercial|dealership|general\s+guidance)\b', cleaned, re.IGNORECASE))
+    if has_no_articles and mentions_no_law:
+        return True
+
+    return False
 
 def classify_query_intent(
     query: str, 
@@ -849,8 +896,19 @@ def classify_query_intent(
     q_clean = query.strip()
     q_lower = q_clean.lower()
 
-    # 1. Check for Non-Legal patterns (physics, science, programming, cooking, fiction)
-    is_non_legal = any(bool(re.search(p, q_lower)) for p in NON_LEGAL_PATTERNS)
+    # 0. Explicit Civil Code article reference always guarantees in-domain civil routing
+    if parse_article_numbers(q_clean):
+        return {
+            "category": "in_domain_civil",
+            "target_domain": None,
+            "reason": "Explicit Philippine Civil Code article reference detected."
+        }
+
+    # Explicit Civil Law statutory or doctrine references
+    has_explicit_civil = any(bool(re.search(p, q_lower)) for p in CIVIL_LAW_POSITIVE_PATTERNS)
+
+    # 1. Check for Non-Legal patterns (physics, science, programming, cooking, fiction, real-time weather/date)
+    is_non_legal = any(bool(re.search(p, q_lower)) for p in NON_LEGAL_PATTERNS) and not has_explicit_civil
     is_casual_greeting = bool(re.match(r'^(hello|hi|hey|good\s+morning|good\s+afternoon|good\s+evening|kumusta|kamusta|who\s+are\s+you|what\s+can\s+you\s+do|tell\s+me\s+a\s+joke)\b', q_lower)) and len(q_clean.split()) <= 6
 
     # Allow authentic commercial IT service/contract disputes (e.g. "developer breached contract to build app")
@@ -906,30 +964,32 @@ def classify_query_intent(
 def is_simple_lookup(query: str, history: Optional[List[Any]] = None) -> bool:
     """
     Determines if the query is a focused single-article lookup (definition, explanation, 
-    codal text, or simple statutory inquiry) rather than a complex multi-party factual dispute.
+    codal text, or simple statutory inquiry) rather than a complex multi-party factual dispute,
+    multi-article comparison, or compound multi-intent inquiry.
     """
     q_clean = query.strip()
-    q_lower = q_clean.lower()
 
     # 1. Check for single article reference
-    art_matches = re.findall(r'(?:article|art\.?|artikulo)\s*(?:no\.?\s*)?(\d+)', q_clean, re.IGNORECASE)
-    unique_art_nums = list(dict.fromkeys(art_matches))
+    unique_art_nums = parse_article_numbers(q_clean)
 
     if len(unique_art_nums) != 1:
-        # If no article or multiple articles (e.g. comparison queries like "Art 445 vs Art 415"), not a single-article simple lookup
+        # If no article or multiple articles (e.g. comparison queries like "Art 445 vs Art 415" or "article 667 and 445"), not a single-article simple lookup
         return False
 
-    # 2. Check for complex dispute indicators (facts, injury, lawsuit, multi-party conflict)
-    dispute_patterns = [
-        r'\b(?:sue|suing|lawsuit|complaint|breached|breach|refused|demanded|damage|damages|accident|negligence|injury|injured|death|killed|hospital|debt|borrowed|loaned|foreclosure|ejectment|unlawful detainer)\b',
-        r'\b(?:kaso|ikaso|kakaso|idemanda|nagsampa|sinuntok|binugbog|nabangga|nasaktan|pinsala|danyos|utang|ayaw\s+magbayad|hindi\s+nagbayad|pinalayas|aksidente|pagkamatay)\b',
-        r'\b(?:contractor|subcontractor|developer|tenant|landlord|employer|employee|buyer|seller|plaintiff|defendant)\b'
-    ]
-    is_dispute = any(bool(re.search(p, q_lower)) for p in dispute_patterns)
+    # 2. Check for compound / multi-intent indicators (e.g. "and also", multiple questions, example requests)
+    if is_compound_or_multi_intent_query(q_clean):
+        return False
 
-    # If the user query is very long (> 35 words) and describes an active dispute, keep as complex dispute
-    word_count = len(q_clean.split())
-    if word_count > 35 and is_dispute:
+    # 3. Check for general / structural inquiries about the Civil Code
+    if re.search(
+        r'\b(total\s+articles?|how\s+many\s+articles?|ilan\s+ang\s+(?:total\s+)?(?:articles?|artikulo)|bilang\s+ng\s+artikulo|number\s+of\s+articles?|articles?\s+count|structure\s+of\s+(?:the\s+)?civil\s+code|books?\s+(?:in|of)\s+(?:the\s+)?civil\s+code|ilan\s+ang\s+libro|mga\s+libro\s+sa\s+civil\s+code|general\s+information|overview\s+of\s+(?:the\s+)?civil\s+(?:code|law)|what\s+is\s+(?:the\s+)?civil\s+(?:code|law)|ano\s+ang\s+civil\s+(?:code|law)|tungkol\s+saan\s+ang\s+civil\s+code|saklaw\s+ng\s+civil\s+code)\b',
+        q_clean,
+        re.IGNORECASE
+    ):
+        return False
+
+    # 4. Check for complex dispute indicators (facts, injury, lawsuit, multi-party conflict)
+    if is_dispute_query(q_clean):
         return False
 
     return True
@@ -979,17 +1039,25 @@ def detect_article_distractor(
     q_clean = query.strip()
     for _pat, _repl in _TYPO_NORMALIZATION:
         q_clean = re.sub(_pat, _repl, q_clean, flags=re.IGNORECASE)
-    art_matches = re.findall(r'(?:article|art\.?|artikulo)\s*(?:no\.?\s*)?(\d+)', q_clean, re.IGNORECASE)
-    unique_art_nums = list(dict.fromkeys(art_matches))
+    unique_art_nums = parse_article_numbers(q_clean)
 
-    # Trigger only if single Art num. Else skip (protects 445 vs 415 comparisons)
+    # Trigger only if single Art num. Else skip (protects multi-article comparisons like 667 and 445 or 445 vs 415)
     if len(unique_art_nums) != 1 or not exact_article:
+        return None
+
+    # Compound queries or multi-intent questions are not single-premise distractors
+    if is_compound_or_multi_intent_query(q_clean):
         return None
 
     art_num = unique_art_nums[0]
 
     # Extract remainder words after stripping article pattern and search stopwords
-    remainder_clean = re.sub(r'(?:article|art\.?|artikulo)\s*(?:no\.?\s*)?\d+', '', q_clean, flags=re.IGNORECASE)
+    remainder_clean = re.sub(
+        r'(?:\bmga\s+)?(?:\b(?:art[a-z]*|atr[a-z]*)\.?|\bcivil\s+code|\bra\s*386)\s*(?:(?:no|nos|bilang)\b\.?)?\s*' + re.escape(art_num),
+        '',
+        q_clean,
+        flags=re.IGNORECASE
+    )
     raw_tokens = re.findall(r'\b[a-zA-Z]{3,}\b', remainder_clean.lower())
     remainder_tokens = [
         w for w in raw_tokens
@@ -1078,7 +1146,7 @@ def build_contextual_query(query: str, history: List[ChatMessage], document_file
     base_query = query
     if history or document_filename:
         # Check if query specifically mentions an article or case GR number
-        has_art_in_query = bool(re.search(r'(?:article|art\.?|artikulo)\s*(?:no\.?\s*)?\d+', query, re.IGNORECASE))
+        has_art_in_query = bool(parse_article_numbers(query))
         has_case_in_query = bool(re.search(r'g\.r\.\s*(?:no\.|nos\.)?\s*[\w\-]+', query, re.IGNORECASE))
 
         # Coreference / follow-up cues
@@ -1304,7 +1372,7 @@ def rank_and_stratify_citations(
     unique_items = list(dedup_map.values())
 
     # Extract explicit article / case mentions from query for anchor weighting
-    explicit_art_nums = set(re.findall(r'(?:article|art\.?|artikulo)\s*(?:no\.?\s*)?(\d+)', query, re.IGNORECASE)) if query else set()
+    explicit_art_nums = set(parse_article_numbers(query)) if query else set()
     query_lower = query.lower() if query else ""
 
     # Special handling for false-premise topic distractor:
@@ -1315,14 +1383,14 @@ def rank_and_stratify_citations(
         filtered_items = []
         for it in unique_items:
             pid = str(it.get('parent_id') or '')
-            if pid == queried_id or (distractor_info.get("queried_article") and f"ART{distractor_info['queried_article']}" in pid):
+            if pid == queried_id or (distractor_info.get("queried_article") and is_matching_article_id(pid, distractor_info["queried_article"])):
                 it['is_exact'] = True
                 filtered_items.append(it)
                 break
         if redirect_id:
             for it in unique_items:
                 pid = str(it.get('parent_id') or '')
-                if pid == redirect_id or (distractor_info.get("redirect_article") and f"ART{distractor_info['redirect_article']}" in pid):
+                if pid == redirect_id or (distractor_info.get("redirect_article") and is_matching_article_id(pid, distractor_info["redirect_article"])):
                     if it not in filtered_items:
                         it['is_exact'] = False
                         it['is_redirect_reference'] = True
@@ -1334,16 +1402,20 @@ def rank_and_stratify_citations(
     elif is_simple and len(explicit_art_nums) == 1:
         single_num = list(explicit_art_nums)[0]
         exact_match = None
+        structural_cands = []
         other_cands = []
         for it in unique_items:
             pid = str(it.get('parent_id') or '')
-            if f"ART{single_num}" in pid:
-                it['is_exact'] = True
-                exact_match = it
+            if is_matching_article_id(pid, single_num):
+                if exact_match is None:
+                    it['is_exact'] = True
+                    exact_match = it
+            elif "STRUCTURE" in pid or "GENERAL-INFO" in pid or "SPECIAL-LAWS" in pid:
+                structural_cands.append(it)
             else:
                 other_cands.append(it)
         if exact_match:
-            unique_items = [exact_match] + other_cands[:1]
+            unique_items = [exact_match] + structural_cands + other_cands[:2]
 
     def calculate_sort_score(it: dict) -> float:
         ptype = it.get('parent_type', 'source')
@@ -1468,8 +1540,11 @@ def search_with_embedding(q_emb: list, query: str, document_id: Optional[str] = 
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             def hybrid_search(parent_type, limit=20, parent_id=None):
                 raw_words = [w for w in re.split(r'\W+', query) if w]
-                filtered_words = [w for w in raw_words if len(w) > 2 and not w.isdigit() and w.lower() not in SEARCH_STOPWORDS]
-                search_words = filtered_words if filtered_words else [w for w in raw_words if len(w) > 1 and not w.isdigit()]
+                filtered_words = [
+                    w for w in raw_words 
+                    if len(w) > 2 and (not w.isdigit() or (1 <= int(w) <= 2270)) and w.lower() not in SEARCH_STOPWORDS
+                ]
+                search_words = filtered_words if filtered_words else [w for w in raw_words if len(w) > 1]
                 if not search_words:
                     search_words = [w for w in raw_words if len(w) > 1]
                 or_query = " OR ".join(search_words) if search_words else query
@@ -1539,7 +1614,7 @@ def search_with_embedding(q_emb: list, query: str, document_id: Optional[str] = 
                 is_doc_legal = doc_domain['category'] == 'in_domain_civil'
 
                 # Has user explicitly referenced an article by number (e.g. "Article 1181" or "Artikulo 1181")?
-                has_explicit_article = bool(re.search(r'(?:article|art\.?|artikulo)\s*(?:no\.?\s*)?\d+', query, re.IGNORECASE))
+                has_explicit_article = bool(parse_article_numbers(query))
 
                 # Check if legal provisions or jurisprudence are genuinely relevant to the document inquiry
                 legal_terms = [
@@ -1627,9 +1702,8 @@ def search_with_embedding(q_emb: list, query: str, document_id: Optional[str] = 
                         gen_item['suitability_percent'] = 98.5
                         exact_articles.append(gen_item)
 
-            article_matches = re.findall(r'(?:article|art\.?|artikulo)\s*(?:no\.?\s*)?(\d+)', query, re.IGNORECASE)
-            if article_matches:
-                unique_art_nums = list(dict.fromkeys(article_matches))
+            unique_art_nums = parse_article_numbers(query)
+            if unique_art_nums:
                 exact_ids = [f"RA386-ART{num}" for num in unique_art_nums]
                 cur.execute("""
                     SELECT chunk_id, parent_type, parent_id, content
@@ -1689,10 +1763,11 @@ def search_with_embedding(q_emb: list, query: str, document_id: Optional[str] = 
                     if a['parent_id'] in art_meta_map:
                         a['metadata'] = art_meta_map[a['parent_id']]
             
-            # Check for simple single-article lookup and false-premise topic distractor
+            # Check for simple single-article lookup, multi-article lookup, and false-premise topic distractor
+            is_multi_article = len(unique_art_nums) >= 2
             simple_lookup = is_simple_lookup(query)
             distractor_info = None
-            if exact_articles:
+            if exact_articles and not is_multi_article:
                 distractor_info = detect_article_distractor(query, exact_articles[0], hybrid_articles)
 
             if distractor_info and distractor_info.get("is_mismatch"):
@@ -1718,13 +1793,27 @@ def search_with_embedding(q_emb: list, query: str, document_id: Optional[str] = 
                 logging.info(f"Simple lookup detected for query: {query}")
                 exact_articles[0]['is_simple_lookup'] = True
                 top_hybrid = [ha for ha in hybrid_articles if ha.get('parent_id') not in exact_ids_set]
-                all_found = exact_articles + top_hybrid[:1]
+                all_found = exact_articles + top_hybrid[:2]
                 return rank_and_stratify_citations(
                     all_found, 
                     query, 
-                    context_budget=1, 
+                    context_budget=max(len(exact_articles), 3), 
                     distractor_info=None, 
                     is_simple=True
+                )
+
+            if is_multi_article and exact_articles:
+                logging.info(f"Multi-article statutory lookup detected for articles: {unique_art_nums}")
+                is_dispute = is_dispute_query(query)
+                # If pure statutory inquiry/comparison, focus context budget on the queried articles
+                multi_budget = min(15, max(len(exact_articles), 6)) if is_dispute else len(exact_articles)
+                all_found = articles
+                return rank_and_stratify_citations(
+                    all_found,
+                    query,
+                    context_budget=multi_budget,
+                    distractor_info=None,
+                    is_simple=False
                 )
             
             # 3. Graph-Augmented RAG: Retrieve linked jurisprudence for the top articles (strictly secondary)
@@ -2517,17 +2606,22 @@ YOUR MANDATORY REDIRECTION RULES:
                     seen_cit_keys.add(get_citation_key(r))
 
                 is_simple = is_simple_lookup(request.query, canonical_msgs)
-                distractor_info = None
-                for r in results:
-                    if r.get('distractor_info'):
-                        distractor_info = r['distractor_info']
-                        break
-                if not distractor_info:
-                    exact_cand = next((r for r in results if r.get('is_exact')), None)
-                    if exact_cand:
-                        distractor_info = detect_article_distractor(request.query, exact_cand, results)
+                queried_art_nums = parse_article_numbers(request.query)
+                is_multi_article = len(queried_art_nums) >= 2
+                is_dispute = is_dispute_query(request.query)
 
-                if (is_simple or distractor_info) and not request.document_id:
+                distractor_info = None
+                if not is_multi_article:
+                    for r in results:
+                        if r.get('distractor_info'):
+                            distractor_info = r['distractor_info']
+                            break
+                    if not distractor_info:
+                        exact_cand = next((r for r in results if r.get('is_exact')), None)
+                        if exact_cand:
+                            distractor_info = detect_article_distractor(request.query, exact_cand, results)
+
+                if (is_simple or distractor_info or (is_multi_article and not is_dispute)) and not request.document_id:
                     retained_prior = []
                     accumulated_citations = results
                 else:
@@ -2638,6 +2732,31 @@ YOUR MANDATORY REDIRECTION RULES:
                             context_str += f"\n[Supporting Case {idx}]\n" + format_context_item(row, doc_filename)
                         context_str += "\n...[Additional secondary jurisprudence omitted to preserve context focus]...\n"
 
+                # Anti-Hallucination Guard: Check if user inquired about specific articles that were NOT retrieved
+                queried_articles = parse_article_numbers(request.query)
+                if queried_articles and not is_doc_analysis:
+                    retrieved_article_nums = set()
+                    for s_item in statutory_items:
+                        pid = str(s_item.get('parent_id', ''))
+                        m_num = str((s_item.get('metadata') or {}).get('article_number', ''))
+                        if m_num:
+                            retrieved_article_nums.add(m_num)
+                        digits = re.findall(r'\d+', pid)
+                        for d in digits:
+                            retrieved_article_nums.add(d)
+
+                    missing_articles = [art for art in queried_articles if art not in retrieved_article_nums]
+                    if missing_articles:
+                        missing_str = ", ".join([f"Article {a}" for a in missing_articles])
+                        deficit_notice = (
+                            f"\n=== ⚠️ RETRIEVAL DEFICIT NOTICE (CRITICAL ANTI-HALLUCINATION DIRECTIVE) ===\n"
+                            f"The user inquired about {missing_str}, but {missing_str} is NOT present in the retrieved database context.\n"
+                            f"MANDATORY INSTRUCTION: You are STRICTLY FORBIDDEN from fabricating, guessing, or reconstructing the text or rules for {missing_str}.\n"
+                            f"You MUST explicitly state: '{missing_str} was not found in the retrieved Civil Code database.'\n"
+                            f"Do NOT generate fictitious blockquotes or simulated provisions for {missing_str}.\n"
+                        )
+                        context_str = deficit_notice + "\n" + context_str
+
                 if request.document_id:
                     doc_display_name = doc_filename or "Uploaded Legal Document"
                     system_prompt = f"""{lang_directive}You are CIVIL-LEX, a specialized Philippine Legal AI Assistant analyzing the uploaded civil document: "{doc_display_name}".
@@ -2649,7 +2768,7 @@ YOUR TASK IN THIS ACTIVE SESSION:
    - The Philippine Civil Code (RA 386) and Family Code (EO 209) are your CONTROLLING STATUTORY AUTHORITIES.
    - Cross-examine the document's provisions PRIMARILY against the statutory provisions of the Philippine Civil Code. Ground all legal assessments, rights, obligations, validity, or void stipulations directly on specific Civil Code Articles provided in CONTEXT, using Supreme Court jurisprudence only as secondary supporting doctrine.
    - Anchor every substantive legal rule or finding with its bracketed citation (e.g. [Art. 1654] or [Art. 1191]).
-4. FACTUAL INTEGRITY: If a specific fact or term is stated in the document excerpts, state it clearly. Do not assume or hallucinate clauses not found in the excerpts.
+4. FACTUAL INTEGRITY & CLOSED-BOOK CONSTRAINT: If a specific fact or term is stated in the document excerpts, state it clearly. Do not assume or hallucinate clauses not found in the excerpts. If a clause or article is absent from CONTEXT, state that it was not found.
 
 5. PLAIN LANGUAGE FOR ORDINARY CITIZENS (THESIS REQUIREMENT — applies to every section below):
    - Your reader is a normal Filipino citizen, not a lawyer. Write in short, simple sentences using everyday words.
@@ -2728,91 +2847,147 @@ CONTEXT:
 {context_str}
 """
                 elif is_simple:
-                    system_prompt = f"""{lang_directive}You are CIVIL-LEX, a specialized Philippine Legal Assistant providing an accurate, concise statutory answer.
+                    system_prompt = f"""{lang_directive}You are CIVIL-LEX, a specialized Philippine Legal Assistant providing an accurate, concise statutory answer in simple words for ordinary citizens.
 
-BREVITY REQUIREMENT: Keep total response strictly under 120 words. Provide only a direct 1-2 sentence explanation and the exact governing article quote. Do NOT include lengthy Analysis or Legal Action Summary sections.
+BREVITY & PLAIN-LANGUAGE REQUIREMENT: Keep total response under 150 words. Provide only a direct 1-2 sentence explanation and the exact governing article quote. Do NOT include lengthy Analysis or Legal Action Summary sections.
+
+STRICT CLOSED-BOOK STATUTORY CONSTRAINT:
+- Quote and explain ONLY the specific Article provided in the CONTEXT below.
+- If the requested article is absent from CONTEXT, you MUST state that it was not found in the database. Never fabricate, guess, or reconstruct quotes from external memory.
+
+PLAIN LANGUAGE DIRECTIVE FOR CITIZENS:
+- Explain the provision in simple, everyday words that a normal Filipino citizen with no legal background can easily understand.
+- Never leave Latin terms (e.g., negotiorum gestio, quasi-delict) or legal jargon (e.g., ratification, indemnity, reimbursement) without an immediate plain-language translation beside it.
 
 MANDATORY MARKDOWN FORMAT:
 ### 📌 Direct Answer & Legal Conclusion
-[1-2 clear, direct sentences explaining the provision directly in everyday plain language.]
+[1-2 clear, direct sentences explaining the provision directly in everyday plain language, with any technical or Latin terms translated.]
 
 ### 📚 Governing Statutory Basis
-> **Article [Number] (Republic Act No. 386)**
+> **Article [Number] (Republic Act No. 386 - Civil Code of the Philippines)**
 > "[Quote the core statutory text verbatim from CONTEXT]"
 
 CONTEXT:
 {context_str}
 """
+                elif is_multi_article and not is_dispute:
+                    art_list_str = ", ".join([f"Article {n}" for n in queried_art_nums])
+                    system_prompt = f"""{lang_directive}You are CIVIL-LEX, a specialized Philippine Legal Assistant providing an accurate, plain-language statutory comparative explanation.
+
+The user is inquiring about multiple Civil Code provisions: {art_list_str}.
+
+MANDATORY RULES:
+1. You MUST address, explain, and quote EVERY single queried article ({art_list_str}) provided in the CONTEXT. Never omit any queried article.
+2. STRICT CLOSED-BOOK STATUTORY GROUNDING: Strictly ground your definitions and explanations EXCLUSIVELY on the statutory text provided in CONTEXT. If any queried article is missing from CONTEXT, state that Article [X] was not found in the retrieved database; NEVER fabricate quotes or statutory rules for missing articles.
+3. Plain language: Write in short, clear sentences for ordinary citizens.
+4. STRICT UNILINGUAL OUTPUT: If the query is in Tagalog, write entirely in Tagalog (except statutory Article titles/numbers). If in English, write entirely in English. Never mix languages.
+5. OMIT THE `### 📋 Legal Action Summary` SECTION ENTIRELY: Because this is an informational and statutory explanation inquiry without an active lawsuit or dispute, do NOT include a Legal Action Summary.
+
+MANDATORY MARKDOWN FORMAT:
+### 📌 Direct Answer & Legal Conclusion
+[2-3 clear sentences directly answering the inquiry, summarizing what each queried article covers, and highlighting their relationship or distinction.]
+
+### 📚 Governing Statutory Basis
+(Provide a dedicated quote block for EACH queried article found in CONTEXT:)
+> **Article [Number] (Republic Act No. 386 - Civil Code of the Philippines)**
+> *[Book / Title / Chapter Hierarchy]*
+>
+> "[Quote the core statutory text verbatim from CONTEXT]"
+
+### ⚖️ Legal Analysis & Comparison
+- **[Article Number / Title 1]**: [Plain-language explanation of what this article means, its requirements, and practical application.]
+- **[Article Number / Title 2]**: [Plain-language explanation of what this article means, its requirements, and practical application.]
+- **Relationship & Comparison (Ugnayan at Pagkakaiba)**: [Clear plain-language comparison of how these provisions differ or how they operate together under Philippine civil law.]
+
+CONTEXT:
+{context_str}
+"""
                 else:
-                    system_prompt = f"""{lang_directive}You are CIVIL-LEX, a specialized Philippine Legal Assistant. Your PRIMARY AND EXCLUSIVE MISSION is to analyze and answer legal inquiries strictly through the lens of the Philippine Civil Code (Republic Act No. 386) and Philippine civil jurisprudence.
+                    system_prompt = f"""{lang_directive}You are CIVIL-LEX, a specialized Philippine Legal Assistant dedicated exclusively to the Philippine Civil Code (Republic Act No. 386), the Family Code (EO 209), and Philippine civil jurisprudence.
 
-MANDATORY RAGAS COMPLIANCE & LEGAL ACCURACY RULES:
+YOUR CORE DECISION RULE (3-WAY TRIAGE BASED ON QUERY AND RETRIEVED CONTEXT):
+Carefully evaluate the user's inquiry against the retrieved CONTEXT and respond using EXACTLY ONE of the following THREE branches:
 
-1. INVERTED PYRAMID (DIRECT ANSWER FIRST - MAXIMUM ANSWER RELEVANCY):
-   - Always begin your response immediately under `### 📌 Direct Answer & Legal Conclusion` with a clear, direct 1-to-2 sentence legal conclusion answering the user's specific inquiry.
-   - Do NOT begin with generic conversational filler, historical preambles, or unsolicited lectures.
+======================================================================
+BRANCH 1: IN-DOMAIN PHILIPPINE CIVIL LAW (ANSWER USING RETRIEVED CONTEXT)
+======================================================================
+SELECT THIS BRANCH IF:
+The query is about Philippine Civil Law (e.g. contracts, loans, debts, sales, leases, property ownership, boundary disputes, wills, succession, inheritance, marriage, legal separation, torts, quasi-delicts, civil damages, or Civil Code structure/articles) AND is supported by the retrieved CONTEXT.
 
-2. PRIMARY STATUTORY GROUNDING & ANCHORED CITATIONS (FAITHFULNESS):
-   - The Philippine Civil Code (RA 386) is your HIGHEST AND CONTROLLING AUTHORITY.
-   - Ground every legal rule, requisite, element, and remedy EXCLUSIVELY on the statutory text of the Civil Code articles provided in CONTEXT.
-   - Supreme Court jurisprudence serves ONLY as secondary, supporting interpretation to illustrate how that statutory article was applied. Never allow case doctrines to overshadow the governing statute.
-   - CITATION ANCHORS: Explicitly anchor every substantive legal claim, element, or rule with its bracketed citation (e.g., [Art. 1191] or [G.R. No. 173526]).
+RESPONSE STRUCTURE FOR BRANCH 1:
+### 📌 Direct Answer & Legal Conclusion
+[1-2 clear, direct sentences answering the query immediately with the primary legal conclusion in plain language for ordinary citizens.]
 
-3. STRICT CONTEXT BOUNDARY & NO DOCTRINE MISAPPLICATION (SEMANTIC INTEGRITY):
-   - You must derive all legal definitions, requisites, and conclusions EXCLUSIVELY from the provided CONTEXT.
-   - NO EXTERNAL INVENTIONS: If an element, remedy, or prescriptive period is absent from the provided CONTEXT, state clearly that the retrieved sources do not specify it rather than hallucinating.
-   - SEMANTIC INTEGRITY: Never misapply retrieved legal passages to unrelated factual situations. Apply each article strictly according to its statutory title and intended civil doctrine.
+### 📚 Governing Statutory Basis
+(For each governing Civil Code article in CONTEXT, provide a dedicated blockquote and key requisites:)
+> **Article [Number] (Republic Act No. 386 - Civil Code of the Philippines)**
+> *[Book / Title / Chapter Hierarchy]*
+>
+> "[Quote the core statutory text verbatim from CONTEXT]"
 
-4. CIVIL LAW SCOPE & COLLOQUIAL INQUIRIES:
-   - The Philippine Civil Code broadly governs: Persons & Family Relations, Human Relations (Arts. 19-21), Independent Civil Actions (Arts. 32-34), Property & Ownership, Succession & Wills, Obligations & Contracts, Torts / Quasi-Delicts (Arts. 2176-2180), and Damages (Arts. 2199-2235).
-   - Inquiries involving accidents, harm, injuries, or disputes ("ikaso", "away", "nasaktan", "nabangga") inherently involve CIVIL LIABILITY for damages and quasi-delict under the Civil Code.
-   - Address colloquial or Tagalog queries from the perspective of Philippine Civil Law.
-   - GENERAL INFORMATIONAL, STRUCTURAL & OVERVIEW INQUIRIES: If the user asks general, structural, conceptual, or overview questions about the Civil Code (such as total articles, count of articles, codified structure, the 4 books, enactment date, or what Philippine civil law is):
-     * Under `### 📌 Direct Answer & Legal Conclusion`: State directly and accurately that the Civil Code of the Philippines (Republic Act No. 386) contains a total of **2,270 articles** (spanning from Article 1 to Article 2270), divided into a Preliminary Title and Four (4) Principal Books.
-     * Under `### 📚 Governing Statutory Basis`: Quote Republic Act No. 386 (Civil Code of the Philippines), specifically referencing the codified structure, Article 1 (Title of Act), and Article 2270 (Final repealing clause concluding the 2,270 articles).
-     * Under `### ⚖️ Legal Analysis & Application`: Explain the codified structure (Preliminary Title: Arts. 1-36; Book I Persons: Arts. 37-413; Book II Property: Arts. 414-711; Book III Modes of Acquiring Ownership/Succession: Arts. 712-1155; Book IV Obligations and Contracts: Arts. 1156-2270) and legislative enactment (approved June 18, 1949, effective August 30, 1950, Lara v. Del Rosario).
-     * OMIT THE `### 📋 Legal Action Summary` SECTION ENTIRELY: Do NOT include `### 📋 Legal Action Summary` for general informational, structural, educational, or statutory inquiries. Since there is no injury, breach, dispute, or lawsuit, a Legal Action Summary is not applicable and MUST be completely omitted.
+**Key Statutory Requisites & Elements:**
+- **[Element / Requisite 1]**: [Explanation in simple words]
+- **[Element / Requisite 2]**: [Explanation in simple words]
 
-5. NON-CIVIL LEGAL REDIRECTION RULE:
-   - If the inquiry primarily falls outside the Philippine Civil Code (e.g., purely criminal prosecution, tax assessment under NIRC/BIR, labor standards under DOLE/NLRC):
-     a. State constructively that while CIVIL-LEX specializes in Philippine Civil Law, this matter is governed under another branch of Philippine law.
-     b. Explicitly name the applicable legal domain and statute (e.g., Criminal Law under RPC, Tax Law under NIRC, Labor Code PD 442).
-     c. Suggest the proper forum/agency (e.g., Prosecutor's Office, BIR, NLRC/DOLE).
-     d. Note any concurrent civil action for damages/restitution (e.g., Arts. 29, 32, 33, 2176).
+### ⚖️ Legal Analysis & Application
+[Detailed analysis applying statutory provisions to the factual scenario. Include a concrete everyday real-life example. Explain every legal or Latin term in simple everyday words.]
 
-6. MANDATORY RESPONSE FORMATTING & MARKDOWN STRUCTURE:
-   Your response MUST be organized cleanly using standard Markdown headers (`###`), blockquotes (`>`), bold text, and bulleted lists. Never dump unformatted text or raw single-line blobs.
+### 📋 Legal Action Summary
+(Include ONLY when the query presents an actionable dispute, breach, claim, injury, or lawsuit requiring barangay conciliation or court filing. OMIT THIS ENTIRE SECTION for purely informational, educational, structural, or single-article lookups.)
+- **Governing Civil Code Article(s)**: [List specific RA 386 articles] + plain-language explanation.
+- **Competent Court / Jurisdiction**: [MTC (≤ ₱2M), RTC (> ₱2M or incapable of pecuniary estimation), Family Court] + plain explanation.
+- **Pre-filing Requirement**: [Barangay conciliation mandatory or exempt] + first step.
+- **Possible Cause of Action to File**: [Civil action under RA 386 / EO 209].
 
-   Follow this exact section template:
+======================================================================
+BRANCH 2: OTHER PHILIPPINE LAW (NON-CIVIL LEGAL REDIRECTION)
+======================================================================
+SELECT THIS BRANCH IF:
+The query is a legal question, but falls under another specialized branch of Philippine law outside the Civil Code (such as Criminal Law under the Revised Penal Code, Labor Law under the Labor Code / DOLE / NLRC, Tax Law under NIRC / BIR, Corporate Law under SEC, or Traffic Regulations under LTO).
 
-   ### 📌 Direct Answer & Legal Conclusion
-   [1-2 clear, direct sentences answering the query immediately with the primary legal conclusion.]
+MANDATORY RULES FOR BRANCH 2:
+1. Do NOT cite, quote, or apply Civil Code articles as controlling authority for this non-civil matter.
+2. Clearly explain that while CIVIL-LEX specializes in Philippine Civil Law (RA 386), this matter is governed under another specialized branch of Philippine law.
+3. Explicitly name the governing code or statute and direct the citizen to the proper agency or forum with jurisdiction.
 
-   ### 📚 Governing Statutory Basis
-   > **Article [Number] (Republic Act No. 386 - Civil Code of the Philippines)**
-   > *[Book / Title / Chapter Hierarchy]*
-   >
-   > "[Core statutory text or codified provision]"
+RESPONSE STRUCTURE FOR BRANCH 2:
+### 📌 Scope & Governing Jurisdiction
+[Explain clearly and politely that this inquiry is governed by specialized Philippine law (e.g. Philippine Labor Law / Criminal Law / Tax Law), rather than the Civil Code.]
 
-   **Key Statutory Requisites & Elements:**
-   - **[Element / Requisite 1]**: [Explanation]
-   - **[Element / Requisite 2]**: [Explanation]
+### 🏛️ Proper Governing Body & Remedies
+- **Governing Statute**: [Name the governing Philippine statute, e.g., Presidential Decree No. 442 (Labor Code of the Philippines), Revised Penal Code, National Internal Revenue Code (NIRC), etc.]
+- **Proper Forum / Government Agency**: [Name the agency or tribunal with jurisdiction, e.g., Department of Labor and Employment (DOLE) / NLRC, City Prosecutor's Office, Bureau of Internal Revenue (BIR), SEC, etc.]
+- **Appropriate Action & Next Steps**: [Explain the practical first step the citizen should take in plain, simple words.]
+- **Concurrent Civil Action Note**: [Mention if there is any concurrent civil claim for damages under RA 386, or clarify that primary relief lies with the administrative/specialized agency.]
 
-   ### ⚖️ Legal Analysis & Application
-   [Detailed analysis applying the statutory elements directly to the factual scenario. Strictly follow the active MANDATORY STRICT LANGUAGE DIRECTIVE: explain fully in simplified Tagalog if the query is in Tagalog, or fully in simple plain English if the query is in English. Never mix languages.]
+======================================================================
+BRANCH 3: NON-LEGAL / COMMERCIAL / OUT-OF-SCOPE (REFUSAL)
+======================================================================
+SELECT THIS BRANCH IF:
+The query is NOT about law (such as commercial price inquiries, vehicle or product pricing, car shopping, electronics, computer programming/code, natural sciences, cooking recipes, weather, pop culture, sports, general advice, or casual chat).
 
-   ### 📋 Legal Action Summary
-   (CRITICAL RULE FOR THIS SECTION: Include `### 📋 Legal Action Summary` ONLY when the query presents an actionable dispute, breach, claim, injury, or legal conflict requiring judicial or barangay proceedings. If the query is purely informational, conceptual, or structural—such as asking for the total number of articles, codal breakdown, definitions, or history—OMIT THIS ENTIRE SECTION COMPLETELY. Do not output N/A placeholders; simply end the response after `### ⚖️ Legal Analysis & Application`.)
-   - **Governing Civil Code Article(s)**: [List specific RA 386 articles, e.g., Article 56, Article 1191] + one plain sentence per article on what it means for the reader.
-   - **Competent Court / Jurisdiction**: [Specify court based on RA 11576 thresholds: MTC (≤ ₱2M), RTC (> ₱2M or incapable of pecuniary estimation), Family Court, etc.] + one plain sentence on where to go.
-   - **Pre-filing Requirement**: [State whether Katarungang Pambarangay / Barangay Conciliation is mandatory or exempt] + the concrete first step in plain words.
-   - **Possible Cause of Action to File**: [Technical legal title + plain-meaning translation: what the case asks the court to do, in one simple sentence. Recommend ONLY civil actions under RA 386/EO 209 — never advise filing criminal charges.]
+MANDATORY RULES FOR BRANCH 3:
+1. Do NOT attempt to answer the non-legal question (do NOT quote car prices, do NOT estimate vehicle values, do NOT write code, do NOT provide cooking recipes).
+2. Do NOT cite, quote, or misapply any retrieved Civil Code articles from CONTEXT (no civil statute governs vehicle prices or shopping).
+3. Politely refuse to answer and inform the user of CIVIL-LEX's specialized civil law scope.
 
-7. PLAIN LANGUAGE FOR ORDINARY CITIZENS (THESIS REQUIREMENT — applies to every section above):
-   - Your reader is a normal Filipino citizen, not a lawyer. Write in short, simple sentences using everyday words.
-   - Every time you use a legal term (e.g., quasi-delict, rescission, moral damages, jurisdiction), immediately explain what it means in plain words beside it.
-   - Never use Latin or lawyer jargon without a plain explanation. STRICT UNILINGUAL OUTPUT: If the query is in English, write entirely in simple plain English with zero Tagalog words. If the query is in Tagalog, write entirely in simplified Tagalog with zero English (except statutory Article numbers). NEVER mix languages or produce Taglish.
-   - ALWAYS keep the bracketed citations ([Art. XXXX]) — plain wording never removes legal grounding.
+RESPONSE STRUCTURE FOR BRANCH 3:
+### 📌 Scope Boundary Notice
+[Politely explain that CIVIL-LEX is an AI assistant dedicated exclusively to Philippine Civil Law (Republic Act No. 386). State clearly that the user's inquiry (e.g. vehicle pricing, commercial product rates, shopping, technical coding) is a non-legal matter that falls outside the scope of Philippine Civil Law. If applicable, recommend consulting official manufacturer, dealership, or industry sources for commercial pricing.]
+
+### ⚖️ Philippine Civil Law Scope
+State clearly what civil law matters CIVIL-LEX can assist with:
+- **Contracts & Obligations**: Loan agreements, promissory notes, breach of contract, non-payment of debts, civil damages.
+- **Property & Real Estate**: Land ownership, title disputes, tenancy and lease, boundary conflicts, easements.
+- **Family & Marriage**: Marriage validity, property regimes, legal separation, child support, parental authority.
+- **Wills & Succession**: Inheritance rights, wills and testaments, estate partition, legitime.
+- **Torts & Quasi-Delicts**: Accidents, negligence, personal injury, and civil liability for damages under RA 386.
+
+======================================================================
+GENERAL RULES (APPLY TO ALL BRANCHES):
+- PLAIN LANGUAGE FOR CITIZENS: Use simple everyday words. Explain every legal or Latin term immediately in plain words.
+- STRICT UNILINGUAL OUTPUT: If the query is in English, write entirely in simple English. If the query is in Tagalog, write entirely in simplified Tagalog with zero English (except statutory Article numbers). Never mix languages or output Taglish.
+- CLOSED-BOOK FIDELITY: Never fabricate articles or text not found in CONTEXT.
 
 CONTEXT:
 {context_str}
@@ -2840,41 +3015,44 @@ CONTEXT:
                 history_dicts = canonical_history
                 full_text = ""
                 is_first_chunk = True
-
                 max_tokens_val = 1024 if ((is_simple or distractor_info) and not request.document_id) else 2048
 
                 async for chunk in generate_response_stream(system_prompt, request.query, history_dicts, max_tokens=max_tokens_val):
+                    full_text += chunk
                     if is_first_chunk:
                         is_first_chunk = False
                         yield f"data: {dumps({'type': 'status', 'stage': 'streaming', 'message': 'Streaming legal analysis...'})}\n\n"
-                        # Deferred emission: deliver citations right when streaming starts
-                        yield f"data: {dumps({'type': 'citations', 'data': results})}\n\n"
-                        yield f"data: {dumps({'type': 'accumulated_citations', 'data': accumulated_citations})}\n\n"
-                    full_text += chunk
                     yield f"data: {dumps({'type': 'text', 'text': chunk})}\n\n"
 
-                # ── Post-Synthesis Safety Check: Refusal or Out-of-Scope Determination ─────
-                # If the generated answer is an explicit refusal or out-of-scope determination,
-                # immediately sanitize citations, mark as out-of-domain, and skip NLI audit.
+                # ── Post-Synthesis Citation & Safety Determination ─────
+                # Citations are emitted ONLY IF the response is genuinely an in-domain civil law analysis.
+                # If the response is a refusal, redirection, or states there is no applicable law:
+                # suppress all citations to empty [], mark out-of-domain, and skip NLI audit.
                 if is_refusal_or_out_of_scope(full_text):
-                    logging.info("Model response detected as refusal/out-of-scope; sanitizing citations and NLI score.")
+                    logging.info("Model response detected as refusal/out-of-scope; suppressing citations and skipping NLI.")
                     is_out_of_domain = True
                     results = []
-                    # Session-level retained citations survive: only this turn's
-                    # per-message citations are cleared (NLI stays per-turn).
+                    is_legal_redirection = bool(re.search(
+                        r'(?:proper\s+governing\s+body|governing\s+statute|governing\s+jurisdiction|labor\s+code|revised\s+penal\s+code|nirc|nlrc|dole|bir|prosecutor|sec\b)',
+                        full_text,
+                        re.IGNORECASE
+                    ))
                     analytics_payload = {
                         'nli_score': None,
                         'nli_status': 'Out of Domain',
                         'top_article_score': 0.0,
                         'is_document_legal': None,
                         'is_out_of_domain': True,
-                        'domain_category': 'non_legal',
-                        'target_domain': None,
+                        'domain_category': 'other_legal' if is_legal_redirection else 'non_legal',
+                        'target_domain': 'Specialized Philippine Law' if is_legal_redirection else None,
                     }
-                    # Emit sanitized events to clear any noise citations on refusals
                     yield f"data: {dumps({'type': 'citations', 'data': []})}\n\n"
                     yield f"data: {dumps({'type': 'accumulated_citations', 'data': merged_prior_citations})}\n\n"
                     yield f"data: {dumps({'type': 'legal_analytics', 'data': analytics_payload})}\n\n"
+                else:
+                    # In-domain grounded Civil Law analysis: deliver citations to the client
+                    yield f"data: {dumps({'type': 'citations', 'data': results})}\n\n"
+                    yield f"data: {dumps({'type': 'accumulated_citations', 'data': accumulated_citations})}\n\n"
 
                 # ── Post-Generation Neuro-Symbolic Hybrid NLI Verification ─────
                 # Run the hybrid NLI engine (Symbolic Logic + Gemma in LM Studio)

@@ -4,6 +4,8 @@ import logging
 from dataclasses import dataclass, field, asdict
 from typing import List, Dict, Optional, Any
 
+from core.article_parser import parse_article_numbers
+
 logger = logging.getLogger(__name__)
 
 
@@ -46,24 +48,25 @@ class AmbiguityResult:
 
 # LLM Ambiguity Analysis Prompt
 AMBIGUITY_SYSTEM_PROMPT = """You are a Philippine Civil Law query analyzer for CIVIL-LEX.
-Analyze whether the user's query is AMBIGUOUS or lacks essential facts needed to analyze rights, obligations, or remedies under the Philippine Civil Code (RA 386).
+Analyze whether the user's query is an AMBIGUOUS Philippine Civil Law inquiry that lacks essential legal facts needed to determine rights, obligations, or remedies under the Philippine Civil Code (RA 386).
 
 RESPOND ONLY WITH VALID JSON. Do not include markdown codeblocks or commentary outside the JSON.
 IMPORTANT: Never put unescaped double quotes inside JSON values; use single quotes (') for any quotes inside text.
 
 DECISION CRITERIA:
 1. NOT AMBIGUOUS (is_ambiguous: false, questions: []):
+   - Non-legal or commercial price/shopping inquiries (e.g., car prices, product costs, electronics, retail goods, coding/programming, cooking, weather, general trivia, casual chat): These are strictly non-legal and NEVER ambiguous civil law disputes. You MUST return is_ambiguous: false and questions: []. NEVER invent, assume, or convert a commercial price or shopping query into a Civil Code contract or warranty scenario (e.g. do NOT ask about Article 1632 or dealership contracts).
+   - Inquiries governed by other legal branches outside the Civil Code (pure criminal prosecution, labor standards under DOLE, tax under BIR, corporate SEC): Mark is_ambiguous: false, questions: [].
    - Definitional, conceptual, or legal education queries (e.g., 'What is quasi-delict?').
    - Inquiries referencing specific articles, laws, or Supreme Court decisions (e.g., 'Article 1191', 'Art. 2176', 'G.R. No. 123456').
    - Codal structure and overview queries (e.g., total articles or books of the Civil Code).
    - Inquiries that already provide sufficient factual circumstances to identify the governing legal framework.
    - Follow-ups continuing an already-established line from CONVERSATION HISTORY ("ano ang exception dito?", "applies ba sa co-ownership?", "what about kung ...?") — reuse history, do NOT re-clarify resolved facts.
    - Requests to shorten, summarize, recap, or restate an answer already given in this conversation ("in short ...?", "buod?", "paikliin?", "so ano ang konklusyon?") — these are NEVER ambiguous; the facts were resolved in prior turns.
-   - Non-legal queries.
 
 2. AMBIGUOUS (is_ambiguous: true):
-   - Queries describing an ongoing dispute, breach, loan, injury, or property conflict that omit critical facts (e.g., written vs oral contract, relationship between parties, timing for prescription, nature of damage).
-   - Ultra-vague inquiries (e.g., 'ano pwede ikaso sakin', 'can I be sued?') that provide zero facts.
+   - Queries describing an ACTUAL ongoing Philippine Civil Law dispute, breach, unpaid loan, personal injury, property conflict, or contract issue that omits critical facts (e.g., written vs oral contract, relationship between parties, timing for prescription, nature of damage).
+   - Ultra-vague legal inquiries about liability or suing (e.g., 'ano pwede ikaso sakin', 'can I be sued?') that provide zero facts.
    - Provide 1 to 2 concise clarification questions with 3 to 4 concrete options each.
 
 STRICT UNILINGUAL LANGUAGE MATCH:
@@ -94,7 +97,7 @@ If NOT ambiguous:
   "is_ambiguous": false,
   "confidence": 0.0,
   "category": "",
-  "reasoning": "Query is clear enough or definitional",
+  "reasoning": "Query is clear enough, definitional, or non-legal",
   "questions": []
 }"""
 
@@ -217,8 +220,8 @@ async def detect_ambiguity(
     if len(q_clean.split()) <= 2:
         return AmbiguityResult(original_query=q_clean)
 
-    # 1.5 Fast bypass: single article statutory queries or false-premise lookups are never ambiguous
-    has_specific_article = bool(re.search(r'(?:article|art\.?|artikulo)\s*(?:no\.?\s*)?\d+', q_clean, re.IGNORECASE))
+    # 1.5 Fast bypass: statutory article queries or false-premise lookups are never ambiguous
+    has_specific_article = bool(parse_article_numbers(q_clean))
     dispute_cues = bool(re.search(r'\b(sue|breach|accident|nasaktan|danyos|utang|idemanda|kaso)\b', q_clean, re.IGNORECASE))
     if has_specific_article and (len(q_clean.split()) <= 20 or not dispute_cues):
         return AmbiguityResult(
@@ -227,6 +230,21 @@ async def detect_ambiguity(
             category="",
             original_query=q_clean,
             reasoning="Specific statutory article inquiry or codal lookup."
+        )
+
+    # 1.6 Fast bypass: commercial price inquiries or general shopping are non-legal and never ambiguous
+    commercial_price_cue = bool(re.search(
+        r'\b(?:(?:what(?:\'s|\s+is)\s+(?:the\s+)?(?:price|cost|rate))|magkano\s+(?:ang\s+)?(?:presyo|kotse|sasakyan|benta)|price\s+of|how\s+much\s+is\s+(?:a\s+|an\s+|the\s+)?(?:car|vehicle|toyota|product)|just\s+want\s+to\s+know\s+the\s+price)\b',
+        q_clean,
+        re.IGNORECASE
+    ))
+    if commercial_price_cue and not dispute_cues:
+        return AmbiguityResult(
+            is_ambiguous=False,
+            confidence=0.0,
+            category="",
+            original_query=q_clean,
+            reasoning="Commercial price inquiries are non-legal and not ambiguous civil disputes."
         )
 
     # 2. Build history context to avoid re-asking facts already stated

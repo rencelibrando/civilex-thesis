@@ -1204,13 +1204,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                   );
                 } else if (data.type === "accumulated_citations") {
                   const incoming = data.data || [];
-                  if (incoming.length === 0) {
-                    // Retained citations are append-only per session: ignore empty
-                    // server events (recall / refusal turns) so earlier turns keep theirs.
-                  } else {
-                    const accumulated = sortCitations(incoming);
-                    setRetainedCitations(accumulated);
-                  }
+                  const accumulated = sortCitations(incoming);
+                  setRetainedCitations(accumulated);
                 } else if (data.type === "follow_ups") {
                   // LLM-generated follow-up suggestions (preferred over rule-based).
                   const suggestions = Array.isArray(data.data)
@@ -1595,13 +1590,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                   );
                 } else if (data.type === "accumulated_citations") {
                   const incoming = data.data || [];
-                  if (incoming.length === 0) {
-                    // Retained citations are append-only per session: ignore empty
-                    // server events (recall / refusal turns) so earlier turns keep theirs.
-                  } else {
-                    const accumulated = sortCitations(incoming);
-                    setRetainedCitations(accumulated);
-                  }
+                  const accumulated = sortCitations(incoming);
+                  setRetainedCitations(accumulated);
                 } else if (data.type === "follow_ups") {
                   // LLM-generated follow-up suggestions (preferred over rule-based).
                   const suggestions = Array.isArray(data.data)

@@ -528,8 +528,12 @@ def _has_polarity_inversion(claim_lower: str, premise_lower: str) -> bool:
         if premise_modality == 'obligation' and claim_modality == 'prohibition':
             return True
         # Prohibition in premise + Permission/Obligation in claim = contradiction
+        # BUT: If the premise itself ALSO permits it under conditions (e.g. "may be acquired... but shall not... until..."),
+        # then permission in the claim does not contradict the premise.
         if premise_modality == 'prohibition' and claim_modality in ('permission', 'obligation'):
-            return True
+            has_perm_in_premise = any(bool(re.search(r'\b' + re.escape(tok) + r'\b', premise_lower)) for tok in _PERMISSION_TOKENS if tok != 'may' or not any(t_m in premise_lower for t_m in (' ang ', ' ng ', ' sa ')))
+            if not has_perm_in_premise:
+                return True
 
     # Direct negation targeting specific shared legal predicates
     direct_refutations = [
@@ -873,7 +877,7 @@ def verify_claim_symbolic(
 
     best_coverage = ranked_coverages[0][0] if ranked_coverages else 0.0
     best_premise = ranked_coverages[0][1] if ranked_coverages else ""
-    best_premise_lower = ranked_coverages[0][2] if ranked_coverages else ""
+
 
     # Union coverage over the top relevant premises: evidence split across
     # several premises (e.g. requisites spread over article paragraphs) can

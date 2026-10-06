@@ -13,7 +13,9 @@ import {
   AlertCircle,
   ShieldCheck,
   Clock,
-  Info,
+  WifiOff,
+  ServerOff,
+  RefreshCw,
   Trash2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -24,6 +26,11 @@ import {
   SESSION_MAX_AGE_DAYS,
   checkAndConsumeJustLoggedOut,
 } from "@/lib/auth-storage";
+import {
+  mapAuthException,
+  isProductionSupabaseMisconfigured,
+  type AuthErrorKind,
+} from "@/lib/auth-errors";
 
 function LoginFormContent() {
   const router = useRouter();
@@ -36,6 +43,9 @@ function LoginFormContent() {
   const [rememberMe, setRememberMe] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
+  const [errorKind, setErrorKind] = useState<AuthErrorKind | null>(null);
+  // Lazily evaluated (no effect) to avoid cascading renders; SSR safely returns false.
+  const [isMisconfigured] = useState<boolean>(() => isProductionSupabaseMisconfigured());
   const [lockoutSeconds, setLockoutSeconds] = useState<number>(0);
   const [unverifiedEmail, setUnverifiedEmail] = useState<string | null>(null);
 
@@ -74,6 +84,7 @@ function LoginFormContent() {
           if (prev <= 1) {
             clearInterval(interval);
             setErrorMsg("");
+            setErrorKind(null);
             return 0;
           }
           return prev - 1;
@@ -84,30 +95,40 @@ function LoginFormContent() {
     }
   }, []);
 
+  const setFormError = (message: string, kind: AuthErrorKind | null = "unknown") => {
+    setErrorMsg(message);
+    setErrorKind(kind);
+  };
+
+  const clearFormError = () => {
+    setErrorMsg("");
+    setErrorKind(null);
+  };
+
   const validateForm = (): boolean => {
     const trimmedEmail = email.trim();
     if (!trimmedEmail) {
-      setErrorMsg("Please enter your registered email address.");
+      setFormError("Please enter your registered email address.", null);
       return false;
     }
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(trimmedEmail)) {
-      setErrorMsg("Please enter a valid professional email address.");
+      setFormError("Please enter a valid professional email address.", null);
       return false;
     }
     if (!password) {
-      setErrorMsg("Please enter your password.");
+      setFormError("Please enter your password.", null);
       return false;
     }
     return true;
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setErrorMsg("");
-
+  const attemptSignIn = async () => {
     if (lockoutSeconds > 0) {
-      setErrorMsg(`Authentication is temporarily locked. Please wait ${lockoutSeconds} seconds.`);
+      setFormError(
+        `Authentication is temporarily locked. Please wait ${lockoutSeconds} seconds.`,
+        "rate-limited"
+      );
       return;
     }
 
@@ -118,10 +139,10 @@ function LoginFormContent() {
     try {
       const res = await signIn(email, password, rememberMe);
       if (!res.success) {
-        if (res.error?.toLowerCase().includes("email not confirmed")) {
+        if (res.kind === "email-not-confirmed" || res.error?.toLowerCase().includes("email not confirmed")) {
           const cleanEmail = email.trim().toLowerCase();
           setUnverifiedEmail(cleanEmail);
-          setErrorMsg("");
+          clearFormError();
           try {
             await resendVerificationOtp(cleanEmail);
           } catch (_) {}
@@ -129,20 +150,53 @@ function LoginFormContent() {
           return;
         } else {
           setUnverifiedEmail(null);
-          setErrorMsg(res.error || "Invalid email or password.");
+          setFormError(res.error || "Invalid email or password.", res.kind ?? "unknown");
           const remaining = getRemainingLockoutSeconds();
           if (remaining > 0) {
             setLockoutSeconds(remaining);
           }
         }
       } else {
+        clearFormError();
         // Full window navigation ensures all React context trees and in-memory caches are fresh for the authenticated user
         window.location.href = redirectUrl;
       }
     } catch (err: unknown) {
-      setErrorMsg(err instanceof Error ? err.message : "Failed to sign in. Please verify your connection.");
+      const mapped = mapAuthException(err);
+      setFormError(mapped.message, mapped.kind);
     } finally {
       setIsSubmitting(false);
+    }
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    clearFormError();
+    await attemptSignIn();
+  };
+
+  const handleRetry = async () => {
+    if (isSubmitting || lockoutSeconds > 0) return;
+    clearFormError();
+    await attemptSignIn();
+  };
+
+  const isOutageError = errorKind === "offline" || errorKind === "auth-down" || errorKind === "backend-down";
+
+  const getErrorTitle = (): string => {
+    switch (errorKind) {
+      case "offline":
+        return "You are offline";
+      case "auth-down":
+        return "Server is offline";
+      case "backend-down":
+        return "App server is offline";
+      case "credentials":
+        return "Sign-in failed";
+      case "rate-limited":
+        return "Too many attempts";
+      default:
+        return "Sign-in failed";
     }
   };
 
@@ -235,9 +289,48 @@ function LoginFormContent() {
 
       {/* General Error Banner */}
       {errorMsg && lockoutSeconds === 0 && (
-        <div className="flex items-start gap-3 p-3.5 rounded-xl bg-destructive/10 border border-destructive/20 text-destructive text-sm animate-shake">
-          <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
-          <span className="leading-snug">{errorMsg}</span>
+        <div
+          role="alert"
+          className={
+            errorKind === "offline"
+              ? "flex items-start gap-3 p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-800 dark:text-amber-300 text-sm animate-shake"
+              : isOutageError
+                ? "flex items-start gap-3 p-3.5 rounded-xl bg-destructive/10 border border-destructive/20 text-destructive text-sm animate-shake"
+                : "flex items-start gap-3 p-3.5 rounded-xl bg-destructive/10 border border-destructive/20 text-destructive text-sm animate-shake"
+          }
+        >
+          {errorKind === "offline" ? (
+            <WifiOff className="w-4 h-4 mt-0.5 shrink-0" />
+          ) : isOutageError ? (
+            <ServerOff className="w-4 h-4 mt-0.5 shrink-0" />
+          ) : (
+            <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
+          )}
+          <div className="flex-1 min-w-0">
+            <p className="font-semibold leading-snug">{getErrorTitle()}</p>
+            <p className="leading-snug mt-0.5">{errorMsg}</p>
+            {isOutageError && (
+              <button
+                type="button"
+                onClick={handleRetry}
+                disabled={isSubmitting}
+                className="mt-2 inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1.5 rounded-lg bg-background/60 border border-current/20 hover:bg-background transition-colors disabled:opacity-50 cursor-pointer"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isSubmitting ? "animate-spin" : ""}`} />
+                {isSubmitting ? "Retrying..." : "Retry connection"}
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Production misconfiguration hint (Azure build without proper env) */}
+      {isMisconfigured && !errorMsg && lockoutSeconds === 0 && (
+        <div className="flex items-start gap-3 p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-800 dark:text-amber-300 text-xs sm:text-sm">
+          <ServerOff className="w-4 h-4 mt-0.5 shrink-0" />
+          <span>
+            Sign-in service may be misconfigured for this environment. If sign-in fails, please contact support.
+          </span>
         </div>
       )}
 

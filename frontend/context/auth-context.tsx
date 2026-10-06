@@ -22,7 +22,21 @@ import {
   consumeLogoutReason,
   saveCachedProfile,
 } from "@/lib/auth-storage";
-import { BACKEND_URL, apiUrl } from "@/lib/config";
+import {
+  mapSupabaseSignInError,
+  mapAuthException,
+  probeServiceHealth,
+  refineOutageMessage,
+  isOutageKind,
+  type AuthErrorKind,
+} from "@/lib/auth-errors";
+import { apiUrl } from "@/lib/config";
+
+interface AuthResult {
+  success: boolean;
+  error?: string;
+  kind?: AuthErrorKind;
+}
 
 interface AuthContextType {
   user: User | null;
@@ -31,16 +45,16 @@ interface AuthContextType {
   isLoading: boolean;
   isAuthenticated: boolean;
   logoutReason: string | null;
-  signIn: (email: string, password: string, rememberMe?: boolean) => Promise<{ success: boolean; error?: string }>;
+  signIn: (email: string, password: string, rememberMe?: boolean) => Promise<AuthResult>;
   signUp: (payload: {
     email: string;
     password: string;
     fullName: string;
-  }) => Promise<{ success: boolean; error?: string; sessionCreated: boolean }>;
+  }) => Promise<{ success: boolean; error?: string; kind?: AuthErrorKind; sessionCreated: boolean }>;
   signOut: (reason?: string) => Promise<void>;
   refreshSession: () => Promise<Session | null>;
-  verifyOtp: (email: string, token: string) => Promise<{ success: boolean; error?: string }>;
-  resendVerificationOtp: (email: string) => Promise<{ success: boolean; error?: string }>;
+  verifyOtp: (email: string, token: string) => Promise<AuthResult>;
+  resendVerificationOtp: (email: string) => Promise<AuthResult>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -176,12 +190,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
   }, [initAuth, sendHeartbeat, session?.access_token]);
 
-  const signIn = async (email: string, password: string, rememberMe = true) => {
+  const signIn = async (email: string, password: string, rememberMe = true): Promise<AuthResult> => {
     // Check brute-force lockout
     const lockoutSecs = getRemainingLockoutSeconds();
     if (lockoutSecs > 0) {
       return {
         success: false,
+        kind: "rate-limited",
         error: `Too many failed login attempts. For security, please wait ${lockoutSecs} seconds before trying again.`,
       };
     }
@@ -197,16 +212,32 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       });
 
       if (error) {
+        const mapped = mapSupabaseSignInError(error);
+
+        // Outages must not count toward brute-force lockout. Refine the
+        // message with live health probes (Supabase vs backend-node).
+        if (isOutageKind(mapped.kind)) {
+          try {
+            const health = await probeServiceHealth();
+            const refined = refineOutageMessage(health);
+            return { success: false, error: refined.message, kind: refined.kind };
+          } catch {
+            return { success: false, error: mapped.message, kind: mapped.kind };
+          }
+        }
+
         const throttle = recordFailedLoginAttempt();
         if (throttle.isLocked) {
           return {
             success: false,
+            kind: "rate-limited",
             error: `Too many failed login attempts. For security, your account login is temporarily locked for ${throttle.lockoutSeconds} seconds.`,
           };
         }
         return {
           success: false,
-          error: error.message || "Invalid email or password.",
+          error: mapped.message,
+          kind: mapped.kind,
         };
       }
 
@@ -230,10 +261,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       return { success: true };
     } catch (err: unknown) {
+      const mapped = mapAuthException(err);
+      // Outages must not increment the brute-force counter.
+      if (isOutageKind(mapped.kind)) {
+        try {
+          const health = await probeServiceHealth();
+          const refined = refineOutageMessage(health);
+          return { success: false, error: refined.message, kind: refined.kind };
+        } catch {
+          return { success: false, error: mapped.message, kind: mapped.kind };
+        }
+      }
       recordFailedLoginAttempt();
       return {
         success: false,
-        error: err instanceof Error ? err.message : "An unexpected authentication error occurred.",
+        error: mapped.message,
+        kind: mapped.kind,
       };
     }
   };
@@ -256,9 +299,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       });
 
       if (error) {
+        const mapped = mapSupabaseSignInError(error);
         return {
           success: false,
-          error: error.message || "Failed to create account.",
+          error: mapped.message,
+          kind: mapped.kind,
           sessionCreated: false,
         };
       }
@@ -300,9 +345,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       return { success: true, sessionCreated: false };
     } catch (err: unknown) {
+      const mapped = mapAuthException(err);
       return {
         success: false,
-        error: err instanceof Error ? err.message : "Registration failed.",
+        error: mapped.message,
+        kind: mapped.kind,
         sessionCreated: false,
       };
     }
@@ -341,7 +388,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return null;
   };
 
-  const verifyOtp = async (email: string, token: string) => {
+  const verifyOtp = async (email: string, token: string): Promise<AuthResult> => {
     try {
       const cleanEmail = email.trim().toLowerCase();
       const cleanToken = token.trim();
@@ -353,9 +400,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       });
 
       if (error) {
+        const mapped = mapSupabaseSignInError(error);
         return {
           success: false,
-          error: error.message || "Invalid or expired verification code.",
+          error: mapped.message,
+          kind: mapped.kind,
         };
       }
 
@@ -369,14 +418,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       return { success: true };
     } catch (err: unknown) {
+      const mapped = mapAuthException(err);
       return {
         success: false,
-        error: err instanceof Error ? err.message : "Verification failed.",
+        error: mapped.message,
+        kind: mapped.kind,
       };
     }
   };
 
-  const resendVerificationOtp = async (email: string) => {
+  const resendVerificationOtp = async (email: string): Promise<AuthResult> => {
     try {
       const cleanEmail = email.trim().toLowerCase();
       const { error } = await supabase.auth.resend({
@@ -388,20 +439,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (error.message?.toLowerCase().includes("rate limit") || error.code === "over_email_send_rate_limit") {
           return {
             success: false,
+            kind: "rate-limited",
             error: "Too many email requests sent. Please check your inbox or spam folder for the code already sent, or wait a minute before requesting another.",
           };
         }
+        const mapped = mapSupabaseSignInError(error);
         return {
           success: false,
-          error: error.message || "Failed to resend verification code.",
+          error: mapped.message,
+          kind: mapped.kind,
         };
       }
 
       return { success: true };
     } catch (err: unknown) {
+      const mapped = mapAuthException(err);
       return {
         success: false,
-        error: err instanceof Error ? err.message : "Failed to resend verification code.",
+        error: mapped.message,
+        kind: mapped.kind,
       };
     }
   };

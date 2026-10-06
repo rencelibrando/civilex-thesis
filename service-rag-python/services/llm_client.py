@@ -8,9 +8,13 @@ async def generate_response_stream(
     user_query: str,
     history: list = None,
     max_tokens: int = 2048,
+    repetition_penalty: float = 1.15,
+    finish_info: dict | None = None,
 ):
     """
     Streams a response from the LLM via LM Studio.
+    If finish_info dict is provided, sets finish_info['reason'] to the
+    terminal finish_reason ('stop', 'length', etc.) for truncation detection.
     """
     if history is None:
         history = []
@@ -41,11 +45,13 @@ async def generate_response_stream(
         "temperature": 0.3,
         "max_tokens": max_tokens,
         "stream": True,
+        "repetition_penalty": repetition_penalty,
     }
 
     try:
-        logging.info(f"Connecting to LM Studio stream at {url}...")
-        timeout = httpx.Timeout(180.0, connect=10.0)
+        logging.info(f"Connecting to LM Studio stream at {url} with max_tokens={max_tokens}...")
+        timeout = httpx.Timeout(600.0, connect=10.0)
+        last_finish_reason = None
         async with httpx.AsyncClient(timeout=timeout) as client:
             async with client.stream("POST", url, json=payload) as response:
                 response.raise_for_status()
@@ -56,11 +62,25 @@ async def generate_response_stream(
                             break
                         try:
                             data = json.loads(data_str)
-                            content = data["choices"][0]["delta"].get("content", "")
-                            if content:
-                                yield content
+                            choices = data.get("choices", [])
+                            if choices:
+                                choice = choices[0]
+                                finish_reason = choice.get("finish_reason")
+                                if finish_reason:
+                                    last_finish_reason = finish_reason
+                                    logging.info(f"LM Studio stream finished with reason: '{finish_reason}'")
+                                    if finish_reason == "length":
+                                        logging.warning(
+                                            f"LM Studio output truncated by max_tokens={max_tokens}. "
+                                            "Consider raising max_tokens for this query type."
+                                        )
+                                content = choice.get("delta", {}).get("content", "")
+                                if content:
+                                    yield content
                         except json.JSONDecodeError:
                             continue
+        if finish_info is not None:
+            finish_info["reason"] = last_finish_reason
         return
 
     except (httpx.TimeoutException, httpx.ConnectError, httpx.HTTPStatusError) as e:
@@ -84,6 +104,7 @@ async def call_chat_completion_async(
     temperature: float = 0.1,
     max_tokens: int = 1200,
     timeout_sec: float = 30.0,
+    repetition_penalty: float = 1.15,
 ) -> str | None:
     """
     Executes a non-streaming chat completion via LM Studio.
@@ -96,6 +117,7 @@ async def call_chat_completion_async(
         "temperature": temperature,
         "max_tokens": max_tokens,
         "stream": False,
+        "repetition_penalty": repetition_penalty,
     }
 
     try:
@@ -118,6 +140,7 @@ def call_chat_completion_sync(
     temperature: float = 0.0,
     max_tokens: int = 1200,
     timeout_sec: float = 30.0,
+    repetition_penalty: float = 1.15,
 ) -> str | None:
     """
     Synchronous non-streaming chat completion via LM Studio.
@@ -129,6 +152,7 @@ def call_chat_completion_sync(
         "temperature": temperature,
         "max_tokens": max_tokens,
         "stream": False,
+        "repetition_penalty": repetition_penalty,
     }
 
     try:

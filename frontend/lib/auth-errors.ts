@@ -1,19 +1,3 @@
-/**
- * CIVIL-LEX friendly authentication error mapping.
- *
- * Supabase-js surfaces network outages as a bare `TypeError: Failed to fetch`
- * (browsers intentionally hide details). That message is useless on the login
- * screen, especially for the Azure-hosted frontend where a bad
- * `NEXT_PUBLIC_SUPABASE_URL` build arg also looks like "Failed to fetch".
- *
- * This module maps raw errors into user-actionable messages and machine
- * readable `AuthErrorKind` values so the UI can render:
- * - offline (browser has no network)
- * - auth-down (Supabase Auth unreachable)
- * - backend-down (CIVIL-LEX backend-node unreachable)
- * - credentials / email-not-confirmed / rate-limited / unknown
- */
-
 export type AuthErrorKind =
   | "offline"
   | "auth-down"

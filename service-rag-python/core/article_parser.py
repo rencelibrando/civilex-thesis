@@ -138,3 +138,23 @@ def is_compound_or_multi_intent_query(query: str) -> bool:
     return any(bool(re.search(p, q_lower)) for p in COMPOUND_INTENT_PATTERNS)
 
 
+JURISPRUDENCE_PATTERNS = [
+    r'\b(?:cases?|jurisprudence|rulings?|decisions?|doctrines?|precedents?)\b',
+    r'\b(?:supreme\s+court|scra|g\.r\.|gr\s*(?:no\.?|nos\.?)?)\b',
+    r'\b(?:related\s+cases?|relevant\s+cases?|applicable\s+cases?|cited\s+cases?|court\s+cases?|landmark\s+cases?)\b',
+    r'\b(?:mga\s+kaso|kaso|jurisprudensya|hatol|desisyon|doktrina|korte\s+suprema)\b',
+]
+
+
+def is_jurisprudence_query(query: str) -> bool:
+    """
+    Checks whether the query explicitly inquires about jurisprudence, Supreme Court
+    decisions, case doctrines, rulings, or related cases interpreting the Civil Code.
+    """
+    if not query:
+        return False
+    q_lower = query.lower()
+    return any(bool(re.search(p, q_lower)) for p in JURISPRUDENCE_PATTERNS)
+
+
+

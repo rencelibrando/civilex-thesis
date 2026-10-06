@@ -21,14 +21,19 @@ If using the copied folder:
 docker cp ./supabase_storage_files/. $(docker ps -qf "name=supabase_storage"):/mnt/
 
 If you transferred the tar archive, unpack it first:
+mkdir -p ./supabase_storage_files
 tar -xzvf supabase_storage_backup.tar.gz -C ./supabase_storage_files/
 docker cp ./supabase_storage_files/. $(docker ps -qf "name=supabase_storage"):/mnt/
 
-2. Inject schema into the PostgreSQL database
-docker exec -i $(docker ps -qf "name=supabase_db") psql -U postgres -d postgres < supabase_schema.sql
+2. Pre-requisite: Enable vector & uuid extensions before schema restore
+docker exec -i $(docker ps -qf "name=supabase_db") psql -U supabase_admin -d postgres -c "CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA extensions; CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\" WITH SCHEMA extensions;"
 
-3. Inject data, vectors, user accounts, and storage metadata
-docker exec -i $(docker ps -qf "name=supabase_db") psql -U postgres -d postgres < supabase_data.sql
+3. Inject schema into the PostgreSQL database (Use supabase_admin superuser to allow auth & storage schema modifications)
+docker exec -i $(docker ps -qf "name=supabase_db") psql -U supabase_admin -d postgres < supabase_schema.sql
 
-4. Restart the storage service so permissions and cached objects refresh immediately
+4. Inject data, vectors, user accounts, and storage metadata (Use supabase_admin superuser)
+docker exec -i $(docker ps -qf "name=supabase_db") psql -U supabase_admin -d postgres < supabase_data.sql
+
+5. Restart the storage service so permissions and cached objects refresh immediately
 docker restart $(docker ps -qf "name=supabase_storage")
+

@@ -1348,7 +1348,7 @@ def collapse_duplicate_statute_blocks(text: str, queried_art_nums: Optional[List
     if not text:
         return text
 
-    # 1. Normalize duplicate '### 📚 Governing Statutory Basis' headers
+    # 1. Normalize duplicate '###  Governing Statutory Basis' headers
     header_pattern = re.compile(r'(#{2,4}[^\n]*?(?:Governing Statutory Basis|Statutory Basis)[^\n]*)', re.IGNORECASE)
     matches = list(header_pattern.finditer(text))
 
@@ -2661,7 +2661,7 @@ YOUR MANDATORY REDIRECTION RULES:
                             yield f"data: {dumps({'type': 'text', 'text': chunk})}\n\n"
 
                         if is_first_chunk:
-                            fallback_redirection = f"""### ⚖️ Statutory Redirection: {target_domain}
+                            fallback_redirection = f"""###  Statutory Redirection: {target_domain}
 
 The uploaded document **"{doc_display_name}"** is a formal legal document, but its subject matter falls outside the jurisdiction of the **Philippine Civil Code (Republic Act No. 386)**.
 
@@ -3069,10 +3069,10 @@ YOUR TASK IN THIS ACTIVE SESSION:
 6. MANDATORY RESPONSE FORMATTING & MARKDOWN STRUCTURE:
    Your output MUST be formatted using standard GitHub-flavored Markdown. Structure your response into clear, distinct sections:
 
-   ### 📌 Summary & Direct Conclusion
+   ###  Summary & Direct Conclusion
    [1-2 clear, direct sentences addressing the query in relation to "{doc_display_name}".]
 
-   ### 📚 Statutory Grounding & Provisions
+   ###  Statutory Grounding & Provisions
    > **[Governing Civil Code Article / Provision]**
    > *[Hierarchy / Book Title]*
    >
@@ -3082,10 +3082,10 @@ YOUR TASK IN THIS ACTIVE SESSION:
    - **[Stipulation 1]**: [Explanation]
    - **[Stipulation 2]**: [Explanation]
 
-   ### ⚖️ Legal Analysis & Application
+   ###  Legal Analysis & Application
    [Detailed analysis applying statutory provisions to the document. Strictly follow the active MANDATORY STRICT LANGUAGE DIRECTIVE: explain fully in simplified Tagalog if the query is in Tagalog, or fully in simple plain English if the query is in English. Never mix languages.]
 
-   ### 📋 Legal Action Summary
+   ###  Legal Action Summary
    (Include this section ONLY if the document review reveals actionable violations, contractual breaches, or enforceable remedies. Omit completely if the inquiry is purely descriptive or informational. Write every bullet in plain, non-lawyer language: technical title first, then what it means and what the citizen must actually do, in one simple sentence.)
    - **Governing Civil Code Article(s)**: [List specific RA 386 articles, e.g., Article 1191, Article 1654] + one plain sentence per article on what it means for the reader.
    - **Competent Court / Jurisdiction**: [Specify court based on RA 11576 thresholds: MTC (<= 2M), RTC (> 2M or incapable of pecuniary estimation), Family Court, etc.] + one plain sentence on where to go.
@@ -3118,7 +3118,7 @@ CONTEXT:
 CRITICAL FALSE-PREMISE REFUSAL & REDIRECTION DIRECTIVE:
 The user is inquiring about "{queried_topic}" under Article {queried_art}.
 FACTUAL TRUTH: Article {queried_art} DOES NOT govern or mention "{queried_topic}".
-1. Under `### 📌 Direct Answer & Legal Conclusion`: You MUST explicitly state in your very first sentence that Article {queried_art} is NOT about "{queried_topic}" (in Tagalog: "Ang Artikulo {queried_art} ng Civil Code ay HINDI tungkol sa {queried_topic}..." / in English: "Article {queried_art} of the Civil Code does not govern {queried_topic}...").
+1. Under `###  Direct Answer & Legal Conclusion`: You MUST explicitly state in your very first sentence that Article {queried_art} is NOT about "{queried_topic}" (in Tagalog: "Ang Artikulo {queried_art} ng Civil Code ay HINDI tungkol sa {queried_topic}..." / in English: "Article {queried_art} of the Civil Code does not govern {queried_topic}...").
 2. State clearly what Article {queried_art} actually covers in 1 simple sentence.
 3. {redirect_directive}
 4. NEVER affirm, agree with, or adopt the false premise that Article {queried_art} pertains to "{queried_topic}".
@@ -3126,10 +3126,10 @@ FACTUAL TRUTH: Article {queried_art} DOES NOT govern or mention "{queried_topic}
 BREVITY REQUIREMENT: Keep total response strictly under 120 words. Provide only a 1-2 sentence direct answer and the verbatim quote. Do NOT include Analysis or Legal Action Summary sections.
 
 MANDATORY MARKDOWN FORMAT:
-### 📌 Direct Answer & Legal Conclusion
+###  Direct Answer & Legal Conclusion
 [1-2 clear, direct sentences explicitly stating Article {queried_art} is NOT about "{queried_topic}", explaining what Article {queried_art} actually is, and redirecting to Article {redirect_art or 'the correct article'}.]
 
-### 📚 Governing Statutory Basis
+###  Governing Statutory Basis
 > **Article {queried_art} (Republic Act No. 386)**
 > "[Quote the core statutory text of Article {queried_art} verbatim from CONTEXT]"
 
@@ -3143,9 +3143,9 @@ CONTEXT:
 The user is inquiring about relevant Supreme Court jurisprudence, court rulings, and landmark cases interpreting {art_str}.
 
 MANDATORY RULES:
-1. Under `### 📌 Direct Answer & Legal Conclusion`: Summarize in 1-2 clear, direct sentences how Philippine courts and the Supreme Court interpret and apply {art_str}. STRICT BINDING: Anchor your direct answer strictly to {art_str}. Do NOT cite or introduce other articles (such as articles referenced incidentally inside case descriptions or citations, e.g., Articles 732, 752, 771, 908, 911). Focus exclusively on the queried article.
-2. Under `### 📚 Governing Statutory Basis`: Quote the governing statutory basis for {art_str} EXACTLY ONCE. Provide exactly one quote block for the queried article. NEVER repeat the verbatim block, and never quote the same article multiple times.
-3. Under `### ⚖️ Related Supreme Court Jurisprudence & Doctrines`:
+1. Under `###  Direct Answer & Legal Conclusion`: Summarize in 1-2 clear, direct sentences how Philippine courts and the Supreme Court interpret and apply {art_str}. STRICT BINDING: Anchor your direct answer strictly to {art_str}. Do NOT cite or introduce other articles (such as articles referenced incidentally inside case descriptions or citations, e.g., Articles 732, 752, 771, 908, 911). Focus exclusively on the queried article.
+2. Under `###  Governing Statutory Basis`: Quote the governing statutory basis for {art_str} EXACTLY ONCE. Provide exactly one quote block for the queried article. NEVER repeat the verbatim block, and never quote the same article multiple times.
+3. Under `###  Related Supreme Court Jurisprudence & Doctrines`:
    - For EACH supporting Supreme Court case provided in CONTEXT:
      - State the **Case Title** (*G.R. No. [number], [Date]*).
      - **Core Doctrine & Ruling**: In 1-2 clear, direct sentences, explain the legal rule or doctrine laid down by the Supreme Court interpreting this article.
@@ -3155,21 +3155,21 @@ MANDATORY RULES:
 5. PLAIN LANGUAGE FOR CITIZENS: Explain legal terms in simple, everyday language that non-lawyers can easily grasp.
 
 MANDATORY MARKDOWN FORMAT:
-### 📌 Direct Answer & Legal Conclusion
+### Direct Answer & Legal Conclusion
 [1-2 clear, direct sentences summarizing the judicial doctrine and legal conclusion strictly for {art_str}.]
 
-### 📚 Governing Statutory Basis
+###  Governing Statutory Basis
 (Quote the governing statutory basis for {art_str} EXACTLY ONCE:)
 > **Article [Number] (Republic Act No. 386 - Civil Code of the Philippines)**
 > "[Quote statutory text verbatim from CONTEXT]"
 
-### ⚖️ Related Supreme Court Jurisprudence & Doctrines
+###  Related Supreme Court Jurisprudence & Doctrines
 (Provide a dedicated bullet for each case found in CONTEXT:)
 - **[Case Title]** (*G.R. No. [GR Number], [Date]*):
   - **Core Doctrine & Ruling**: [1-2 concise sentences on the Supreme Court's ruling interpreting this article.]
   - **Factual Context & Application**: [1-2 concise sentences on how the Court applied the law in this decision.]
 
-### 📋 Practical Legal Implications
+###  Practical Legal Implications
 [1-2 clear paragraphs explaining what these judicial rulings mean in practice for ordinary citizens or litigants.]
 
 CONTEXT:
@@ -3189,10 +3189,10 @@ PLAIN LANGUAGE DIRECTIVE FOR CITIZENS:
 - Never leave Latin terms (e.g., negotiorum gestio, quasi-delict) or legal jargon (e.g., ratification, indemnity, reimbursement) without an immediate plain-language translation beside it.
 
 MANDATORY MARKDOWN FORMAT:
-### 📌 Direct Answer & Legal Conclusion
+###  Direct Answer & Legal Conclusion
 [1-2 clear, direct sentences explaining the provision directly in everyday plain language, with any technical or Latin terms translated.]
 
-### 📚 Governing Statutory Basis
+###  Governing Statutory Basis
 > **Article [Number] (Republic Act No. 386 - Civil Code of the Philippines)**
 > "[Quote the core statutory text verbatim from CONTEXT]"
 
@@ -3210,20 +3210,20 @@ MANDATORY RULES:
 2. STRICT CLOSED-BOOK STATUTORY GROUNDING: Strictly ground your definitions and explanations EXCLUSIVELY on the statutory text provided in CONTEXT. If any queried article is missing from CONTEXT, state that Article [X] was not found in the retrieved database; NEVER fabricate quotes or statutory rules for missing articles.
 3. Plain language: Write in short, clear sentences for ordinary citizens.
 4. STRICT UNILINGUAL OUTPUT: If the query is in Tagalog, write entirely in Tagalog (except statutory Article titles/numbers). If in English, write entirely in English. Never mix languages.
-5. OMIT THE `### 📋 Legal Action Summary` SECTION ENTIRELY: Because this is an informational and statutory explanation inquiry without an active lawsuit or dispute, do NOT include a Legal Action Summary.
+5. OMIT THE `###  Legal Action Summary` SECTION ENTIRELY: Because this is an informational and statutory explanation inquiry without an active lawsuit or dispute, do NOT include a Legal Action Summary.
 
 MANDATORY MARKDOWN FORMAT:
-### 📌 Direct Answer & Legal Conclusion
+###  Direct Answer & Legal Conclusion
 [2-3 clear sentences directly answering the inquiry, summarizing what each queried article covers, and highlighting their relationship or distinction.]
 
-### 📚 Governing Statutory Basis
+###  Governing Statutory Basis
 (Provide a dedicated quote block for EACH queried article found in CONTEXT:)
 > **Article [Number] (Republic Act No. 386 - Civil Code of the Philippines)**
 > *[Book / Title / Chapter Hierarchy]*
 >
 > "[Quote the core statutory text verbatim from CONTEXT]"
 
-### ⚖️ Legal Analysis & Comparison
+###  Legal Analysis & Comparison
 - **[Article Number / Title 1]**: [Plain-language explanation of what this article means, its requirements, and practical application.]
 - **[Article Number / Title 2]**: [Plain-language explanation of what this article means, its requirements, and practical application.]
 - **Relationship & Comparison (Ugnayan at Pagkakaiba)**: [Clear plain-language comparison of how these provisions differ or how they operate together under Philippine civil law.]
@@ -3244,10 +3244,10 @@ SELECT THIS BRANCH IF:
 The query is about Philippine Civil Law (e.g. contracts, loans, debts, sales, leases, property ownership, boundary disputes, wills, succession, inheritance, marriage, legal separation, torts, quasi-delicts, civil damages, or Civil Code structure/articles) AND is supported by the retrieved CONTEXT.
 
 RESPONSE STRUCTURE FOR BRANCH 1:
-### 📌 Direct Answer & Legal Conclusion
+###  Direct Answer & Legal Conclusion
 [1-2 clear, direct sentences answering the query immediately with the primary legal conclusion in plain language for ordinary citizens.]
 
-### 📚 Governing Statutory Basis
+###  Governing Statutory Basis
 (For each governing Civil Code article in CONTEXT, provide a dedicated blockquote EXACTLY ONCE. Never repeat verbatim quote blocks:)
 > **Article [Number] (Republic Act No. 386 - Civil Code of the Philippines)**
 > *[Book / Title / Chapter Hierarchy]*
@@ -3258,10 +3258,10 @@ RESPONSE STRUCTURE FOR BRANCH 1:
 - **[Element / Requisite 1]**: [Explanation in simple words]
 - **[Element / Requisite 2]**: [Explanation in simple words]
 
-### ⚖️ Legal Analysis & Application
+###  Legal Analysis & Application
 [Detailed analysis applying statutory provisions to the factual scenario. If Supreme Court jurisprudence cases are provided in CONTEXT, explicitly cite and discuss them (including Case Title and G.R. Number) to reinforce the legal analysis. Include a concrete everyday real-life example. Explain every legal or Latin term in simple everyday words.]
 
-### 📋 Legal Action Summary
+###  Legal Action Summary
 (Include ONLY when the query presents an actionable dispute, breach, claim, injury, or lawsuit requiring barangay conciliation or court filing. OMIT THIS ENTIRE SECTION for purely informational, educational, structural, or single-article lookups.)
 - **Governing Civil Code Article(s)**: [List specific RA 386 articles] + plain-language explanation.
 - **Competent Court / Jurisdiction**: [MTC (≤ ₱2M), RTC (> ₱2M or incapable of pecuniary estimation), Family Court] + plain explanation.
@@ -3280,10 +3280,10 @@ MANDATORY RULES FOR BRANCH 2:
 3. Explicitly name the governing code or statute and direct the citizen to the proper agency or forum with jurisdiction.
 
 RESPONSE STRUCTURE FOR BRANCH 2:
-### 📌 Scope & Governing Jurisdiction
+###  Scope & Governing Jurisdiction
 [Explain clearly and politely that this inquiry is governed by specialized Philippine law (e.g. Philippine Labor Law / Criminal Law / Tax Law), rather than the Civil Code.]
 
-### 🏛️ Proper Governing Body & Remedies
+###  Proper Governing Body & Remedies
 - **Governing Statute**: [Name the governing Philippine statute, e.g., Presidential Decree No. 442 (Labor Code of the Philippines), Revised Penal Code, National Internal Revenue Code (NIRC), etc.]
 - **Proper Forum / Government Agency**: [Name the agency or tribunal with jurisdiction, e.g., Department of Labor and Employment (DOLE) / NLRC, City Prosecutor's Office, Bureau of Internal Revenue (BIR), SEC, etc.]
 - **Appropriate Action & Next Steps**: [Explain the practical first step the citizen should take in plain, simple words.]
@@ -3301,10 +3301,10 @@ MANDATORY RULES FOR BRANCH 3:
 3. Politely refuse to answer and inform the user of CIVIL-LEX's specialized civil law scope.
 
 RESPONSE STRUCTURE FOR BRANCH 3:
-### 📌 Scope Boundary Notice
+###  Scope Boundary Notice
 [Politely explain that CIVIL-LEX is an AI assistant dedicated exclusively to Philippine Civil Law (Republic Act No. 386). State clearly that the user's inquiry (e.g. vehicle pricing, commercial product rates, shopping, technical coding) is a non-legal matter that falls outside the scope of Philippine Civil Law. If applicable, recommend consulting official manufacturer, dealership, or industry sources for commercial pricing.]
 
-### ⚖️ Philippine Civil Law Scope
+###  Philippine Civil Law Scope
 State clearly what civil law matters CIVIL-LEX can assist with:
 - **Contracts & Obligations**: Loan agreements, promissory notes, breach of contract, non-payment of debts, civil damages.
 - **Property & Real Estate**: Land ownership, title disputes, tenancy and lease, boundary conflicts, easements.

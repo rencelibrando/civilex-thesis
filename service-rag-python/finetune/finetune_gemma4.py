@@ -16,9 +16,6 @@ except ImportError:
     print("Error: 'packaging' library not found. Please run: pip install packaging")
     sys.exit(1)
 
-
-# 1. Critical Environment & Memory Safety on NVIDIA H100 SXM (Hopper SM90)
-
 # Prevent CUDA memory fragmentation on Hopper GPUs during long training runs
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
@@ -586,7 +583,7 @@ def main():
         "report_to": "none",
         "dataloader_num_workers": safe_num_workers,
         "dataloader_pin_memory": bool(torch.cuda.is_available()),
-        "gradient_checkpointing": True,
+        "gradient_checkpointing": config["training"].get("gradient_checkpointing", True),
         **gc_kwargs,
     }
 

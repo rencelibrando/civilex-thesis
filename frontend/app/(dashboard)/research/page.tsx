@@ -38,6 +38,8 @@ import {
   Clock,
   ArrowLeft,
   MessageSquare,
+  Copy,
+  Check,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -173,6 +175,44 @@ function AssistantMarkdown({ content }: { content: string }) {
         {content}
       </ReactMarkdown>
     </div>
+  );
+}
+
+function CopyMessageButton({ content, disabled }: { content: string; disabled?: boolean }) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = useCallback(async () => {
+    if (!content || disabled) return;
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(content);
+      } else {
+        const ta = document.createElement("textarea");
+        ta.value = content;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+      }
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // clipboard unavailable — no-op
+    }
+  }, [content, disabled]);
+
+  return (
+    <button
+      type="button"
+      onClick={handleCopy}
+      disabled={disabled || !content}
+      title={copied ? "Copied!" : "Copy text"}
+      aria-label={copied ? "Copied!" : "Copy response text"}
+      className="mt-1.5 inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-medium text-muted-foreground hover:text-foreground hover:bg-accent border border-transparent hover:border-border transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+    >
+      {copied ? <Check className="w-3 h-3 text-emerald-500" /> : <Copy className="w-3 h-3" />}
+      <span>{copied ? "Copied" : "Copy text"}</span>
+    </button>
   );
 }
 
@@ -626,6 +666,17 @@ export default function ResearchPage() {
   const isDraggingChatRef = useRef(false);
   const hasAutoCollapsedRef = useRef(false);
   const prevActiveDocIdRef = useRef<string | null>(null);
+  // Live refs so the global mousemove handler always sees fresh layout state
+  // (the handler is registered once with empty deps).
+  const docListWidthRef = useRef(230);
+  const chatPanelWidthRef = useRef(400);
+  const collapsedRef = useRef({ docs: false, chat: false });
+
+  useEffect(() => {
+    docListWidthRef.current = docListWidth;
+    chatPanelWidthRef.current = chatPanelWidth;
+    collapsedRef.current = { docs: isDocListCollapsed, chat: isChatCollapsed };
+  }, [docListWidth, chatPanelWidth, isDocListCollapsed, isChatCollapsed]);
 
   // Automatically collapse "My Documents" pane when document analysis chat is active
   useEffect(() => {
@@ -648,7 +699,7 @@ export default function ResearchPage() {
     try {
       const isCompact = typeof window !== "undefined" && window.innerWidth < 1440;
       const defaultDocWidth = isCompact ? 220 : 250;
-      const defaultChatWidth = isCompact ? Math.min(380, Math.floor(window.innerWidth * 0.35)) : 440;
+      const defaultChatWidth = isCompact ? Math.max(360, Math.min(380, Math.floor(window.innerWidth * 0.35))) : 440;
 
       const savedDocListWidth = localStorage.getItem("civilex_doc_list_width");
       if (savedDocListWidth) {
@@ -665,7 +716,7 @@ export default function ResearchPage() {
       const savedChatWidth = localStorage.getItem("civilex_chat_panel_width");
       if (savedChatWidth) {
         const val = parseInt(savedChatWidth, 10);
-        if (!isNaN(val) && val >= 320 && val <= 850) {
+        if (!isNaN(val) && val >= 360 && val <= 850) {
           setChatPanelWidth(isCompact ? Math.min(val, 400) : val);
         } else {
           setChatPanelWidth(defaultChatWidth);
@@ -696,15 +747,40 @@ export default function ResearchPage() {
       animationFrameId = requestAnimationFrame(() => {
         if (!containerRef.current) return;
         const rect = containerRef.current.getBoundingClientRect();
+        // Minimum center width that keeps the preview toolbar (incl. Hide Chat)
+        // fully visible. Pane drags are clamped so the center never shrinks below this.
+        const CENTER_MIN = rect.width < 1024 ? 300 : 400;
+        // Width consumed by dividers / margins between the three panes.
+        const CHROME = 24;
 
         if (isDraggingDocListRef.current) {
-          const maxWidth = Math.floor(rect.width * 0.32);
-          const newWidth = Math.min(maxWidth, Math.max(180, clientX - rect.left));
+          const rawWidth = clientX - rect.left;
+          if (rawWidth < 150) {
+            setIsDocListCollapsed(true);
+            return;
+          }
+          const chatVisible = collapsedRef.current.chat ? 0 : chatPanelWidthRef.current;
+          const maxWidth = Math.max(
+            180,
+            Math.min(Math.floor(rect.width * 0.3), rect.width - chatVisible - CENTER_MIN - CHROME)
+          );
+          const newWidth = Math.min(maxWidth, Math.max(180, rawWidth));
           setDocListWidth(newWidth);
         } else if (isDraggingChatRef.current) {
-          const maxWidth = Math.floor(rect.width * 0.48);
-          const minWidth = rect.width < 1024 ? 300 : 340;
-          const newWidth = Math.min(maxWidth, Math.max(minWidth, rect.right - clientX));
+          const rawWidth = rect.right - clientX;
+          // 360px is the narrowest usable chat (header + input stay intact).
+          // Dragging below 280px is treated as an intentional collapse gesture.
+          const minWidth = 360;
+          if (rawWidth < 280) {
+            setIsChatCollapsed(true);
+            return;
+          }
+          const docsVisible = collapsedRef.current.docs ? 0 : docListWidthRef.current;
+          const maxWidth = Math.max(
+            minWidth,
+            Math.min(Math.floor(rect.width * 0.44), rect.width - docsVisible - CENTER_MIN - CHROME)
+          );
+          const newWidth = Math.min(maxWidth, Math.max(minWidth, rawWidth));
           setChatPanelWidth(newWidth);
         }
       });
@@ -1213,11 +1289,11 @@ export default function ResearchPage() {
           className="flex flex-col h-full w-full shrink-0"
         >
           <div className="p-4 border-b border-border bg-card/50 shrink-0">
-            <div className="flex items-center justify-between mb-4">
-              <div>
-                <h2 className="font-bold text-foreground flex items-center gap-2">
-                  <FileText className="w-5 h-5 text-primary" />
-                  My Documents
+            <div className="flex items-center justify-between gap-2 mb-4">
+              <div className="min-w-0 flex-1">
+                <h2 className="font-bold text-foreground flex items-center gap-2 text-sm">
+                  <FileText className="w-5 h-5 text-primary shrink-0" />
+                  <span className="truncate">My Documents</span>
                 </h2>
                 <p className="text-[11px] text-muted-foreground mt-0.5 truncate hidden sm:block">
                   {docPanelCopy.panelSubtitle}
@@ -1228,7 +1304,7 @@ export default function ResearchPage() {
                 variant="ghost"
                 size="icon"
                 onClick={() => setIsDocListCollapsed(true)}
-                className="h-7 w-7 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent cursor-pointer"
+                className="h-7 w-7 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent cursor-pointer shrink-0"
                 title="Collapse Documents panel"
               >
                 <PanelLeftClose className="w-4 h-4" />
@@ -1342,6 +1418,8 @@ export default function ResearchPage() {
         <div
           onMouseDown={startDraggingDocList}
           role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize My Documents panel"
           tabIndex={0}
           title="Drag to resize My Documents panel (Double-click to reset)"
           onDoubleClick={() => {
@@ -1350,13 +1428,16 @@ export default function ResearchPage() {
               localStorage.setItem("civilex_doc_list_width", "260");
             } catch (e) { }
           }}
-          className={`hidden md:flex w-3.5 -mx-1.5 z-20 items-center justify-center cursor-col-resize group relative select-none touch-none shrink-0 ${isDraggingDocList ? "opacity-100" : "opacity-40 hover:opacity-100"
-            } transition-opacity`}
+          onKeyDown={(e) => {
+            if (e.key === "ArrowLeft") setDocListWidth((w) => Math.max(180, w - 20));
+            if (e.key === "ArrowRight") setDocListWidth((w) => Math.min(420, w + 20));
+          }}
+          className={`hidden md:flex w-4 -mx-1.5 z-20 items-center justify-center cursor-col-resize group relative select-none touch-none shrink-0 opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary rounded transition-opacity`}
         >
           <div
             className={`w-1 rounded-full transition-all duration-150 ${isDraggingDocList
-              ? "bg-primary w-1.5 h-16 shadow-sm"
-              : "bg-border group-hover:bg-primary/70 h-10 group-hover:h-14"
+              ? "bg-primary h-14"
+              : "bg-primary/40 dark:bg-primary/60 group-hover:bg-primary h-10 group-hover:h-12"
               }`}
           />
         </div>
@@ -1370,7 +1451,7 @@ export default function ResearchPage() {
         {activeDocument ? (
           <>
             {/* Toolbar */}
-            <div className="p-2 sm:p-3 border-b border-border bg-muted/50 flex items-center justify-between shrink-0 gap-1.5 sm:gap-2">
+            <div className="p-2 sm:p-3 border-b border-border bg-muted/50 flex items-center justify-between shrink-0 gap-1.5 sm:gap-2 overflow-hidden">
               <div className="flex items-center gap-1.5 sm:gap-2 min-w-0">
                 {/* Mobile & Tablet: open doc sheet */}
                 <Button
@@ -1487,7 +1568,7 @@ export default function ResearchPage() {
                     </Button>
                   </a>
                 )}
-                <Button variant="ghost" size="icon" className="hidden sm:inline-flex h-8 w-8 text-muted-foreground hover:text-foreground">
+                <Button variant="ghost" size="icon" className="hidden xl:inline-flex h-8 w-8 text-muted-foreground hover:text-foreground shrink-0">
                   <Maximize2 className="w-4 h-4" />
                 </Button>
                 {/* Desktop: Toggle button to collapse/expand the AI Assistant chat panel */}
@@ -1618,7 +1699,7 @@ export default function ResearchPage() {
         ) : (
           <div className="flex-1 flex flex-col bg-card/40 overflow-hidden">
             {/* Blank Analysis Toolbar */}
-            <div className="p-2 sm:p-3 border-b border-border bg-muted/40 flex items-center justify-between shrink-0 gap-2">
+            <div className="p-2 sm:p-3 border-b border-border bg-muted/40 flex items-center justify-between shrink-0 gap-2 overflow-hidden">
               <div className="flex items-center gap-2 min-w-0">
                 {/* Mobile Document Picker Button */}
                 <Button
@@ -1872,6 +1953,8 @@ export default function ResearchPage() {
         <div
           onMouseDown={startDraggingChat}
           role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize AI Assistant chat panel"
           tabIndex={0}
           title="Drag to resize AI Assistant chat panel (Double-click to reset)"
           onDoubleClick={() => {
@@ -1880,13 +1963,16 @@ export default function ResearchPage() {
               localStorage.setItem("civilex_chat_panel_width", "480");
             } catch (e) { }
           }}
-          className={`hidden lg:flex w-3.5 -mx-1.5 z-20 items-center justify-center cursor-col-resize group relative select-none touch-none shrink-0 ${isDraggingChat ? "opacity-100" : "opacity-40 hover:opacity-100"
-            } transition-opacity`}
+          onKeyDown={(e) => {
+            if (e.key === "ArrowLeft") setChatPanelWidth((w) => Math.min(850, w + 20));
+            if (e.key === "ArrowRight") setChatPanelWidth((w) => Math.max(360, w - 20));
+          }}
+          className={`hidden lg:flex w-4 -mx-1.5 z-20 items-center justify-center cursor-col-resize group relative select-none touch-none shrink-0 opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary rounded transition-opacity`}
         >
           <div
             className={`w-1 rounded-full transition-all duration-150 ${isDraggingChat
-              ? "bg-primary w-1.5 h-16 shadow-sm"
-              : "bg-border group-hover:bg-primary/70 h-10 group-hover:h-14"
+              ? "bg-primary h-14"
+              : "bg-primary/40 dark:bg-primary/60 group-hover:bg-primary h-10 group-hover:h-12"
               }`}
           />
         </div>
@@ -1968,16 +2054,6 @@ export default function ResearchPage() {
             >
               {chatPanelWidth}px
             </button>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              onClick={() => setIsChatCollapsed(true)}
-              className="hidden lg:inline-flex h-7 w-7 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent cursor-pointer shrink-0"
-              title="Collapse AI Assistant chat panel"
-            >
-              <PanelRightClose className="w-4 h-4" />
-            </Button>
           </div>
         </div>
 
@@ -2402,6 +2478,13 @@ export default function ResearchPage() {
                           msg.content
                         )}
                       </div>
+                      {/* Copy text for model responses */}
+                      {msg.role === 'assistant' && msg.content && (
+                        <CopyMessageButton
+                          content={msg.content}
+                          disabled={isLatestAssistant && isGenerating}
+                        />
+                      )}
                       {msg.role === 'assistant' && msg.citations && msg.citations.length > 0 && (
                         <div className="mt-2 w-full">
                           <Accordion className="w-full">

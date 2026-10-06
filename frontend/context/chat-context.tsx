@@ -779,8 +779,12 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                 const recoveredCitations = lastAssistant.citations || [];
                 const recoveredAnalytics = lastAssistant.legal_analytics || null;
 
-                if (abortControllerRef.current && !isExplicitlyStoppedRef.current) {
-                  abortControllerRef.current.abort();
+                if (abortControllerRef.current && !abortControllerRef.current.signal.aborted && !isExplicitlyStoppedRef.current) {
+                  try {
+                    abortControllerRef.current.abort("Reconciliation complete");
+                  } catch {
+                    // Ignore already aborted
+                  }
                   abortControllerRef.current = null;
                 }
 
@@ -845,10 +849,15 @@ export function ChatProvider({ children }: { children: ReactNode }) {
               typeof document !== "undefined" &&
               document.visibilityState === "hidden" &&
               abortControllerRef.current &&
+              !abortControllerRef.current.signal.aborted &&
               !isExplicitlyStoppedRef.current
             ) {
               console.log("[ChatContext] Background grace elapsed; aborting reader for recovery path.");
-              abortControllerRef.current.abort();
+              try {
+                abortControllerRef.current.abort("Background grace elapsed");
+              } catch {
+                // Ignore already aborted
+              }
             }
           }, 3500);
         }
@@ -913,8 +922,12 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       backgroundGraceTimerRef.current = null;
     }
     activeStreamContextRef.current = null;
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
+    if (abortControllerRef.current && !abortControllerRef.current.signal.aborted) {
+      try {
+        abortControllerRef.current.abort("Request cancelled by user");
+      } catch {
+        // Ignore already aborted
+      }
       abortControllerRef.current = null;
     }
     stopCharStream();
@@ -946,8 +959,12 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const handleNewChat = useCallback(() => {
     isExplicitlyStoppedRef.current = true;
     // 1. Instantly abort any active fetch request
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
+    if (abortControllerRef.current && !abortControllerRef.current.signal.aborted) {
+      try {
+        abortControllerRef.current.abort("New chat started");
+      } catch {
+        // Ignore already aborted
+      }
       abortControllerRef.current = null;
     }
     // 2. Clear character streaming timers & queues
@@ -1121,9 +1138,13 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       lastChunkTimeRef.current = Date.now();
       heartbeatTimer = setInterval(() => {
         if (Date.now() - lastChunkTimeRef.current > 30000) {
-          if (abortControllerRef.current && !isExplicitlyStoppedRef.current) {
+          if (abortControllerRef.current && !abortControllerRef.current.signal.aborted && !isExplicitlyStoppedRef.current) {
             console.warn("[ChatContext] SSE stream heartbeat timeout (30s) — aborting for DB recovery");
-            abortControllerRef.current.abort();
+            try {
+              abortControllerRef.current.abort("Stream heartbeat timeout");
+            } catch {
+              // Ignore already aborted
+            }
           }
         }
       }, 5000);
@@ -1315,7 +1336,16 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         setFollowUpPrompts(followUps);
       }
     } catch (error: any) {
-      console.error("Chat streaming error:", error);
+      const isAbort =
+        error?.name === "AbortError" ||
+        error?.message?.toLowerCase().includes("abort") ||
+        (typeof DOMException !== "undefined" && error instanceof DOMException && error.name === "AbortError");
+
+      if (!isAbort) {
+        console.error("Chat streaming error:", error);
+      } else {
+        console.log("[ChatContext] Chat streaming was aborted:", error?.message || "aborted");
+      }
       if (heartbeatTimer) {
         clearInterval(heartbeatTimer);
         heartbeatTimer = null;
@@ -1323,7 +1353,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       stopCharStream();
       setIsTyping(false);
 
-      if (error.name === "AbortError" && isExplicitlyStoppedRef.current) {
+      if (isAbort && isExplicitlyStoppedRef.current) {
         // Legitimate user cancellation via Stop button
         setRagStatus(null);
         setMessages((prev) =>
@@ -1510,9 +1540,13 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       lastChunkTimeRef.current = Date.now();
       heartbeatTimer = setInterval(() => {
         if (Date.now() - lastChunkTimeRef.current > 30000) {
-          if (abortControllerRef.current && !isExplicitlyStoppedRef.current) {
+          if (abortControllerRef.current && !abortControllerRef.current.signal.aborted && !isExplicitlyStoppedRef.current) {
             console.warn("[ChatContext] SSE clarification stream heartbeat timeout (30s) — aborting for DB recovery");
-            abortControllerRef.current.abort();
+            try {
+              abortControllerRef.current.abort("Stream heartbeat timeout");
+            } catch {
+              // Ignore already aborted
+            }
           }
         }
       }, 5000);
@@ -1681,7 +1715,16 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         setFollowUpPrompts(followUps);
       }
     } catch (error: any) {
-      console.error("Clarification re-submit error:", error);
+      const isAbort =
+        error?.name === "AbortError" ||
+        error?.message?.toLowerCase().includes("abort") ||
+        (typeof DOMException !== "undefined" && error instanceof DOMException && error.name === "AbortError");
+
+      if (!isAbort) {
+        console.error("Clarification re-submit error:", error);
+      } else {
+        console.log("[ChatContext] Clarification streaming was aborted:", error?.message || "aborted");
+      }
       if (heartbeatTimer) {
         clearInterval(heartbeatTimer);
         heartbeatTimer = null;
@@ -1689,7 +1732,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       stopCharStream();
       setIsTyping(false);
 
-      if (error.name === "AbortError" && isExplicitlyStoppedRef.current) {
+      if (isAbort && isExplicitlyStoppedRef.current) {
         setRagStatus(null);
         setMessages((prev) =>
           prev.map((msg) =>

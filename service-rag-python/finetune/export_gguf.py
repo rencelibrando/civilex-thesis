@@ -98,7 +98,7 @@ def main():
     
     # PASS 1: Extract Multimodal Projector (mmproj) GGUF
     
-    print(f"\n⚡ [1/3] Extracting Multimodal Projector: {mmproj_file.name}...")
+    print(f"\n [1/3] Extracting Multimodal Projector: {mmproj_file.name}...")
     mmproj_cmd = [
         sys.executable,
         str(convert_script),
@@ -115,7 +115,7 @@ def main():
     
     # PASS 2: Convert Language Model to Text-Only BF16 GGUF
     
-    print("\n⚡ [2/3] Converting Text Model weights to GGUF (BF16)...")
+    print("\n [2/3] Converting Text Model weights to GGUF (BF16)...")
     text_cmd = [
         sys.executable,
         str(convert_script),
@@ -138,13 +138,13 @@ def main():
     quant_bin = next((p for p in quant_bin_candidates if p.exists()), None)
 
     if not quant_bin:
-        print("\n🔧 Building llama-quantize binary...")
+        print("\nBuilding llama-quantize binary...")
         build_dir = llama_cpp_dir / "build"
         subprocess.run(["cmake", "-B", str(build_dir), str(llama_cpp_dir)], check=True)
         subprocess.run(["cmake", "--build", str(build_dir), "--target", "llama-quantize", "-j"], check=True)
         quant_bin = build_dir / "bin" / "llama-quantize"
 
-    print(f"\n⚡ [3/3] Quantizing Text Model to Q4_K_M: {text_q4_file.name}...")
+    print(f"\n [3/3] Quantizing Text Model to Q4_K_M: {text_q4_file.name}...")
     subprocess.run([str(quant_bin), str(text_bf16_file), str(text_q4_file), "q4_k_m"], check=True)
     print(f"✓ Quantized text model created: {text_q4_file.name}")
 

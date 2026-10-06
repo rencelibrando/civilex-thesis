@@ -1,6 +1,6 @@
 # CIVIL-LEX: AI-Powered Philippine Civil Law Legal Assistant & RAG System
 
-[![Model on Hugging Face](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-civilex--gemma--4--e4b-blue)](https://huggingface.co/renzzyyy1028/civilex-merged)
+[![Model on Hugging Face](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-civilex--gemma--4--e4b-blue)](https://huggingface.co/renzzyyy1028/civilex-gemma-4-e4b)
 [![Dataset on Hugging Face](https://img.shields.io/badge/%F0%9F%A4%97%20Dataset-civil--code--phil-green)](https://huggingface.co/datasets/renzzyyy1028/civil-code-phil)
 
 An intelligent, grounded Retrieval-Augmented Generation (RAG) system specialized in the **Civil Code of the Philippines (Republic Act No. 386)** and the **Family Code of the Philippines (Executive Order No. 209)**.

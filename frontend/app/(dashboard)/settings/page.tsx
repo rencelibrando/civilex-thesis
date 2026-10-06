@@ -43,6 +43,7 @@ export default function SettingsPage() {
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [passwordStatus, setPasswordStatus] = useState<"idle" | "updating" | "saved" | "error">("idle");
   const [passwordMessage, setPasswordMessage] = useState("");
+  const [isNewPasswordFocused, setIsNewPasswordFocused] = useState(false);
 
   // Delete account state
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
@@ -55,7 +56,7 @@ export default function SettingsPage() {
       try {
         const { data: { session } } = await supabase.auth.getSession();
         if (!session) return;
-        
+
         setUserId(session.user.id);
         setEmail(session.user.email || "");
 
@@ -94,7 +95,7 @@ export default function SettingsPage() {
             cache: "no-store",
           }).catch(() => null);
         }
-        
+
         if (res && res.ok) {
           const data = await res.json();
           // Strictly reject cross-user responses
@@ -456,8 +457,8 @@ export default function SettingsPage() {
   };
 
   return (
-    <div className="h-full overflow-y-auto custom-scrollbar">
-      <div className="w-full max-w-4xl 2xl:max-w-5xl 3xl:max-w-6xl mx-auto space-y-4 sm:space-y-6 2xl:space-y-8 animate-fade-in pb-8 sm:pb-12 px-1 sm:px-2">
+    <div className="flex-1 min-h-0 w-full overflow-y-auto overscroll-contain custom-scrollbar">
+      <div className="w-full max-w-4xl 2xl:max-w-5xl 3xl:max-w-6xl mx-auto space-y-4 sm:space-y-6 2xl:space-y-8 animate-fade-in pb-2 px-1 sm:px-2">
         <div>
           <h1 className="text-xl sm:text-2xl 2xl:text-3xl font-bold text-foreground">Settings</h1>
           <p className="text-muted-foreground text-xs sm:text-sm mt-1">
@@ -536,11 +537,10 @@ export default function SettingsPage() {
                 </div>
                 {avatarFeedback && (
                   <p
-                    className={`text-xs mt-0.5 font-medium ${
-                      avatarFeedback.type === "error"
+                    className={`text-xs mt-0.5 font-medium ${avatarFeedback.type === "error"
                         ? "text-destructive"
                         : "text-emerald-600 dark:text-emerald-400"
-                    }`}
+                      }`}
                   >
                     {avatarFeedback.message}
                   </p>
@@ -637,9 +637,16 @@ export default function SettingsPage() {
                       type={showNewPassword ? "text" : "password"}
                       value={newPassword}
                       onChange={(e) => setNewPassword(e.target.value)}
+                      onFocus={() => setIsNewPasswordFocused(true)}
+                      onBlur={(e) => {
+                        if (!e.currentTarget.parentElement?.contains(e.relatedTarget as Node)) {
+                          setIsNewPasswordFocused(false);
+                        }
+                      }}
                       placeholder="Create a strong password"
                       required
                       disabled={passwordStatus === "updating"}
+                      aria-describedby={isNewPasswordFocused || newPassword.length > 0 ? "settings-password-requirements" : undefined}
                       className="pr-10 bg-background/60 dark:bg-background/40 border-border focus-visible:ring-primary/30 focus-visible:border-primary rounded-xl h-10 transition-colors"
                     />
                     <button
@@ -676,7 +683,11 @@ export default function SettingsPage() {
                 </div>
               </div>
 
-              <PasswordChecklist id="settings-password-requirements" password={newPassword} />
+              <PasswordChecklist
+                id="settings-password-requirements"
+                password={newPassword}
+                visible={isNewPasswordFocused || newPassword.length > 0}
+              />
 
               {passwordMessage && (
                 <div className={`text-xs font-medium ${passwordStatus === "saved" ? "text-emerald-500" : "text-destructive"}`}>
@@ -707,38 +718,35 @@ export default function SettingsPage() {
         </Card>
 
         {/* Section 3: Danger Zone / Delete Account */}
-        <Card className="bg-destructive/5 border border-destructive/20 shadow-sm rounded-2xl overflow-hidden">
-          <CardHeader className="border-b border-destructive/15 px-6 py-5">
-            <CardTitle className="flex items-center gap-2 text-destructive font-semibold">
-              <AlertTriangle className="w-5 h-5 text-destructive" />
-              Danger Zone
-            </CardTitle>
-            <CardDescription className="text-muted-foreground">
-              Permanently delete your CIVIL-LEX account, personal profile, and legal research history.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="p-6">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-              <div className="space-y-1">
-                <h4 className="text-sm font-semibold text-foreground">Delete Account</h4>
-                <p className="text-xs text-muted-foreground max-w-lg leading-relaxed">
-                  Once your account is deleted, all associated data—including case concordance notes, briefs, and chat histories—will be permanently wiped from the database. This action is irreversible.
+        <Card className="bg-destructive/5 border border-destructive/20 shadow-xs rounded-xl p-3 sm:p-3.5">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex items-start sm:items-center gap-2.5 min-w-0">
+              <AlertTriangle className="w-4 h-4 text-destructive shrink-0 mt-0.5 sm:mt-0" />
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-semibold text-destructive">Danger Zone</span>
+                  <span className="text-[11px] text-muted-foreground hidden sm:inline">•</span>
+                  <span className="text-xs font-medium text-foreground hidden sm:inline">Delete Account</span>
+                </div>
+                <p className="text-[11px] text-muted-foreground">
+                  Permanently delete your account and all associated research data.
                 </p>
               </div>
-              <Button
-                variant="destructive"
-                onClick={() => {
-                  setDeleteConfirmText("");
-                  setDeleteError("");
-                  setIsDeleteDialogOpen(true);
-                }}
-                className="rounded-xl h-10 px-4 text-xs font-semibold shrink-0 cursor-pointer shadow-xs active:scale-95 transition-all"
-              >
-                <Trash2 className="w-4 h-4 mr-1.5" />
-                Delete Account
-              </Button>
             </div>
-          </CardContent>
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={() => {
+                setDeleteConfirmText("");
+                setDeleteError("");
+                setIsDeleteDialogOpen(true);
+              }}
+              className="rounded-lg h-7 px-2.5 text-[11px] font-medium shrink-0 cursor-pointer shadow-xs active:scale-95 transition-all self-end sm:self-center"
+            >
+              <Trash2 className="w-3 h-3 mr-1.5" />
+              Delete Account
+            </Button>
+          </div>
         </Card>
 
         {/* Delete Account Confirmation Modal */}

@@ -33,6 +33,7 @@ export default function SignupPage() {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const [isPasswordFocused, setIsPasswordFocused] = useState(false);
 
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
@@ -182,12 +183,19 @@ export default function SignupPage() {
               required
               value={password}
               onChange={(e) => setPassword(e.target.value)}
+              onFocus={() => setIsPasswordFocused(true)}
+              onBlur={(e) => {
+                if (!e.currentTarget.parentElement?.contains(e.relatedTarget as Node)) {
+                  setIsPasswordFocused(false);
+                }
+              }}
               placeholder="Create a strong password"
-              aria-describedby="password-requirements"
+              aria-describedby={isPasswordFocused || password.length > 0 ? "password-requirements" : undefined}
               className={`${INPUT_CLASS} pr-10`}
             />
             <button
               type="button"
+              tabIndex={-1}
               onClick={() => setShowPassword(!showPassword)}
               className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors p-1"
               aria-label={showPassword ? "Hide password" : "Show password"}
@@ -195,7 +203,11 @@ export default function SignupPage() {
               {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
             </button>
           </div>
-          <PasswordChecklist id="password-requirements" password={password} />
+          <PasswordChecklist
+            id="password-requirements"
+            password={password}
+            visible={isPasswordFocused || password.length > 0}
+          />
         </div>
 
         <div className="space-y-1.5">

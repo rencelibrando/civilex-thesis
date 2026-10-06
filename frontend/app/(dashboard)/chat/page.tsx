@@ -97,6 +97,44 @@ function AssistantMarkdown({ content }: { content: string }) {
   );
 }
 
+function CopyMessageButton({ content, disabled }: { content: string; disabled?: boolean }) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = useCallback(async () => {
+    if (!content || disabled) return;
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(content);
+      } else {
+        const ta = document.createElement("textarea");
+        ta.value = content;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+      }
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // clipboard unavailable — no-op
+    }
+  }, [content, disabled]);
+
+  return (
+    <button
+      type="button"
+      onClick={handleCopy}
+      disabled={disabled || !content}
+      title={copied ? "Copied!" : "Copy text"}
+      aria-label={copied ? "Copied!" : "Copy response text"}
+      className="mt-1.5 inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-medium text-muted-foreground hover:text-foreground hover:bg-accent border border-transparent hover:border-border transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+    >
+      {copied ? <Check className="w-3 h-3 text-emerald-500" /> : <Copy className="w-3 h-3" />}
+      <span>{copied ? "Copied" : "Copy text"}</span>
+    </button>
+  );
+}
+
 
 // Typewriter effect for the starting welcome message
 
@@ -807,6 +845,14 @@ export default function ChatPage() {
                             <span className="whitespace-pre-wrap">{msg.content}</span>
                           )}
                         </div>
+                      )}
+
+                      {/* Copy text for model responses */}
+                      {isAssistant && msg.content && !msg.clarificationData && (
+                        <CopyMessageButton
+                          content={msg.content}
+                          disabled={isLatestAssistant && isGenerating}
+                        />
                       )}
 
                       {/* Legal Reasoning Accordion */}

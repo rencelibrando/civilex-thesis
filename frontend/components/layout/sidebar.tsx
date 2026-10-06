@@ -136,7 +136,7 @@ export function SidebarNav({ className }: { className?: string }) {
 
 export function Sidebar() {
   return (
-    <aside className="w-56 xl:w-60 2xl:w-64 flex-shrink-0 border-r border-border bg-sidebar h-[calc(100dvh-3.5rem)] 2xl:h-[calc(100dvh-4rem)] flex flex-col justify-between hidden lg:flex transition-[width] duration-200">
+    <aside className="w-56 xl:w-60 2xl:w-64 flex-shrink-0 border-r border-border bg-sidebar h-[calc(100dvh-3.5rem)] 2xl:h-[calc(100dvh-4rem)] flex flex-col justify-between hidden lg:flex transition-[width] duration-200 overscroll-contain">
       <SidebarNav />
     </aside>
   );

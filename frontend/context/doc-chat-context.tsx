@@ -417,8 +417,10 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
                   } catch (_) {}
                 }
 
-                if (abortControllersRef.current[docId] && !explicitlyStoppedDocsRef.current[docId]) {
-                  abortControllersRef.current[docId]?.abort();
+                if (abortControllersRef.current[docId] && !abortControllersRef.current[docId]?.signal.aborted && !explicitlyStoppedDocsRef.current[docId]) {
+                  try {
+                    abortControllersRef.current[docId]?.abort("Reconciliation complete");
+                  } catch {}
                   abortControllersRef.current[docId] = null;
                 }
 
@@ -491,10 +493,13 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
                 typeof document !== "undefined" &&
                 document.visibilityState === "hidden" &&
                 abortControllersRef.current[docId] &&
+                !abortControllersRef.current[docId]?.signal.aborted &&
                 !explicitlyStoppedDocsRef.current[docId]
               ) {
                 console.log(`[DocChatContext] Background grace elapsed for doc ${docId}; aborting reader for recovery path.`);
-                abortControllersRef.current[docId]?.abort();
+                try {
+                  abortControllersRef.current[docId]?.abort("Background grace elapsed");
+                } catch {}
               }
             }, 3500);
           }
@@ -818,8 +823,10 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
       backgroundGraceTimersRef.current[docId] = null;
     }
     activeDocStreamContextRef.current[docId] = null;
-    if (abortControllersRef.current[docId]) {
-      abortControllersRef.current[docId]?.abort();
+    if (abortControllersRef.current[docId] && !abortControllersRef.current[docId]?.signal.aborted) {
+      try {
+        abortControllersRef.current[docId]?.abort("Analysis stopped by user");
+      } catch {}
       abortControllersRef.current[docId] = null;
     }
     stopCharStream();
@@ -996,9 +1003,11 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
         lastDocChunkTimeRef.current[docId] = Date.now();
         heartbeatTimer = setInterval(() => {
           if (Date.now() - (lastDocChunkTimeRef.current[docId] || 0) > 30000) {
-            if (abortControllersRef.current[docId] && !explicitlyStoppedDocsRef.current[docId]) {
+            if (abortControllersRef.current[docId] && !abortControllersRef.current[docId]?.signal.aborted && !explicitlyStoppedDocsRef.current[docId]) {
               console.warn(`[DocChatContext] SSE heartbeat timeout (30s) for doc ${docId} — aborting for DB recovery`);
-              abortControllersRef.current[docId]?.abort();
+              try {
+                abortControllersRef.current[docId]?.abort("Stream heartbeat timeout");
+              } catch {}
             }
           }
         }, 5000);
@@ -1244,7 +1253,12 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
         }
         stopCharStream();
 
-        if (err.name === "AbortError" && explicitlyStoppedDocsRef.current[docId]) {
+        const isAbort =
+          err?.name === "AbortError" ||
+          err?.message?.toLowerCase().includes("abort") ||
+          (typeof DOMException !== "undefined" && err instanceof DOMException && err.name === "AbortError");
+
+        if (isAbort && explicitlyStoppedDocsRef.current[docId]) {
           setDocChats((prev) => {
             const cur = prev[docId] || INITIAL_STATE;
             return {

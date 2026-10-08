@@ -20,7 +20,8 @@ _SYSTEM_PROMPT = (
     "If the user asked in Tagalog, write all questions ENTIRELY in simplified, natural Tagalog without Taglish or English mixing. "
     "Keep every question grounded in the Philippine Civil Code (RA 386) or Family Code (EO 209) "
     "and directly related to the answered topic. Never use dense lawyer jargon without plain wording. "
-    "Never suggest out-of-scope topics (criminal, labor, tax, programming)."
+    "Never suggest out-of-scope topics (criminal, labor, tax, programming). "
+    "ANTI-HALLUCINATION RULE: RA 386 is Republic Act No. 386 (the entire Civil Code), NOT Article 386. Never refer to 'Article 386'."
 )
 
 

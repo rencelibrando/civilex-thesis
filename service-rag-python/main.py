@@ -508,9 +508,13 @@ PHILIPPINE_LEGAL_EXPANSIONS = [
      'physical injuries quasi delict assault battery fault negligence civil liability damages Art 33 Art 2176 Art 2219 Art 20 Art 21'),
     
     # Neighbor disputes / boundary / nuisance / noise / easement
-    (r'\b(kapitbahay|boundary|hangganan|bakod|harang|ingay|maingay|amoy|mabahong|perhuwisyo|istorbo|harang sa daan)\b',
+    (r'\b(boundary|hangganan|bakod|harang sa daan|hukay|paghukay|excavation|buhangin sa lupa|amoy ng babuyan|mabahong amoy|ingay ng kapitbahay|perhuwisyo ng kapitbahay|perwisyo ng kapitbahay)\b|\bkapitbahay\s+(?:na\s+)?(?:maingay|mabaho|mabahong|naghukay|nag-excavate|humukay|nagpatayo|nagtayo|hinarangan|humaharang|naglagay ng bakod|harang|istorbo)\b',
      'neighbor property nuisance easement lateral support damages Art 684 Art 694 Art 2176'),
     
+    # Foreign land ownership / aliens / buying land as foreigner / nationality disqualification / void sales
+    (r'\b(foreigner|foreigners|alien|aliens|dayuhan|banyaga|kano|puti|american|america|taga[- ]ibang bansa|balikbayan|dual citizen|bili ng lupa.*(?:dayuhan|foreigner|alien)|(?:dayuhan|foreigner|alien).*bili ng lupa|can a foreigner buy land|can aliens own land|bumili ng lupa.*(?:foreigner|dayuhan|america|kano)|naka[- ]?bili.*lupa.*(?:america|dayuhan|foreigner)|bumili.*lupa.*(?:america|dayuhan|foreigner))\b',
+     'foreign land ownership prohibition alien disqualified from owning private land 1987 Constitution Article XII Section 7 void contract void ab initio capacity to buy Batas Pambansa 185 RA 9225 dual citizenship Condominium Act RA 4726 long term lease RA 7652 Anti-Dummy Law CA 108 Art 1409 Art 1491 Art 1306 Art 17'),
+
     # Land encroachment / building on another's land / land disputes / accession
     (r'\b(tinayuan ng bahay|tinayuan ng pader|inangkin ang lupa|inagaw ang lupa|sukat ng lupa|kamkam|kinamkam|nagtayo sa lupa|nagpatayo sa lupa ng iba|builder in good faith|builder in bad faith)\b',
      'ownership property possession accession builder in good faith bad faith indemnity necessary expenses right of retention Art 448 Art 449 Art 450 Art 546'),
@@ -521,7 +525,7 @@ PHILIPPINE_LEGAL_EXPANSIONS = [
     
     # Debt / loans / bounced checks / collection / interest / promissory note
     (r'\b(utang|umutang|pautang|pautangan|singil|maningil|sinisingil|bayad|di nagbayad|hindi nagbayad|tseke|talbog|bounced check|borrow|borrowed|lended|lend|loan|promissory note|refuses to pay|refused to pay|unpaid loan|small claims|sum of money|money debt)\b',
-     'obligations contracts breach of contract delay default mora payment legal interest promissory note sum of money Art 1169 Art 1170 Art 1231 Art 1232 Art 1956'),
+     'obligations contracts breach of contract delay default mora payment legal interest promissory note sum of money loan mutuum Art 1956 Art 1953 Art 1249 Art 2209 Art 1169 Art 1170 Art 1231 Art 1232'),
     
     # Contracts / agreements / fraud / void / consent
     (r'\b(kontrata|kasulatan|pirma|pinapirma|kasunduan|usapan|bale|contract|consent|void|niloko|nauto|panlilinlang|dolo|intimidation|undue influence)\b',
@@ -1254,14 +1258,23 @@ def compute_embedding(query: str) -> list:
 STATUTORY_COMPANION_GRAPH: Dict[str, List[str]] = {
     # Obligations & Contracts (Rescission, Delay, Damages, Restitution, Extinction)
     "RA386-ART1191": ["RA386-ART1170", "RA386-ART1169", "RA386-ART1385"],
-    "RA386-ART1170": ["RA386-ART1169", "RA386-ART1191", "RA386-ART2201"],
-    "RA386-ART1169": ["RA386-ART1170", "RA386-ART1191", "RA386-ART1231", "RA386-ART1232"],
-    "RA386-ART1231": ["RA386-ART1232", "RA386-ART1169", "RA386-ART1170"],
+    "RA386-ART1170": ["RA386-ART1169", "RA386-ART1191", "RA386-ART2201", "RA386-ART2209"],
+    "RA386-ART1169": ["RA386-ART1170", "RA386-ART1191", "RA386-ART1231", "RA386-ART1956", "RA386-ART2209"],
+    "RA386-ART1231": ["RA386-ART1232", "RA386-ART1169", "RA386-ART1170", "RA386-ART1249"],
     "RA386-ART1305": ["RA386-ART1318", "RA386-ART1159"],
     "RA386-ART1318": ["RA386-ART1319", "RA386-ART1347", "RA386-ART1350"],
     "RA386-ART1381": ["RA386-ART1385", "RA386-ART1191"],
     "RA386-ART1390": ["RA386-ART1391", "RA386-ART1398"],
-    "RA386-ART1409": ["RA386-ART1410", "RA386-ART1411"],
+    "RA386-ART1409": ["RA386-ART1410", "RA386-ART1411", "RA386-ART1491", "RA386-SPECIAL-LAWS-AND-AMENDMENTS"],
+    "RA386-ART1491": ["RA386-ART1409", "RA386-SPECIAL-LAWS-AND-AMENDMENTS"],
+
+    # Loan (Mutuum & Commodatum), Interest & Promissory Notes
+    "RA386-ART1956": ["RA386-ART1953", "RA386-ART1249", "RA386-ART2209", "RA386-ART1169"],
+    "RA386-ART1953": ["RA386-ART1956", "RA386-ART1933", "RA386-ART1249"],
+    "RA386-ART1933": ["RA386-ART1953", "RA386-ART1956"],
+    "RA386-ART1249": ["RA386-ART1956", "RA386-ART1231", "RA386-ART1169"],
+    "RA386-ART2209": ["RA386-ART1956", "RA386-ART1169", "RA386-ART1170"],
+    "RA386-ART1413": ["RA386-ART1956", "RA386-ART2209"],
 
     # Sales & Hidden Defects (Accion Redhibitoria / Quanti Minoris)
     "RA386-ART1458": ["RA386-ART1475", "RA386-ART1498"],
@@ -1600,19 +1613,23 @@ def rank_and_stratify_citations(
 
         # Companion expansion boost
         if it.get('is_companion'):
-            score += 15.0
+            score += 10.0
 
-        # Linked jurisprudence boost
-        if it.get('is_linked_jurisprudence'):
-            score += 30.0
-
-        # Substantive statutory Civil Code precedence
+        # Substantive statutory Civil Code precedence vs Jurisprudence
         if ptype == 'article':
-            score += 2.0 if is_juris else 8.0
+            if it.get('is_companion'):
+                score += 15.0 if not is_juris else 5.0
+            else:
+                score += 30.0 if not is_juris else 5.0
         elif ptype == 'user_document':
             score += 6.0
         elif ptype == 'case':
-            score += 25.0 if is_juris else 2.0
+            if is_juris:
+                score += 35.0
+            elif it.get('is_linked_jurisprudence'):
+                score += 20.0
+            else:
+                score += 5.0
 
         # Topical keyword resonance
         content_lower = str(it.get('content', '')).lower()
@@ -1626,11 +1643,21 @@ def rank_and_stratify_citations(
             'settlement', 'support', 'quasi-delict', 'tort', 'quasi-contract',
             'unjust enrichment', 'fortuitous', 'force majeure', 'good faith',
             'bad faith', 'restitution', 'annulment', 'psychological incapacity',
-            'utang', 'upa', 'mana', 'sangla', 'bakod', 'danyos'
+            'utang', 'upa', 'mana', 'sangla', 'bakod', 'danyos', 'promissory',
+            'promissory note', 'interes', 'interest', 'sum of money', 'collateral'
         ]
         for stem in key_legal_stems:
             if stem in query_lower and stem in content_lower:
                 score += 3.0
+
+        # Dedicated core statute relevance boost for prominent dispute domains
+        if ptype == 'article':
+            if ('promissory' in query_lower or 'interes' in query_lower or 'interest' in query_lower) and ('1956' in pid or 'stipulated in writing' in content_lower):
+                score += 15.0
+            if ('utang' in query_lower or 'loan' in query_lower) and any(x in pid for x in ['1953', '1956', '1249']):
+                score += 10.0
+            if any(w in query_lower for w in ['america', 'american', 'dayuhan', 'foreigner', 'alien', 'banyaga']) and any(x in pid for x in ['1409', '1491', 'SPECIAL-LAWS']):
+                score += 25.0
 
         return score
 
@@ -1675,16 +1702,16 @@ def rank_and_stratify_citations(
             if is_juris and active_statute_count >= max_active_statutes:
                 item['is_in_context'] = False
                 item['rank_status'] = 'out_of_rank'
-                suitability = round(min(68.5, max(45.0, base_sim * 100.0 if base_sim > 0 else 60.0)), 1)
+                suitability = round(min(68.5, max(40.0, base_sim * 100.0 if base_sim > 0 else 60.0)), 1)
             else:
-                suitability = round(max(95.0, 98.5 - (active_statute_count * 0.5)), 1)
+                suitability = round(max(95.0, min(prev_suitability - 0.5, 98.5 - (active_statute_count * 0.5))), 1)
                 item['is_in_context'] = True
                 item['rank_status'] = 'primary'
                 active_statute_count += 1
 
         elif item.get('is_linked_jurisprudence'):
-            if active_case_count < max_active_cases:
-                suitability = round(max(91.0, 96.0 - (active_case_count * 0.5)), 1)
+            if active_case_count < max_active_cases and idx < context_budget:
+                suitability = round(max(82.0, min(prev_suitability - 0.5, 94.0 - (active_case_count * 0.5))), 1)
                 item['is_in_context'] = True
                 item['rank_status'] = 'primary'
                 active_case_count += 1
@@ -1695,9 +1722,9 @@ def rank_and_stratify_citations(
 
         elif ptype == 'case':
             # Case candidates (hybrid / supplementary)
-            if base_sim >= 0.55 and active_case_count < max_active_cases:
-                score_derived = 75.0 + ((base_sim - 0.55) / 0.45) * 22.5
-                suitability = round(max(80.0, min(prev_suitability - 0.2, score_derived)), 1)
+            if base_sim >= 0.55 and active_case_count < max_active_cases and idx < context_budget:
+                score_derived = 75.0 + ((base_sim - 0.55) / 0.45) * 18.0
+                suitability = round(max(80.0, min(prev_suitability - 0.5, score_derived)), 1)
                 item['is_in_context'] = True
                 item['rank_status'] = 'primary'
                 active_case_count += 1
@@ -1710,9 +1737,10 @@ def rank_and_stratify_citations(
                 item['is_in_context'] = False
                 item['rank_status'] = 'out_of_rank'
 
-        else:
+        elif ptype == 'article':
+            # Non-exact article matches
             if is_juris:
-                # In jurisprudence inquiries, unrelated articles MUST NOT enter active context
+                # In jurisprudence inquiries, unrelated articles must not enter active context
                 if base_sim > 0:
                     score_derived = min(69.0, max(45.0, base_sim * 100.0))
                 else:
@@ -1721,24 +1749,34 @@ def rank_and_stratify_citations(
                 item['is_in_context'] = False
                 item['rank_status'] = 'out_of_rank'
             else:
-                # Score-derived suitability with sim >= 0.55 gate
-                passes_gate = base_sim >= 0.55
-                if passes_gate and idx < context_budget:
-                    # Active Grounding authorities: calibrated score-derived within [80.0%, 97.5%]
-                    score_derived = 75.0 + ((base_sim - 0.55) / 0.45) * 22.5
-                    suitability = round(max(80.0, min(prev_suitability - 0.2, score_derived)), 1)
+                passes_gate = base_sim >= 0.55 or item.get('is_companion') or item.get('is_expansion_candidate') or (item.get('rrf_score', 0) > 0)
+                if passes_gate and active_statute_count < max_active_statutes and idx < context_budget:
+                    statute_target = 98.0 - (active_statute_count * 0.5)
+                    suitability = round(max(88.0, min(prev_suitability - 0.5, statute_target)), 1)
                     item['is_in_context'] = True
                     item['rank_status'] = 'primary'
+                    active_statute_count += 1
                 else:
-                    # Out-of-rank authorities: strictly < 80.0% (and if sim < 0.55, strictly < 70.0%)
-                    if base_sim > 0:
-                        score_derived = min(69.0, max(45.0, base_sim * 100.0))
-                    else:
-                        out_idx = idx - context_budget
-                        score_derived = 68.0 - (out_idx * 1.5)
+                    out_idx = max(0, idx - context_budget)
+                    score_derived = 68.0 - (out_idx * 0.5)
                     suitability = round(max(40.0, min(prev_suitability - 0.2, score_derived)), 1)
                     item['is_in_context'] = False
                     item['rank_status'] = 'out_of_rank'
+
+        else:
+            # User documents or fallback items
+            passes_gate = base_sim >= 0.55
+            if passes_gate and idx < context_budget:
+                score_derived = 75.0 + ((base_sim - 0.55) / 0.45) * 22.5
+                suitability = round(max(80.0, min(prev_suitability - 0.2, score_derived)), 1)
+                item['is_in_context'] = True
+                item['rank_status'] = 'primary'
+            else:
+                out_idx = max(0, idx - context_budget)
+                score_derived = 68.0 - (out_idx * 1.5)
+                suitability = round(max(40.0, min(prev_suitability - 0.2, score_derived)), 1)
+                item['is_in_context'] = False
+                item['rank_status'] = 'out_of_rank'
 
         prev_suitability = suitability
         item['suitability_percent'] = suitability
@@ -1752,7 +1790,7 @@ def prune_retrieval_noise(items: List[Dict[str, Any]], max_items: int = 15) -> L
     return rank_and_stratify_citations(items, context_budget=max_items)
 
 
-def search_with_embedding(q_emb: list, query: str, document_id: Optional[str] = None):
+def search_with_embedding(q_emb: list, query: str, document_id: Optional[str] = None, raw_query: Optional[str] = None):
     """Executes high-recall hybrid RRF search, companion expansion, and full-spectrum citation ranking."""
     conn = get_db_connection()
     try:
@@ -1925,7 +1963,11 @@ def search_with_embedding(q_emb: list, query: str, document_id: Optional[str] = 
                         gen_item['suitability_percent'] = 98.5
                         exact_articles.append(gen_item)
 
-            unique_art_nums = parse_article_numbers(query)
+            # Distinguish user's explicit requested articles from expansion suggestions
+            user_facing_q = raw_query or re.sub(r'\(Philippine legal context:.*?\)', '', query, flags=re.IGNORECASE)
+            user_facing_q = re.sub(r'\([^)]*?\)', '', user_facing_q).strip() or query
+
+            unique_art_nums = parse_article_numbers(user_facing_q)
             if unique_art_nums:
                 exact_ids = [f"RA386-ART{num}" for num in unique_art_nums]
                 cur.execute("""
@@ -1941,6 +1983,27 @@ def search_with_embedding(q_emb: list, query: str, document_id: Optional[str] = 
                         exact_item['display_suitability'] = 98.5
                         exact_item['suitability_percent'] = 98.5
                         exact_articles.append(exact_item)
+
+            # Query expansion articles (domain suggestions) fetched with is_exact = False
+            all_query_art_nums = parse_article_numbers(query)
+            expansion_art_nums = [n for n in all_query_art_nums if n not in unique_art_nums]
+            expansion_articles = []
+            if expansion_art_nums:
+                exp_ids = [f"RA386-ART{num}" for num in expansion_art_nums]
+                cur.execute("""
+                    SELECT chunk_id, parent_type, parent_id, content
+                    FROM document_chunks
+                    WHERE parent_id = ANY(%s) AND parent_type = 'article';
+                """, (exp_ids,))
+                fetched_exp = {row['parent_id']: row for row in cur.fetchall()}
+                for eid in exp_ids:
+                    if eid in fetched_exp and eid not in {a['parent_id'] for a in exact_articles}:
+                        exp_item = fetched_exp[eid]
+                        exp_item['is_exact'] = False
+                        exp_item['is_expansion_candidate'] = True
+                        exp_item['rrf_score'] = 0.03
+                        exp_item['similarity'] = 0.78
+                        expansion_articles.append(exp_item)
                     
             # 2. Top article matches (Civil Code statutes) via Hybrid Search - PRIORITIZED
             articles = exact_articles.copy()
@@ -1950,6 +2013,11 @@ def search_with_embedding(q_emb: list, query: str, document_id: Optional[str] = 
             for ha in hybrid_articles:
                 if ha['parent_id'] not in exact_ids_set:
                     articles.append(ha)
+                    exact_ids_set.add(ha['parent_id'])
+            for ea in expansion_articles:
+                if ea['parent_id'] not in exact_ids_set:
+                    articles.append(ea)
+                    exact_ids_set.add(ea['parent_id'])
 
             # 2.5 Statutory Companion Expansion (Codified Association Graph for Context Recall)
             # Skip for jurisprudence inquiries to prevent context pollution
@@ -2027,16 +2095,14 @@ def search_with_embedding(q_emb: list, query: str, document_id: Optional[str] = 
                     is_simple=True
                 )
 
-            if is_multi_article and exact_articles and not is_jurisprudence_query(query):
+            is_dispute = is_dispute_query(query)
+            if is_multi_article and exact_articles and not is_dispute and not is_jurisprudence_query(query):
                 logging.info(f"Multi-article statutory lookup detected for articles: {unique_art_nums}")
-                is_dispute = is_dispute_query(query)
-                # If pure statutory inquiry/comparison, focus context budget on the queried articles
-                multi_budget = min(15, max(len(exact_articles), 6)) if is_dispute else len(exact_articles)
                 all_found = articles
                 return rank_and_stratify_citations(
                     all_found,
                     query,
-                    context_budget=multi_budget,
+                    context_budget=len(exact_articles),
                     distractor_info=None,
                     is_simple=False
                 )
@@ -2049,14 +2115,20 @@ def search_with_embedding(q_emb: list, query: str, document_id: Optional[str] = 
                 target_articles = exact_articles if exact_articles else articles[:4]
                 article_ids = [a['parent_id'] for a in target_articles]
                 cur.execute("""
-                    SELECT r.article_id, j.case_uid, j.title, j.gr_number, j.content_summary, j.source_url, j.decision_date
-                    FROM article_jurisprudence_relations r
-                    JOIN jurisprudence_cases j ON r.case_uid = j.case_uid
-                    WHERE r.article_id = ANY(%s)
-                      AND j.content_summary IS NOT NULL
-                      AND j.content_summary != ''
-                      AND j.content_summary != 'Summary unavailable.'
-                      AND j.content_summary NOT ILIKE '%%summary unavailable%%'
+                    WITH ranked_cases AS (
+                        SELECT r.article_id, j.case_uid, j.title, j.gr_number, j.content_summary, j.source_url, j.decision_date,
+                               ROW_NUMBER() OVER (PARTITION BY r.article_id ORDER BY j.decision_date DESC NULLS LAST) as rn
+                        FROM article_jurisprudence_relations r
+                        JOIN jurisprudence_cases j ON r.case_uid = j.case_uid
+                        WHERE r.article_id = ANY(%s)
+                          AND j.content_summary IS NOT NULL
+                          AND j.content_summary != ''
+                          AND j.content_summary != 'Summary unavailable.'
+                          AND j.content_summary NOT ILIKE '%%summary unavailable%%'
+                    )
+                    SELECT article_id, case_uid, title, gr_number, content_summary, source_url, decision_date
+                    FROM ranked_cases
+                    WHERE rn <= 2
                     LIMIT %s;
                 """, (article_ids, case_limit))
                 
@@ -2147,7 +2219,7 @@ def embed_and_search(query: str, document_id: Optional[str] = None, history: Lis
     """Convenience wrapper for synchronous embedding and search."""
     search_q = build_contextual_query(query, history or [], None)
     q_emb = compute_embedding(search_q)
-    return search_with_embedding(q_emb, search_q, document_id)
+    return search_with_embedding(q_emb, search_q, document_id, raw_query=query)
 
 
 def format_context_item(row: dict, doc_filename: Optional[str] = None) -> str:
@@ -2849,7 +2921,7 @@ YOUR MANDATORY REDIRECTION RULES:
                     else "Searching Philippine Civil Code articles & jurisprudence..."
                 )
                 yield f"data: {dumps({'type': 'status', 'stage': 'retrieving', 'message': ret_msg})}\n\n"
-                results = await asyncio.to_thread(search_with_embedding, q_emb, search_query, request.document_id)
+                results = await asyncio.to_thread(search_with_embedding, q_emb, search_query, request.document_id, effective_query)
                 logging.info(f"Found {len(results)} relevant citations for current query.")
                 await asyncio.sleep(0.65)
 
@@ -2908,12 +2980,19 @@ YOUR MANDATORY REDIRECTION RULES:
                         ckey = get_citation_key(pc)
                         if ckey not in seen_cit_keys:
                             seen_cit_keys.add(ckey)
-                            retained_prior.append(pc)
+                            dampened = dict(pc)
+                            dampened['is_in_context'] = False
+                            dampened['rank_status'] = 'out_of_rank'
+                            old_suit = float(dampened.get('suitability_percent', 65.0) or 65.0)
+                            dampened['suitability_percent'] = round(min(68.0, max(40.0, old_suit * 0.7)), 1)
+                            dampened['display_suitability'] = dampened['suitability_percent']
+                            retained_prior.append(dampened)
 
-                    # Cap retained prior citations to top 6 to preserve memory without context explosion
                     retained_prior = retained_prior[:6]
                     accumulated_citations = results + retained_prior
                     accumulated_citations.sort(key=lambda x: float(x.get('suitability_percent', 0.0)), reverse=True)
+                    for rank_idx, item in enumerate(accumulated_citations):
+                        item['rank'] = rank_idx + 1
 
                 # Send retrieval completion status (Citations are deferred until streaming starts)
                 ret_done_msg = (

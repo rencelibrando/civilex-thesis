@@ -125,7 +125,7 @@ Because the legacy bi-encoder (`stsb-xlm-r-multilingual`) could not bridge this 
 |---|---|---|
 | **Domain Gating & Triage** | 150+ lines of regex (`NON_LEGAL_PATTERNS`, `NON_CIVIL_LEGAL_DOMAINS`) | Semantic Embedding Router or Lightweight LLM JSON Classifier |
 | **Query Expansion** | Handcrafted dictionary (`PHILIPPINE_LEGAL_EXPANSIONS`) appending strings | SOTA Cross-Lingual Bi-Encoder OR LLM Query Reformulation (HyDE) |
-| **Dense Embedder** | `stsb-xlm-r-multilingual` (2020 sentence similarity model) | `BAAI/bge-m3` (Dense + Sparse + Multi-Vector in 100+ languages) |
+| **Dense Embedder** | `stsb-xlm-r-multilingual` (2020 sentence similarity model) | `intfloat/multilingual-e5-base` (768-dim, XLM-RoBERTa backbone, 100+ languages) |
 | **Full-Text Search (FTS)** | Python regex split + `websearch_to_tsquery('simple')` vs English tsvector | PostgreSQL pg_trgm (trigram) or BM25 index supporting Filipino & English |
 | **Re-Ranking** | 300 lines of heuristic math + `key_legal_stems` bonus + hardcoded percentages | Cross-Encoder Reranker (`bge-reranker-v2-m3` or FlashRank) |
 | **Context Assembly** | 5 branched prompt strings + regex deduplicators | Unified modular prompt template with structured slots |
@@ -147,7 +147,7 @@ User Query ──► [Semantic Router (3-Way Triage)]
                      └──► Civil Law
                             │
                             ▼
-                     [Dense + Sparse Hybrid Retrieval: BGE-M3]
+                     [Dense + Sparse Hybrid Retrieval: Multilingual-E5-Base (768-dim)]
                             │
                             ▼
                      [Cross-Encoder Re-Ranking: BGE-Reranker-v2-M3]
@@ -199,15 +199,16 @@ class DomainRouter:
 
 ---
 
-### Step 2: Upgrade Retrieval to BGE-M3 (Eliminating `PHILIPPINE_LEGAL_EXPANSIONS`)
+### Step 2: Upgrade Retrieval to Multilingual-E5-Base (Eliminating `PHILIPPINE_LEGAL_EXPANSIONS`)
 
 **Why it solves the problem:**  
-`BAAI/bge-m3` was trained specifically for asymmetric cross-lingual retrieval. It naturally maps a colloquial Tagalog question (*"Hindi tinapos ng kontratista ang bahay kahit may advance payment"*) directly to the English statutory chunk (*"Article 1191: Reciprocal obligations, rescission with damages"*).
+`intfloat/multilingual-e5-base` (built on `xlm-roberta-base`, 768-dim) was trained specifically for asymmetric cross-lingual retrieval. With task-aware prefixes (`query: ` and `passage: `), it naturally maps a colloquial Tagalog question (*"Hindi tinapos ng kontratista ang bahay kahit may advance payment"*) directly to the English statutory chunk (*"Article 1191: Reciprocal obligations, rescission with damages"*).
 
 #### Action Items:
 1. **Update `service-rag-python/core/config.py`:**
    ```python
-   EMBEDDING_MODEL_NAME = "BAAI/bge-m3"  # 1024-dim, dense + sparse multi-lingual
+   EMBEDDING_MODEL_NAME = "intfloat/multilingual-e5-base"  # 768-dim, XLM-RoBERTa multilingual
+   EMBEDDING_DIMENSION = 768
    ```
 2. **Bilingual Corpus Chunk Augmentation:**
    In `civil_code_rag.jsonl`, augment each article chunk with:
@@ -312,62 +313,67 @@ Teaching the model boundary behavior directly in the weights is standard ML prac
 
 ## 6. Step-by-Step Technical Execution Guide
 
-### Part A: Embedder Migration Workflow (Switching to BAAI/bge-m3)
+### Part A: Embedder Migration Workflow (Switching to intfloat/multilingual-e5-base)
 
-When switching to a modern embedder such as `BAAI/bge-m3`, vector dimensions increase from 768 to 1024. All vectors stored in PostgreSQL must be migrated and recomputed.
+When switching to `intfloat/multilingual-e5-base` (768 dimensions), vector embeddings provide high throughput on CPU and robust cross-lingual retrieval between Filipino and English legal text.
 
 #### Step 1: PostgreSQL Schema & Dimension Migration
 Execute the following SQL commands in your PostgreSQL / Supabase SQL console:
 
 ```sql
--- 1. Drop the existing HNSW vector index (indexes are tied to specific vector dimensions)
+-- 1. Drop existing HNSW vector indexes
 DROP INDEX IF EXISTS vector_idx;
+DROP INDEX IF EXISTS article_vector_idx;
+DROP INDEX IF EXISTS doc_vector_idx;
 
--- 2. Update the column dimension in document_chunks
--- Option A: Truncate and rebuild cleanly (Recommended)
-TRUNCATE TABLE document_chunks;
-ALTER TABLE document_chunks ALTER COLUMN embedding TYPE vector(1024);
+-- 2. Update the column dimension in document_chunks to 768
+ALTER TABLE document_chunks ALTER COLUMN embedding TYPE vector(768) USING NULL;
 
--- Option B: In-place migration without deleting metadata
--- ALTER TABLE document_chunks ALTER COLUMN embedding TYPE vector(1024);
--- UPDATE document_chunks SET embedding = NULL;
-
--- 3. Recreate the HNSW index for cosine distance on the new 1024-dimension space
+-- 3. Recreate the HNSW indexes for cosine distance on the 768-dimension space
 CREATE INDEX vector_idx 
 ON document_chunks USING hnsw (embedding vector_cosine_ops);
+
+CREATE INDEX article_vector_idx 
+ON document_chunks USING hnsw (embedding vector_cosine_ops) 
+WHERE parent_type = 'article';
+
+CREATE INDEX doc_vector_idx 
+ON document_chunks USING hnsw (embedding vector_cosine_ops) 
+WHERE parent_type = 'user_document';
 ```
 
 #### Step 2: Codebase Schema Updates
-Update DDL definitions across the Python codebase to reflect `vector(1024)`:
+Ensure DDL definitions across the Python codebase reflect `vector(768)`:
 1. [services/ingestion_service.py](file:///home/rence/github_repos/github-repositories-NS/civilex-thesis/service-rag-python/services/ingestion_service.py#L92):
-   Change line 92 from `embedding VECTOR(768)` to `embedding VECTOR(1024)`.
+   `embedding VECTOR(768)`
 2. [create_rpc.py](file:///home/rence/github_repos/github-repositories-NS/civilex-thesis/service-rag-python/create_rpc.py#L20):
-   Change line 20 from `query_embedding vector(768)` to `query_embedding vector(1024)`.
+   `query_embedding vector(768)`
 
 #### Step 3: Model Configuration Updates
 Update configuration variables and model defaults:
 1. In `service-rag-python/.env`:
    ```bash
-   EMBEDDING_MODEL_NAME=BAAI/bge-m3
+   EMBEDDING_MODEL_NAME=intfloat/multilingual-e5-base
+   EMBEDDING_DIMENSION=768
    ```
 2. In [core/config.py](file:///home/rence/github_repos/github-repositories-NS/civilex-thesis/service-rag-python/core/config.py) and [main.py](file:///home/rence/github_repos/github-repositories-NS/civilex-thesis/service-rag-python/main.py#L87):
    ```python
-   embedder = SentenceTransformer(os.getenv("EMBEDDING_MODEL_NAME", "BAAI/bge-m3"))
+   embedder = SentenceTransformer(os.getenv("EMBEDDING_MODEL_NAME", "intfloat/multilingual-e5-base"))
    ```
-3. In [embed_articles_only.py](file:///home/rence/github_repos/github-repositories-NS/civilex-thesis/service-rag-python/embed_articles_only.py#L18), [search.py](file:///home/rence/github_repos/github-repositories-NS/civilex-thesis/service-rag-python/search.py#L16), and [services/document.py](file:///home/rence/github_repos/github-repositories-NS/civilex-thesis/service-rag-python/services/document.py#L28):
-   Update the fallback string from `"sentence-transformers/stsb-xlm-r-multilingual"` to `"BAAI/bge-m3"`.
+3. In [embed_articles_only.py](file:///home/rence/github_repos/github-repositories-NS/civilex-thesis/service-rag-python/embed_articles_only.py), [embed_cases_only.py](file:///home/rence/github_repos/github-repositories-NS/civilex-thesis/service-rag-python/embed_cases_only.py), and [search.py](file:///home/rence/github_repos/github-repositories-NS/civilex-thesis/service-rag-python/search.py):
+   Default to `"intfloat/multilingual-e5-base"` and apply `"passage: "` prefix for document chunks and `"query: "` prefix for queries.
 
 #### Step 4: Re-Embedding Corpus Chunks
-Run the ingestion scripts to generate the new vectors:
+Run the ingestion scripts to generate the 768-dim vectors:
 
 ```bash
 cd service-rag-python
 
-# 1. Re-embed Civil Code statutory articles only (2,270 articles, ~1-2 minutes):
-python embed_articles_only.py
+# 1. Embed Civil Code statutory articles only (2,749 articles, ~1-2 minutes):
+.venv/bin/python embed_articles_only.py --threads 8 --batch-size 32
 
-# 2. Re-embed the entire corpus (articles + 351,000 jurisprudence chunks):
-python ingest.py --stage vectors --batch-size 250
+# 2. Embed jurisprudence cases (351,076 chunks with auto-resume checkpoint):
+.venv/bin/python embed_cases_only.py --threads 8 --batch-size 32
 ```
 
 ---

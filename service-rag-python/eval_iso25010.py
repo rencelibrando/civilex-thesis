@@ -27,7 +27,7 @@ from services.nli import score_faithfulness
 from eval_ragas import llm_generate_response
 
 POSTGRES_DB_URL = os.getenv("POSTGRES_DB_URL", "postgresql://postgres:postgres@localhost:54322/postgres")
-EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME", "sentence-transformers/stsb-xlm-r-multilingual")
+EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME", "intfloat/multilingual-e5-base")
 
 BENCHMARK_SCENARIOS = [
     {

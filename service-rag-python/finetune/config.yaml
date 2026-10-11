@@ -42,5 +42,5 @@ training:
   dataloader_num_workers: 4 
 
 dataset:
-  train_file: "train_clean_ragas.jsonl"
-  eval_file: "eval_ragas_clean.jsonl"
+  train_file: "train_augmented.jsonl"
+  eval_file: "eval_augmented.jsonl"

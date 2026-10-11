@@ -25,7 +25,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 DEFAULT_DB_URL = os.getenv("POSTGRES_DB_URL", "postgresql://postgres:postgres@127.0.0.1:54322/postgres")
-EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME", "sentence-transformers/stsb-xlm-r-multilingual")
+EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME", "intfloat/multilingual-e5-base")
 
 # Lazy load model
 _model = None
@@ -232,7 +232,8 @@ def extract_and_process_document(file_url: str, document_id: str, filename: str)
         with conn.cursor() as cur:
             for i, chunk in enumerate(chunks):
                 chunk_id = f"{document_id}_c{i}"
-                embedding = model.encode(chunk, normalize_embeddings=True).tolist()
+                passage_text = f"passage: {chunk}" if "e5" in EMBEDDING_MODEL_NAME.lower() else chunk
+                embedding = model.encode(passage_text, normalize_embeddings=True).tolist()
                 cur.execute("""
                     INSERT INTO document_chunks (chunk_id, parent_type, parent_id, content, embedding)
                     VALUES (%s, 'user_document', %s, %s, %s::vector)

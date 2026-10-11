@@ -25,13 +25,13 @@ def main():
         "--stage",
         choices=["all", "metadata", "relations", "vectors"],
         default="all",
-        help="Stage to execute: metadata (Articles & Cases), relations (Citation links), vectors (XML-RoBERTa embeddings & HNSW index), or all."
+        help="Stage to execute: metadata (Articles & Cases), relations (Citation links), vectors (intfloat/multilingual-e5-base embeddings & HNSW index), or all."
     )
     parser.add_argument(
         "--batch-size",
         type=int,
-        default=250,
-        help="Batch size for embedding generation & vector insertion (default: 250)."
+        default=32,
+        help="Batch size for embedding generation & vector insertion (default: 32)."
     )
     parser.add_argument(
         "--data-dir",
@@ -55,8 +55,20 @@ def main():
         default=None,
         help="PostgreSQL connection string (defaults to POSTGRES_DB_URL env var or localhost:54322)."
     )
+    parser.add_argument(
+        "--threads",
+        type=int,
+        default=8,
+        help="Number of CPU threads to use for PyTorch embedding (default: 8)."
+    )
 
     args = parser.parse_args()
+
+    try:
+        import torch
+        torch.set_num_threads(args.threads)
+    except ImportError:
+        pass
 
     print("======================================================")
     print("      CIVIL-LEX Ingestion & Embedding Pipeline        ")
@@ -64,6 +76,7 @@ def main():
     print(f"• Stage: {args.stage}")
     print(f"• Data Directory: {args.data_dir}")
     print(f"• Batch Size: {args.batch_size}")
+    print(f"• CPU Threads: {args.threads}")
     print(f"• Reset DB: {args.reset_db}")
     print("======================================================")
 
@@ -86,7 +99,7 @@ def main():
         if args.verify or args.stage == "all":
             Verifier.verify(conn, args.data_dir)
 
-        print("\n✓ Ingestion process completed successfully!")
+        print("\nIngestion process completed successfully!")
     finally:
         conn.close()
 

@@ -2,6 +2,8 @@
 import os
 import sys
 import json
+import argparse
+import torch
 import psycopg2
 from psycopg2.extras import execute_values
 from dotenv import load_dotenv
@@ -15,13 +17,21 @@ DEFAULT_DB_URL = os.getenv(
     "POSTGRES_DB_URL",
     "postgresql://postgres:postgres@localhost:54322/postgres"
 )
-EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME", "sentence-transformers/stsb-xlm-r-multilingual")
+EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME", "intfloat/multilingual-e5-base")
 
 def get_connection(db_url=None):
     url = db_url or DEFAULT_DB_URL
     return psycopg2.connect(url)
 
 def main():
+    parser = argparse.ArgumentParser(description="Embed Civil Code articles using intfloat/multilingual-e5-base")
+    parser.add_argument("--batch-size", type=int, default=32, help="Batch size for embedding generation (default: 32)")
+    parser.add_argument("--threads", type=int, default=8, help="Number of CPU threads to use (default: 8)")
+    args = parser.parse_args()
+
+    torch.set_num_threads(args.threads)
+    print(f"Allocated {args.threads} CPU threads for PyTorch embedding.")
+
     print("Loading embedding model...")
     model = SentenceTransformer(EMBEDDING_MODEL_NAME)
     
@@ -63,14 +73,16 @@ def main():
                 embedding = EXCLUDED.embedding;
         """
         
-        batch_size = 250
+        batch_size = args.batch_size
         pbar = tqdm(total=total_chunks, desc="Embedding & Inserting Articles")
         
         for i in range(0, total_chunks, batch_size):
             batch = all_chunks[i:i + batch_size]
             texts = [c["content"] for c in batch]
             
-            embeddings = model.encode(texts, batch_size=len(texts), show_progress_bar=False, normalize_embeddings=True)
+            is_e5 = "e5" in EMBEDDING_MODEL_NAME.lower()
+            passages = [f"passage: {t}" for t in texts] if is_e5 else texts
+            embeddings = model.encode(passages, batch_size=len(passages), show_progress_bar=False, normalize_embeddings=True)
             
             records = []
             for item, emb in zip(batch, embeddings):
@@ -90,7 +102,7 @@ def main():
             pbar.update(len(batch))
             
         pbar.close()
-        print("✓ Article vector batch insertion complete.")
+        print("Article vector batch insertion complete.")
         
     finally:
         conn.close()

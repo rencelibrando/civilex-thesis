@@ -17,7 +17,7 @@ DEFAULT_DB_URL = os.getenv(
     "postgresql://postgres:postgres@localhost:54322/postgres"
 )
 CHECKPOINT_FILE = ".ingest_checkpoint.json"
-EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME", "sentence-transformers/stsb-xlm-r-multilingual")
+EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME", "intfloat/multilingual-e5-base")
 
 
 class DBHelper:
@@ -125,6 +125,14 @@ class DBHelper:
                 ON document_chunks USING hnsw (embedding vector_cosine_ops);
             """)
             cur.execute("""
+                CREATE INDEX IF NOT EXISTS article_vector_idx 
+                ON document_chunks USING hnsw (embedding vector_cosine_ops) WHERE parent_type = 'article';
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS doc_vector_idx 
+                ON document_chunks USING hnsw (embedding vector_cosine_ops) WHERE parent_type = 'user_document';
+            """)
+            cur.execute("""
                 ALTER TABLE document_chunks 
                 ADD COLUMN IF NOT EXISTS fts tsvector GENERATED ALWAYS AS (to_tsvector('english', content)) STORED;
             """)
@@ -133,7 +141,7 @@ class DBHelper:
                 ON document_chunks USING GIN (fts);
             """)
             conn.commit()
-        print("✓ Post-ingestion indexes created successfully.")
+        print("Post-ingestion indexes created successfully.")
 
     @staticmethod
     def reset_database(conn):
@@ -148,7 +156,7 @@ class DBHelper:
             cur.execute("DROP TABLE IF EXISTS user_documents CASCADE;")
             conn.commit()
         DBHelper.init_schema(conn)
-        print("✓ Database schema reset complete.")
+        print("Database schema reset complete.")
 
 
 class MetadataIngestor:
@@ -192,7 +200,7 @@ class MetadataIngestor:
         with conn.cursor() as cur:
             execute_values(cur, query, records, template="(%s, %s, %s::jsonb, %s, %s)")
             conn.commit()
-        print(f"✓ Inserted/Updated {len(records)} Civil Code Articles.")
+        print(f"Inserted/Updated {len(records)} Civil Code Articles.")
 
     def _ingest_jurisprudence_cases(self, conn):
         doc_file = os.path.join(self.data_dir, "jurisprudence_document.jsonl")
@@ -244,7 +252,7 @@ class MetadataIngestor:
         with conn.cursor() as cur:
             execute_values(cur, query, records, page_size=1000)
             conn.commit()
-        print(f"✓ Inserted/Updated {len(records)} Jurisprudence Cases.")
+        print(f"Inserted/Updated {len(records)} Jurisprudence Cases.")
 
 
 class RelationsIngestor:
@@ -280,11 +288,11 @@ class RelationsIngestor:
         with conn.cursor() as cur:
             execute_values(cur, query, records, page_size=2000)
             conn.commit()
-        print(f"✓ Inserted {len(records)} Article-Case Relations.")
+        print(f"Inserted {len(records)} Article-Case Relations.")
 
 
 class VectorIngestor:
-    def __init__(self, data_dir: str, batch_size: int = 250):
+    def __init__(self, data_dir: str, batch_size: int = 32):
         self.data_dir = data_dir
         self.batch_size = batch_size
         self.model = None
@@ -295,7 +303,7 @@ class VectorIngestor:
                 raise RuntimeError("sentence-transformers library is required for vector generation.")
             print(f"Loading embedding model ({EMBEDDING_MODEL_NAME})...")
             self.model = SentenceTransformer(EMBEDDING_MODEL_NAME)
-            print("✓ Model loaded successfully.")
+            print("Model loaded successfully.")
 
     def _load_checkpoint(self) -> int:
         if os.path.exists(CHECKPOINT_FILE):
@@ -360,7 +368,7 @@ class VectorIngestor:
         print(f"Total chunks found: {total_chunks}. Resuming from checkpoint offset: {start_offset}.")
 
         if start_offset >= total_chunks and total_chunks > 0:
-            print("✓ All chunks have already been processed according to checkpoint.")
+            print("All chunks have already been processed according to checkpoint.")
             DBHelper.create_indexes(conn)
             return
 
@@ -378,8 +386,10 @@ class VectorIngestor:
             batch = all_chunks[i:i + self.batch_size]
             texts = [c["content"] for c in batch]
             
-            # Generate vectors
-            embeddings = self.model.encode(texts, batch_size=len(texts), show_progress_bar=False, normalize_embeddings=True)
+            # Generate vectors (prefix with 'passage: ' for asymmetric E5 retrieval)
+            is_e5 = "e5" in EMBEDDING_MODEL_NAME.lower()
+            passages = [f"passage: {t}" for t in texts] if is_e5 else texts
+            embeddings = self.model.encode(passages, batch_size=len(passages), show_progress_bar=False, normalize_embeddings=True)
             
             records = []
             for item, emb in zip(batch, embeddings):
@@ -401,7 +411,7 @@ class VectorIngestor:
             pbar.update(len(batch))
 
         pbar.close()
-        print("✓ Vector batch insertion complete.")
+        print("Vector batch insertion complete.")
 
         # Build HNSW index post insertion
         DBHelper.create_indexes(conn)
@@ -466,4 +476,4 @@ class Verifier:
                     print("\nTop 3 retrieved JURISPRUDENCE CASES matches:")
                     for idx, row in enumerate(case_results, 1):
                         print(f"  {idx}. [{row[1].upper()} {row[2]}] Similarity: {row[4]:.4f} | Content: {row[3]}...")
-            print("\n✓ Verification Complete.")
+            print("\nVerification Complete.")

@@ -113,30 +113,23 @@ def resolve_dataset_paths(config: dict) -> tuple[str, str]:
     script_dir = Path(__file__).parent.resolve()
     repo_root = script_dir.parent.parent.resolve()
 
-    candidate_train_dirs = [
+    candidate_search_dirs = [
         str(script_dir),
         str(Path.cwd()),
         "/workspace/finetune",
         "/workspace",
-        str(script_dir.parent / "data" / "traning"),
-        str(repo_root / "service-rag-python" / "data" / "traning"),
+        str(script_dir.parent / "data" / "training"),
+        str(repo_root / "service-rag-python" / "data" / "training"),
         str(repo_root / "service-rag-python" / "finetune"),
-        str(repo_root / "data" / "traning"),
-    ]
-    candidate_eval_dirs = [
-        str(script_dir),
-        str(Path.cwd()),
-        "/workspace/finetune",
-        "/workspace",
-        str(repo_root / "service-rag-python" / "finetune"),
+        str(repo_root / "data" / "training"),
     ]
 
     dataset_cfg = config.get("dataset", {}) if isinstance(config, dict) else {}
-    train_filename = dataset_cfg.get("train_file", "train_clean_ragas.jsonl")
-    eval_filename = dataset_cfg.get("eval_file", "eval_ragas_clean.jsonl")
+    train_filename = dataset_cfg.get("train_file", "train_augmented.jsonl")
+    eval_filename = dataset_cfg.get("eval_file", "eval_augmented.jsonl")
 
-    train_path = find_file(train_filename, candidate_train_dirs)
-    eval_path = find_file(eval_filename, candidate_eval_dirs)
+    train_path = find_file(train_filename, candidate_search_dirs)
+    eval_path = find_file(eval_filename, candidate_search_dirs)
     return train_path, eval_path
 
 

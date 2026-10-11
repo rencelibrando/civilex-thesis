@@ -13,7 +13,7 @@ DEFAULT_DB_URL = os.getenv(
     "POSTGRES_DB_URL",
     "postgresql://postgres:postgres@localhost:54322/postgres"
 )
-EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME", "sentence-transformers/stsb-xlm-r-multilingual")
+EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME", "intfloat/multilingual-e5-base")
 
 def get_connection(db_url=None):
     url = db_url or DEFAULT_DB_URL
@@ -62,7 +62,8 @@ def main():
                     continue
                 
                 print(f"\nSearching for: '{query}'...")
-                q_emb = model.encode(query, normalize_embeddings=True).tolist()
+                q_text = f"query: {query}" if "e5" in EMBEDDING_MODEL_NAME.lower() else query
+                q_emb = model.encode(q_text, normalize_embeddings=True).tolist()
                 
                 # Fetch Top Articles
                 cur.execute("""

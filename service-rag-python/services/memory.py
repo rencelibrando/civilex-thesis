@@ -472,7 +472,7 @@ def build_recall_response(query: str, history: Optional[List[Dict[str, str]]]) -
 
     if not prior_user:
         return (
-            "### 📌 Conversation Recall\n\n"
+            "### Conversation Recall\n\n"
             "This is the first question in this chat — there are no earlier queries to recall yet.\n\n"
             "Ask me anything under the Philippine Civil Code (contracts, property, succession, family relations, quasi-delicts)."
         )
@@ -481,7 +481,7 @@ def build_recall_response(query: str, history: Optional[List[Dict[str, str]]]) -
         q = " ".join(q.split())
         return q if len(q) <= n else q[: n - 1].rstrip() + "…"
 
-    lines = ["### 📌 Conversation Recall\n"]
+    lines = ["### Conversation Recall\n"]
     if _re.search(r'first', query.lower()):
         lines.append(f'Your first query in this chat was: **"{_short(prior_user[0])}"**')
     elif _re.search(r'last|previous|latest', query.lower()):
@@ -571,7 +571,7 @@ def build_summary_response(query: str, history: Optional[List[Dict[str, str]]]) 
                 break
 
     if _is_tagalog_query(query):
-        header = "### 📌 Buod"
+        header = "### Buod"
         empty = (
             f"{header}\n\n"
             "Wala pa akong naibibigay na sagot sa chat na ito na maaari kong paikliin. "

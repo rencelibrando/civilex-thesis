@@ -183,7 +183,7 @@ function StartingTypewriterMessage({ content }: { content: string }) {
 
 // RAG Live Pipeline Stepper
 
-function RagPipelineStepper({ status, isLive }: { status: RagStatus | null; isLive: boolean }) {
+function RagPipelineStepper({ status, isLive, isOutOfDomain }: { status: RagStatus | null; isLive: boolean; isOutOfDomain?: boolean }) {
   const [isExpanded, setIsExpanded] = useState(false);
 
   const steps = [
@@ -354,8 +354,12 @@ function RagPipelineStepper({ status, isLive }: { status: RagStatus | null; isLi
         onClick={() => setIsExpanded(!isExpanded)}
         className="inline-flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground hover:text-foreground transition-colors bg-accent/40 dark:bg-accent/20 hover:bg-accent px-2.5 py-1 rounded-full border border-border/60 cursor-pointer"
       >
-        <CheckCircle2 className="w-3 h-3 text-emerald-500 shrink-0" />
-        <span>RAG Pipeline Grounded (Embedded • Retrieved • Synthesized)</span>
+        <CheckCircle2 className={`w-3 h-3 ${isOutOfDomain ? "text-amber-500" : "text-emerald-500"} shrink-0`} />
+        <span>
+          {isOutOfDomain
+            ? "Statutory Domain Boundary (Scope & Safety Refusal)"
+            : "RAG Pipeline Grounded (Embedded • Retrieved • Synthesized)"}
+        </span>
         <ChevronDown className={`w-3 h-3 transition-transform ${isExpanded ? "rotate-180" : ""}`} />
       </button>
 
@@ -816,6 +820,7 @@ export default function ChatPage() {
                         <RagPipelineStepper
                           status={isLatestAssistant && isGenerating ? (ragStatus || msg.ragStatus || null) : msg.ragStatus || null}
                           isLive={isLatestAssistant && isGenerating}
+                          isOutOfDomain={Boolean(msg.legalAnalytics?.is_out_of_domain || (isLatestAssistant && legalAnalytics?.is_out_of_domain))}
                         />
                       )}
 

@@ -32,6 +32,15 @@ async def generate_response_stream(
             clean_history.append({"role": msg.get("role", "user"), "content": content})
     clean_history = clean_history[-12:]
 
+    # Avoid duplicate consecutive user turn if current user query was already saved to history
+    if clean_history and clean_history[-1]["role"] == "user":
+        last_user_text = clean_history[-1]["content"].strip().lower()
+        query_text = user_query.strip().lower()
+        if (last_user_text == query_text or 
+            query_text.endswith(last_user_text) or 
+            last_user_text in query_text):
+            clean_history.pop()
+
     # Prepare messages for OpenAI compatible endpoint
     messages = [{"role": "system", "content": system_prompt}]
     for msg in clean_history:
@@ -102,14 +111,11 @@ async def generate_response_stream(
 async def call_chat_completion_async(
     messages: list,
     temperature: float = 0.1,
-    max_tokens: int = 1200,
-    timeout_sec: float = 30.0,
+    max_tokens: int = 2500,
+    timeout_sec: float = 60.0,
     repetition_penalty: float = 1.15,
 ) -> str | None:
-    """
-    Executes a non-streaming chat completion via LM Studio.
-    Returns the string content of the response, or None if LM Studio fails.
-    """
+    # Executes a non-streaming chat completion via LM Studio
     url = f"{LM_STUDIO_URL.rstrip('/')}/chat/completions"
     payload = {
         "model": "local-model",
@@ -126,7 +132,8 @@ async def call_chat_completion_async(
             response = await client.post(url, json=payload)
             response.raise_for_status()
             data = response.json()
-            return data["choices"][0]["message"]["content"]
+            msg = data["choices"][0]["message"]
+            return msg.get("content") or msg.get("reasoning_content") or ""
     except (httpx.TimeoutException, httpx.ConnectError, httpx.HTTPStatusError) as e:
         logging.warning(f"LM Studio async completion failed ({type(e).__name__}: {e})")
         return None
@@ -138,13 +145,11 @@ async def call_chat_completion_async(
 def call_chat_completion_sync(
     messages: list,
     temperature: float = 0.0,
-    max_tokens: int = 1200,
-    timeout_sec: float = 30.0,
+    max_tokens: int = 2500,
+    timeout_sec: float = 60.0,
     repetition_penalty: float = 1.15,
 ) -> str | None:
-    """
-    Synchronous non-streaming chat completion via LM Studio.
-    """
+    # Synchronous non-streaming chat completion via LM Studio
     url = f"{LM_STUDIO_URL.rstrip('/')}/chat/completions"
     payload = {
         "model": "local-model",
@@ -161,7 +166,8 @@ def call_chat_completion_sync(
             response = client.post(url, json=payload)
             response.raise_for_status()
             data = response.json()
-            return data["choices"][0]["message"]["content"]
+            msg = data["choices"][0]["message"]
+            return msg.get("content") or msg.get("reasoning_content") or ""
     except (httpx.TimeoutException, httpx.ConnectError, httpx.HTTPStatusError) as e:
         logging.warning(f"LM Studio sync completion failed ({type(e).__name__}: {e})")
         return None

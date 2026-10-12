@@ -417,7 +417,7 @@ _DISCOURSE_PREFIXES = (
 _LEGAL_ACTION_HEADER = re.compile(
     r'(?:legal action summary|governing civil code|competent court|'
     r'possible cause of action|pre-filing requirement|suggested follow-up|'
-    r'follow-up inquiries|⚖️)',
+    r'follow-up inquiries)',
     re.IGNORECASE,
 )
 
@@ -438,6 +438,19 @@ def _extract_article_ids(text: str) -> List[str]:
         r'\[\s*(?:statutory\s+)?(?:article|jurisprudence|authority)\s+\d+\s*\]',
         '',
         text,
+        flags=re.IGNORECASE,
+    )
+    # Strip non-civil code article references to prevent misattributing them as RA 386 Civil Code articles
+    cleaned = re.sub(
+        r'(?:revised\s+penal\s+code|rpc|penal\s+code|labor\s+code|tax\s+code|nirc)\s*[\(\[]?\s*(?:mga\s+)?(?:articles?|arts?\.?|artikulo)\s*\d+[^\]\)]*[\)\]]?',
+        '',
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(
+        r'(?:mga\s+)?(?:articles?|arts?\.?|artikulo)\s*\d+(?:\s*(?:to|hanggang|-)\s*\d+)?\s*(?:ng|of\s+the)\s+(?:revised\s+penal\s+code|rpc|penal\s+code|labor\s+code|tax\s+code|nirc)',
+        '',
+        cleaned,
         flags=re.IGNORECASE,
     )
     article_ids = set()
@@ -691,7 +704,7 @@ def decompose_claims(text: str) -> List[str]:
     cleaned = re.sub(r'`([^`]+)`', r'\1', cleaned)         # Inline code
     cleaned = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', cleaned)  # Links
     cleaned = re.sub(r'(?m)^[>\s*•●\-]+\s*', '', cleaned)   # Leading bullet/quote markers only
-    cleaned = re.sub(r'[\U00010000-\U0010ffff]', '', cleaned)  # Emoji markers (📌, 📚, ⚖️, 📋, etc.)
+    cleaned = re.sub(r'[\U00010000-\U0010ffff]', '', cleaned)  # Strip unicode emoji characters
 
     # Protect abbreviations and ellipses before punctuation splitting
     cleaned = re.sub(r'\bArts?\.\s*', 'Art_DOT_', cleaned, flags=re.IGNORECASE)
@@ -943,11 +956,9 @@ def verify_claim_symbolic(
 
 # 7. GEMMA NEURAL NLI VERIFIER (LM STUDIO ENDPOINT)
 
-# Maximum characters of statutory context sent to Gemma per NLI call.
-# Premises are relevance-ranked against the claims under audit so the budget
-# carries the most probative articles instead of blindly truncating context,
-# which previously could cut the governing article and force silent fallback.
-GEMMA_NLI_CONTEXT_BUDGET = 12000
+# Maximum characters of statutory context sent to Gemma per NLI call
+GEMMA_NLI_CONTEXT_BUDGET = 4000
+
 
 
 def _select_relevant_context(
@@ -990,12 +1001,12 @@ def _select_relevant_context(
 
 
 def _build_gemma_nli_prompt(claims_to_verify: List[tuple[int, str]], context_text: str) -> str:
-    """Builds a batched NLI evaluation prompt for Gemma 4 (E4B) in LM Studio."""
+    # Builds a batched NLI evaluation prompt for Gemma in LM Studio
     selected_context = context_text[:GEMMA_NLI_CONTEXT_BUDGET].strip()
     claims_formatted = "\n".join([f"[{cid}] {claim}" for cid, claim in claims_to_verify])
     return (
         "You are an expert Philippine Civil Law Natural Language Inference (NLI) evaluator.\n"
-        "Your role is to rigorously check whether legal assertions made in an answer are logically supported (entailed), contradicted, or neutral with respect to the provided statutory context premises.\n\n"
+        "Direct JSON output only. Output the JSON array immediately.\n\n"
         "DEFINITIONS:\n"
         "- entailed: The premise directly supports or logically necessitates the claim (including valid legal paraphrases, statutory requisites, and direct applications of the statutory rule).\n"
         "- contradicted: The claim asserts a legal rule or factual conclusion that contradicts or inverts the premise (e.g., claiming a party cannot rescind when the premise permits it, or claiming no liability when the premise imposes it).\n"
@@ -1049,61 +1060,77 @@ def _parse_gemma_nli_response(raw_text: str) -> Dict[int, dict]:
 def verify_claims_gemma_sync(
     claims_to_verify: List[tuple[int, str]],
     context_text: str,
-    timeout: float = 30.0,
+    timeout: float = 60.0,
     context_premises: Optional[List[str]] = None,
 ) -> Dict[int, dict]:
-    """Synchronously queries Gemma in LM Studio for batched NLI evaluation."""
+    # Synchronously queries Gemma in LM Studio for batched NLI evaluation
     if not claims_to_verify:
         return {}
 
     from services.llm_client import call_chat_completion_sync
 
-    if context_premises:
-        context_text = _select_relevant_context(claims_to_verify, context_premises)
-    prompt = _build_gemma_nli_prompt(claims_to_verify, context_text)
-    try:
-        raw_text = call_chat_completion_sync(
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.0,
-            timeout_sec=timeout,
-        )
-        if raw_text:
-            return _parse_gemma_nli_response(raw_text)
-    except Exception as e:
-        logging.warning(f"Unexpected error calling LLM NLI: {type(e).__name__} - {e}")
+    batch_size = 3
+    all_results = {}
+    for i in range(0, len(claims_to_verify), batch_size):
+        batch = claims_to_verify[i:i + batch_size]
+        curr_context = context_text
+        if context_premises:
+            curr_context = _select_relevant_context(batch, context_premises)
+        prompt = _build_gemma_nli_prompt(batch, curr_context)
+        try:
+            raw_text = call_chat_completion_sync(
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.0,
+                max_tokens=2500,
+                timeout_sec=timeout,
+            )
+            if raw_text:
+                parsed = _parse_gemma_nli_response(raw_text)
+                all_results.update(parsed)
+        except Exception as e:
+            logging.warning(f"Unexpected error calling LLM NLI: {type(e).__name__} - {e}")
 
-    logging.info("LLM unavailable for NLI; using symbolic fallback.")
-    return {}
+    if not all_results:
+        logging.info("LLM unavailable for NLI; using symbolic fallback.")
+    return all_results
 
 
 async def verify_claims_gemma_async(
     claims_to_verify: List[tuple[int, str]],
     context_text: str,
-    timeout: float = 30.0,
+    timeout: float = 60.0,
     context_premises: Optional[List[str]] = None,
 ) -> Dict[int, dict]:
-    """Asynchronously queries Gemma in LM Studio for batched NLI evaluation."""
+    # Asynchronously queries Gemma in LM Studio for batched NLI evaluation
     if not claims_to_verify:
         return {}
 
     from services.llm_client import call_chat_completion_async
 
-    if context_premises:
-        context_text = _select_relevant_context(claims_to_verify, context_premises)
-    prompt = _build_gemma_nli_prompt(claims_to_verify, context_text)
-    try:
-        raw_text = await call_chat_completion_async(
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.0,
-            timeout_sec=timeout,
-        )
-        if raw_text:
-            return _parse_gemma_nli_response(raw_text)
-    except Exception as e:
-        logging.warning(f"Unexpected error calling LLM NLI async: {type(e).__name__} - {e}")
+    batch_size = 3
+    all_results = {}
+    for i in range(0, len(claims_to_verify), batch_size):
+        batch = claims_to_verify[i:i + batch_size]
+        curr_context = context_text
+        if context_premises:
+            curr_context = _select_relevant_context(batch, context_premises)
+        prompt = _build_gemma_nli_prompt(batch, curr_context)
+        try:
+            raw_text = await call_chat_completion_async(
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.0,
+                max_tokens=2500,
+                timeout_sec=timeout,
+            )
+            if raw_text:
+                parsed = _parse_gemma_nli_response(raw_text)
+                all_results.update(parsed)
+        except Exception as e:
+            logging.warning(f"Unexpected error calling LLM NLI async: {type(e).__name__} - {e}")
 
-    logging.info("LLM unavailable for NLI; using symbolic fallback.")
-    return {}
+    if not all_results:
+        logging.info("LLM unavailable for NLI; using symbolic fallback.")
+    return all_results
 
 
 # 8. HYBRID ARBITRATION & AGGREGATE FAITHFULNESS SCORING
@@ -1313,6 +1340,8 @@ def score_faithfulness(
             if v.verdict == 'neutral' and v.rule_fired != 'R1_unsupported_statutory_anchor'
         ]
         if neutral_candidates:
+            neutral_candidates.sort(key=lambda t: len(t[1]), reverse=True)
+            neutral_candidates = neutral_candidates[:6]
             gemma_results = verify_claims_gemma_sync(
                 neutral_candidates, context_text, context_premises=context_premises
             )
@@ -1373,6 +1402,8 @@ async def score_faithfulness_async(
             if v.verdict == 'neutral' and v.rule_fired != 'R1_unsupported_statutory_anchor'
         ]
         if neutral_candidates:
+            neutral_candidates.sort(key=lambda t: len(t[1]), reverse=True)
+            neutral_candidates = neutral_candidates[:6]
             gemma_results = await verify_claims_gemma_async(
                 neutral_candidates, context_text, context_premises=context_premises
             )

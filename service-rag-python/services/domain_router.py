@@ -1,7 +1,24 @@
 import os
+import re
 from typing import Dict, List, Optional, Any
 import numpy as np
 from sentence_transformers import SentenceTransformer
+
+EXTERNAL_STATUTE_ROUTING: List[tuple[re.Pattern, str]] = [
+    (re.compile(r'\b(?:revised\s+penal\s+code|rpc|penal\s+code|batas\s+pambansa\s+blg\.?\s*22|\bbp\s*22\b)\b', re.IGNORECASE), "Philippine Criminal Law (Revised Penal Code / PNP)"),
+    (re.compile(r'\b(?:labor\s+code|pd\s*442|p\.d\.\s*442|dole|nlrc|sena\b)\b', re.IGNORECASE), "Philippine Labor Law (DOLE / NLRC)"),
+    (re.compile(r'\b(?:national\s+internal\s+revenue\s+code|nirc|tax\s+code|train\s+law|\bbir\b)\b', re.IGNORECASE), "Philippine Tax Law (NIRC / BIR)"),
+    (re.compile(r'\b(?:revised\s+corporation\s+code|corporation\s+code|ra\s*11232|\bsec\b)\b', re.IGNORECASE), "Philippine Corporate & Commercial Law (SEC)"),
+    (re.compile(r'\b(?:data\s+privacy\s+act|ra\s*10173|\bnpc\b|cybercrime\s+prevention\s+act|ra\s*10175)\b', re.IGNORECASE), "Philippine Data Privacy & Cybercrime (NPC)"),
+    (re.compile(r'\b(?:intellectual\s+property\s+code|ip\s+code|ra\s*8293|ipophl|copyright|trademark|patent)\b', re.IGNORECASE), "Philippine Intellectual Property Law (RA 8293 / IPOPHL)"),
+    (re.compile(r'\b(?:ra\s*9208|ra\s*10364|ra\s*11862|organ\s+trafficking|human\s+trafficking)\b', re.IGNORECASE), "Philippine Anti-Trafficking & Organ Laws (RA 9208)"),
+]
+
+ILLICIT_CONTRACT_PATTERNS: List[tuple[re.Pattern, str]] = [
+    (re.compile(r'\b(?:sell(?:ing)?|sale|buy(?:ing)?|purchase|benta|ibenta|bentahan)\b.{0,40}\b(?:kidneys?|human\s+organs?|bato|atay|dugo)\b', re.IGNORECASE), "Human Organ Sale / Trafficking (RA 9208 / Art. 1347 & 1409)"),
+    (re.compile(r'\b(?:organ\s+(?:sale|selling|trafficking)|organ\s+donor\s+for\s+sale)\b', re.IGNORECASE), "Human Organ Sale / Trafficking (RA 9208 / Art. 1347 & 1409)"),
+    (re.compile(r'\b(?:kontrata\s+(?:sa|para\s+sa)\s+pagpatay|contract\s+killing|hitman|upahang\s+mamamatay-tao|benta\s+ng\s+droga|sale\s+of\s+shabu|illegal\s+drugs\s+contract)\b', re.IGNORECASE), "Unlawful Cause / Criminal Object (Art. 1409)"),
+]
 
 CIVIL_ANCHORS: List[str] = [
     "query: How to cancel a contract and claim damages for breach of reciprocal obligations",
@@ -23,7 +40,14 @@ CIVIL_ANCHORS: List[str] = [
     "query: Co-ownership of agricultural land and partition among legal heirs Civil Code",
     "query: Usurious interest rates and valid legal interest rate for monetary loan obligations",
     "query: Donation inter vivos and revocation of donation under Philippine Civil Code",
-    "query: Hidden defects in sales and warranty against eviction redhibitory action"
+    "query: Hidden defects in sales and warranty against eviction redhibitory action",
+    "query: Ano ang pwede ikaso sakin sa batas sibil pananagutan danyos perwisyo",
+    "query: Can I be sued for damages civil liability breach of contract or quasi-delict",
+    "query: Ano ang mga kaso o pananagutan sa civil law kapag may nagawang pagkukulang o pinsala",
+    "query: Civil liability and damages for death or physical injuries caused by crime or negligence Article 2206 Article 33",
+    "query: Bayad sa danyos at sibil na pananagutan sa pagkamatay o pagkasugat sa ilalim ng Civil Code",
+    "query: Independent civil action for damages arising from death physical injury or altercation Article 33 Article 2177",
+    "query: Pananagutan sa danyos at bayad-pinsala sa mga naulila dahil sa pagkamatay ng biktima sa ilalim ng Civil Code Article 2206"
 ]
 
 OTHER_LEGAL_DOMAINS_ANCHORS: Dict[str, List[str]] = {
@@ -32,32 +56,49 @@ OTHER_LEGAL_DOMAINS_ANCHORS: Dict[str, List[str]] = {
         "query: Pinasahod ako nang mababa sa minimum wage at walang 13th month pay reklamo sa DOLE",
         "query: Constructive dismissal due to workplace harassment filing complaint with NLRC labor arbiter",
         "query: Overtime pay computation holiday premium and SEnA conciliation under Labor Code of the Philippines",
-        "query: Retrenchment redundancy and termination of employment by management prerogative"
+        "query: Retrenchment redundancy and termination of employment by management prerogative",
+        "query: Tinanggal sa trabaho nang walang sapat na dahilan o separation pay reklamo sa DOLE NLRC",
+        "query: Hindi binigay ang sahod at final pay ng employer labor dispute SEnA conciliation",
+        "query: Labor standards violation unpaid overtime holiday pay night differential DOLE"
     ],
     "Philippine Criminal Law (Revised Penal Code / PNP)": [
         "query: Warrantless arrest by police officer during inquest proceedings for theft robbery",
         "query: Estafa and swindling criminal complaint filed with office of the city prosecutor",
         "query: Homicide murder and physical injuries charges under Revised Penal Code bail hearing",
         "query: Nanakawan ako sa bahay paano mag-file ng criminal complaint sa pulis at prosecutor",
-        "query: Cyber libel and online defamation criminal case under Cybercrime Prevention Act"
+        "query: Cyber libel and online defamation criminal case under Cybercrime Prevention Act",
+        "query: Nakapatay ako ng tao o kapitbahay anong kasong kriminal ang kakaharapin ko sa pulis at piskal",
+        "query: Homicide murder parricide manslaughter criminal charges under Revised Penal Code",
+        "query: Napatay o sinaksak o binaril dahil sa alitan o utang anong kasong kriminal ang isasampa",
+        "query: Criminal cases and penalty for killing someone or physical injuries Revised Penal Code",
+        "query: Makukulong ba ako kung nakapatay o nanakit ng tao criminal complaint warrant of arrest",
+        "query: Threat to kill grave coercion pananakit at tangkang pagpatay kaso sa pulis",
+        "query: Ano ang mga kasong kriminal at parusa sa pagpatay o pananakit sa kapwa tao",
+        "query: Reklamo sa piskal at pulis para sa kasong murder homicide o tangkang pagpatay"
     ],
     "Philippine Tax Law (NIRC / BIR)": [
         "query: How to compute value-added tax VAT and file quarterly income tax return with BIR",
         "query: Letter of authority LOA and preliminary assessment notice PAN from Bureau of Internal Revenue",
         "query: Tax deficiency penalties and compromise settlement under National Internal Revenue Code TRAIN law",
         "query: Paano magbayad ng capital gains tax at documentary stamp tax sa pagbenta ng lupa sa BIR",
-        "query: Estate tax amnesty return and donor tax computation BIR form"
+        "query: Estate tax amnesty return and donor tax computation BIR form",
+        "query: Tax evasion penalties audit assessment notice BIR form tax compliance",
+        "query: Paano mag-file ng income tax return at bayad ng withholding tax sa BIR"
     ],
     "Philippine Corporate & Commercial Law (SEC)": [
         "query: Articles of incorporation and registration requirements with Securities and Exchange Commission",
         "query: Board of directors quorum voting rights and election under Revised Corporation Code RA 11232",
         "query: Corporate dissolution insolvency and filing annual financial statements with SEC",
-        "query: Securities Regulation Code compliance and stock ownership transfer certificate"
+        "query: Securities Regulation Code compliance and stock ownership transfer certificate",
+        "query: Rehistro ng korporasyon at SEC registration board meeting general information sheet GIS",
+        "query: Pagbenta ng shares of stock at corporate dissolution sa ilalim ng Revised Corporation Code"
     ],
     "Philippine Data Privacy & Cybercrime (NPC)": [
         "query: Personal data breach notification and privacy rights violation under Data Privacy Act RA 10173",
         "query: National Privacy Commission complaint against unauthorized processing of sensitive personal data",
-        "query: Data subject rights and privacy impact assessment PIA requirement"
+        "query: Data subject rights and privacy impact assessment PIA requirement",
+        "query: Na-hack ang Facebook account o na-leak ang personal na impormasyon reklamo sa NPC cybercrime",
+        "query: Online identity theft phishing at cybercrime complaint PNP ACG NBI"
     ]
 }
 
@@ -124,6 +165,26 @@ class DomainRouter:
         """Classifies incoming query into in_domain_civil, out_of_domain_legal, or out_of_domain_non_legal."""
         q_strip = query.strip()
         q_lower = q_strip.lower()
+
+        # Fast path -1: Illicit object or cause (void ab initio under Arts. 1347 & 1409, RA 9208)
+        for pattern, domain_name in ILLICIT_CONTRACT_PATTERNS:
+            if pattern.search(q_lower):
+                return {
+                    "category": "out_of_domain_illicit",
+                    "target_domain": domain_name,
+                    "reason": f"Contract involves illicit object or cause contrary to law: {domain_name}."
+                }
+
+        # Fast path 0: Explicit external non-civil statute references route directly to specialized domain
+        is_explicit_civil = bool(re.search(r'\b(?:civil\s+code|ra\s*386|family\s+code|eo\s*209)\b', q_lower))
+        if not is_explicit_civil:
+            for pattern, domain_name in EXTERNAL_STATUTE_ROUTING:
+                if pattern.search(q_lower):
+                    return {
+                        "category": "out_of_domain_legal",
+                        "target_domain": domain_name,
+                        "reason": f"Explicit reference to non-civil statute ({domain_name}) detected."
+                    }
 
         # Fast path 1: Explicit statutory article references always route to civil law
         if has_article_ref:

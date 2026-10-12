@@ -1208,7 +1208,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                 } else if (data.type === "legal_analytics") {
                   const analytics = data.data as LegalAnalytics;
                   setLegalAnalytics(analytics);
-                  if (analytics?.is_out_of_domain) {
+                  if (analytics?.is_out_of_domain && receivedCitations.length === 0) {
                     receivedCitations = [];
                     setCurrentCitations([]);
                   }
@@ -1218,7 +1218,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                         ? {
                           ...msg,
                           legalAnalytics: analytics,
-                          ...(analytics?.is_out_of_domain ? { citations: [] } : {}),
+                          ...(analytics?.is_out_of_domain && receivedCitations.length === 0 ? { citations: [] } : {}),
                         }
                         : msg
                     )
@@ -1250,10 +1250,13 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                     message: "Additional context needed for accurate analysis",
                   };
                   setRagStatus(clarStatus);
+                  const clarificationText = clarData.reasoning
+                    ? `${clarData.reasoning}\n\n${(clarData.questions || []).map((q: any) => q.question).join("\n")}`
+                    : "Additional context needed for accurate legal analysis.";
                   setMessages((prev) =>
                     prev.map((msg) =>
                       msg.id === assistantId
-                        ? { ...msg, clarificationData: clarData, content: "", ragStatus: clarStatus }
+                        ? { ...msg, clarificationData: clarData, content: clarificationText, ragStatus: clarStatus }
                         : msg
                     )
                   );
@@ -1517,11 +1520,12 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           "X-Tunnel-Skip-AntiPhishing-Page": "true",
         },
         body: JSON.stringify({
-          query: originalQuery,
+          query: answerSummary,
+          original_query: originalQuery,
           session_id: sessionId,
           history: currentHistory,
           prior_citations: retainedCitations,
-          clarification_context: { answers },
+          clarification_context: { answers, original_query: originalQuery },
         }),
       });
 
@@ -1607,7 +1611,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                 } else if (data.type === "legal_analytics") {
                   const analytics = data.data as LegalAnalytics;
                   setLegalAnalytics(analytics);
-                  if (analytics?.is_out_of_domain) {
+                  if (analytics?.is_out_of_domain && receivedCitations.length === 0) {
                     receivedCitations = [];
                     setCurrentCitations([]);
                   }
@@ -1617,7 +1621,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                         ? {
                           ...msg,
                           legalAnalytics: analytics,
-                          ...(analytics?.is_out_of_domain ? { citations: [] } : {}),
+                          ...(analytics?.is_out_of_domain && receivedCitations.length === 0 ? { citations: [] } : {}),
                         }
                         : msg
                     )

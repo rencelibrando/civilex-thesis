@@ -31,14 +31,23 @@ ARTICLE_SEP_PATTERN = re.compile(
 )
 
 
-def parse_article_numbers(query: str) -> List[str]:
-    """
-    Parses Civil Code article numbers from user queries, supporting single mentions,
-    enumerations (e.g. 'article 667 and 445', 'Art. 667, 445 at 446'), comparisons,
-    and shorthand notations. Filters to valid Philippine Civil Code (RA 386) article
-    range (1 to 2270) and preserves mention order.
-    """
+EXTERNAL_STATUTE_MENTION_PATTERN = re.compile(
+    r'\b(?:revised\s+penal\s+code|rpc|penal\s+code|labor\s+code|pd\s*442|p\.d\.\s*442|tax\s+code|national\s+internal\s+revenue\s+code|nirc|corporation\s+code|ra\s*11232|data\s+privacy\s+act|ra\s*10173)\b',
+    re.IGNORECASE
+)
+CIVIL_CODE_MENTION_PATTERN = re.compile(
+    r'\b(?:civil\s+code|ra\s*386|family\s+code|eo\s*209)\b',
+    re.IGNORECASE
+)
+
+
+def parse_all_article_candidates(query: str) -> List[str]:
+    # Extracts all article numbers referenced in query without 2270 bound limit
     if not query:
+        return []
+
+    # If query explicitly targets an external statute without Civil Code reference, skip
+    if EXTERNAL_STATUTE_MENTION_PATTERN.search(query) and not CIVIL_CODE_MENTION_PATTERN.search(query):
         return []
 
     results: List[str] = []
@@ -63,8 +72,6 @@ def parse_article_numbers(query: str) -> List[str]:
             curr_pos += next_m.end()
 
     # 2. Fallback: Bare enumeration or comparison without repeating article prefix
-    # (e.g. "667 and 445", "explain 667 vs 445", "667 at 445")
-    # Only triggered if no prefix was found and query is free from currency/date markers
     if not results and not CURRENCY_OR_DATE_PATTERN.search(query):
         bare_chain = re.search(
             r'\b(\d{1,4})\s*(?:,\s*(?:and\s+|at\s+|saka\s+|&\s*)?|(?:and|&|at|saka|vs\.?|versus)\s*|,\s*)(\d{1,4})\b',
@@ -73,25 +80,35 @@ def parse_article_numbers(query: str) -> List[str]:
         )
         if bare_chain:
             n1, n2 = bare_chain.group(1), bare_chain.group(2)
-            if 1 <= int(n1) <= 2270 and 1 <= int(n2) <= 2270:
-                results.extend([n1, n2])
-                curr_pos = bare_chain.end()
-                while curr_pos < len(query):
-                    next_m = ARTICLE_SEP_PATTERN.match(query[curr_pos:])
-                    if not next_m:
-                        break
-                    results.append(next_m.group(1))
-                    curr_pos += next_m.end()
+            results.extend([n1, n2])
+            curr_pos = bare_chain.end()
+            while curr_pos < len(query):
+                next_m = ARTICLE_SEP_PATTERN.match(query[curr_pos:])
+                if not next_m:
+                    break
+                results.append(next_m.group(1))
+                curr_pos += next_m.end()
 
-    # Deduplicate while preserving original order and enforcing 1 <= article_number <= 2270
     deduped: List[str] = []
     seen = set()
     for n in results:
-        if n not in seen and 1 <= int(n) <= 2270:
+        if n not in seen and 1 <= int(n):
             seen.add(n)
             deduped.append(n)
 
     return deduped
+
+
+def parse_article_numbers(query: str) -> List[str]:
+    # Returns valid Philippine Civil Code article numbers (1 to 2270)
+    candidates = parse_all_article_candidates(query)
+    return [n for n in candidates if 1 <= int(n) <= 2270]
+
+
+def get_out_of_bounds_articles(query: str) -> List[str]:
+    # Returns referenced article numbers that exceed 2270 (non-existent in Civil Code)
+    candidates = parse_all_article_candidates(query)
+    return [n for n in candidates if int(n) > 2270]
 
 
 def is_dispute_query(query: str) -> bool:
@@ -139,10 +156,16 @@ def is_compound_or_multi_intent_query(query: str) -> bool:
 
 
 JURISPRUDENCE_PATTERNS = [
-    r'\b(?:cases?|jurisprudence|rulings?|decisions?|doctrines?|precedents?)\b',
-    r'\b(?:supreme\s+court|scra|g\.r\.|gr\s*(?:no\.?|nos\.?)?)\b',
-    r'\b(?:related\s+cases?|relevant\s+cases?|applicable\s+cases?|cited\s+cases?|court\s+cases?|landmark\s+cases?)\b',
-    r'\b(?:mga\s+kaso|kaso|jurisprudensya|hatol|desisyon|doktrina|korte\s+suprema)\b',
+    r'(?:jurisprudence|jurisprudensya|\bscra\b|g\.?\s*r\.?\s*(?:no\.?|nos\.?)?\s*\d+)',
+    r'\b(?:supreme\s+court|korte\s+suprema)\b',
+    r'\b(?:landmark\s+cases?|court\s+cases?|related\s+cases?|relevant\s+cases?|cited\s+cases?|court\s+rulings?|court\s+decisions?|judicial\s+precedents?|legal\s+precedents?)\b',
+    r'\b(?:mga\s+kaso\s+sa\s+korte(?:\s+suprema)?|desisyon\s+ng\s+korte(?:\s+suprema)?|hatol\s+ng\s+korte(?:\s+suprema)?|doktrina\s+ng\s+korte(?:\s+suprema)?)\b',
+    r'\b(?:cases?\s+(?:on|about|interpreting|under|for|involving)|doctrines?\s+(?:on|about|under|of))\b',
+]
+
+EXCLUDE_CHARGE_PATTERNS = [
+    r'\b(?:maging\s+kaso|kaso\s+ko|kaso\s+sa\s+akin|ikaso\s+(?:sa|ko)|anong\s+kaso|ano\s+ang\s+(?:mga\s+)?kaso|isampang\s+kaso|cases?\s+against\s+me|cases?\s+(?:can\s+be\s+)?filed|what\s+cases?\s+(?:can|could|will))\b',
+    r'\b(?:in\s+case|in\s+cases?\s+of)\b',
 ]
 
 
@@ -150,10 +173,15 @@ def is_jurisprudence_query(query: str) -> bool:
     """
     Checks whether the query explicitly inquires about jurisprudence, Supreme Court
     decisions, case doctrines, rulings, or related cases interpreting the Civil Code.
+    Excludes phrases referring to filing charges, causes of action, or conditional cases.
     """
     if not query:
         return False
     q_lower = query.lower()
+    if any(re.search(p, q_lower) for p in EXCLUDE_CHARGE_PATTERNS) and not any(
+        re.search(p, q_lower) for p in [r'\bsupreme\s+court\b', r'\bkorte\s+suprema\b', r'jurisprudenc', r'jurisprudens']
+    ):
+        return False
     return any(bool(re.search(p, q_lower)) for p in JURISPRUDENCE_PATTERNS)
 
 

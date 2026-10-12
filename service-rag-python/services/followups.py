@@ -18,9 +18,11 @@ _SYSTEM_PROMPT = (
     "STRICT UNILINGUAL MATCH: Write all 3 questions in the EXACT SAME language as the user's question with ZERO code-switching. "
     "If the user asked in English, write all questions ENTIRELY in simple, everyday English without any Tagalog words. "
     "If the user asked in Tagalog, write all questions ENTIRELY in simplified, natural Tagalog without Taglish or English mixing. "
-    "Keep every question grounded in the Philippine Civil Code (RA 386) or Family Code (EO 209) "
-    "and directly related to the answered topic. Never use dense lawyer jargon without plain wording. "
-    "Never suggest out-of-scope topics (criminal, labor, tax, programming). "
+    "PRACTICAL NEXT STEPS: Ground each question in real-life practical next steps for the user's specific scenario "
+    "(e.g., claiming damages under Art. 2206, collecting debts from the estate under Art. 1159, barangay conciliation, or demand letters). "
+    "NEVER suggest generic textbook questions (e.g. do NOT ask 'What are the legal exceptions to Article 2176?'). "
+    "NEVER suggest out-of-scope topics (criminal arrest, police investigations, labor, tax, programming). "
+    "CIVIL CODE ARTICLE BOUNDS: The Philippine Civil Code strictly ends at Article 2270. Never cite any article above 2270. "
     "ANTI-HALLUCINATION RULE: RA 386 is Republic Act No. 386 (the entire Civil Code), NOT Article 386. Never refer to 'Article 386'."
 )
 
@@ -90,7 +92,7 @@ async def generate_followups(
         messages = build_messages(query, answer, prior_user_turns, doc_filename)
         raw = await call_chat_completion_async(
             messages=messages,
-            temperature=0.7,
+            temperature=0.2,
             max_tokens=200,
             timeout_sec=timeout_sec,
         )

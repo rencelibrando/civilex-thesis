@@ -92,7 +92,7 @@ def main():
             repo_type="model",
             token=token,
         )
-        print(f"✓ Entire output directory uploaded! https://huggingface.co/{args.repo_id}")
+        print(f" Entire output directory uploaded! https://huggingface.co/{args.repo_id}")
         return
 
     # Option: User provided a specific folder to upload
@@ -128,7 +128,7 @@ def main():
             repo_type="model",
             token=token,
         )
-        print("✓ Merged model uploaded successfully (Hugging Face Transformers compatible).")
+        print(" Merged model uploaded successfully (Hugging Face Transformers compatible).")
         uploaded_anything = True
     else:
         print(f" Merged model not found at '{merged_dir}', skipping.")
@@ -143,7 +143,7 @@ def main():
             repo_type="model",
             token=token,
         )
-        print("✓ GGUF models uploaded successfully to /gguf (LM Studio & Ollama ready).")
+        print(" GGUF models uploaded successfully to /gguf (LM Studio & Ollama ready).")
         uploaded_anything = True
     else:
         print(f" GGUF models not found at '{gguf_dir}', skipping.")

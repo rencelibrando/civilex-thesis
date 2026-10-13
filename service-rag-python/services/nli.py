@@ -733,7 +733,8 @@ def decompose_claims(text: str) -> List[str]:
         r'requisites & elements|competent court|possible cause of action|'
         r'pre-filing requirement|suggested follow-up|follow-up inquiries|'
         r'liability for breach of obligation|damages and interest|'
-        r'governing civil code article|possible cause of action to file)',
+        r'governing civil code article|possible cause of action to file|'
+        r'halimbawa sa totoong buhay|real-life practical example|practical example)',
         re.IGNORECASE
     )
 

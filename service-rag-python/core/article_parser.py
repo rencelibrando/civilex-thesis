@@ -1,5 +1,5 @@
 import re
-from typing import List
+from typing import List, Optional
 
 # Dispute keywords indicating an active dispute/litigation rather than a statutory inquiry
 DISPUTE_PATTERNS = [
@@ -183,6 +183,49 @@ def is_jurisprudence_query(query: str) -> bool:
     ):
         return False
     return any(bool(re.search(p, q_lower)) for p in JURISPRUDENCE_PATTERNS)
+
+
+FAMILY_CODE_PATTERNS = [
+    r'\b(?:family\s+code|executive\s+order\s+(?:no\.?\s*)?209|eo\s*209|e\.o\.\s*209|f\.c\.|fc)\b',
+    r'\b(?:marriage|marital|remarriage|annulment|nullity\s+of\s+marriage|presumptive\s+death|psychological\s+incapacity|legal\s+separation|family\s+home|conjugal\s+partnership|absolute\s+community|filiation|paternity|parental\s+authority|adoption|spousal\s+support)\b'
+]
+
+
+def detect_statute_mention(query: str) -> Optional[str]:
+    if not query:
+        return None
+    q_lower = query.lower()
+    has_fc = any(re.search(p, q_lower) for p in [r'\b(?:family\s+code|executive\s+order\s+(?:no\.?\s*)?209|eo\s*209|e\.o\.\s*209|f\.c\.|fc)\b'])
+    has_cc = any(re.search(p, q_lower) for p in [r'\b(?:civil\s+code|republic\s+act\s+(?:no\.?\s*)?386|ra\s*386|r\.a\.\s*386|c\.c\.|cc)\b'])
+    if has_fc and not has_cc:
+        return "FC"
+    if has_cc and not has_fc:
+        return "CC"
+    return None
+
+
+def resolve_candidate_article_ids(query: str, art_nums: List[str]) -> List[str]:
+    statute = detect_statute_mention(query)
+    target_ids = []
+    for n in art_nums:
+        val = int(n)
+        if statute == "FC":
+            if 1 <= val <= 257:
+                target_ids.append(f"EO209-ART{val}")
+        elif statute == "CC":
+            if 1 <= val <= 2270:
+                target_ids.append(f"RA386-ART{val}")
+        else:
+            q_lower = query.lower() if query else ""
+            has_fc_context = any(re.search(p, q_lower) for p in FAMILY_CODE_PATTERNS)
+            if has_fc_context and 1 <= val <= 257:
+                target_ids.append(f"EO209-ART{val}")
+            if 1 <= val <= 2270:
+                target_ids.append(f"RA386-ART{val}")
+            if not has_fc_context and 1 <= val <= 257:
+                target_ids.append(f"EO209-ART{val}")
+    return target_ids
+
 
 
 

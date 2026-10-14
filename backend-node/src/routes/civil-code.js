@@ -13,20 +13,26 @@ const supabase = createClient(
 
 router.get('/stats', async (req, res) => {
   try {
-    const [casesRes, artsRes, relsRes] = await Promise.all([
+    const [casesRes, civilArtsRes, familyArtsRes, relsRes] = await Promise.all([
       supabase.from('jurisprudence_cases').select('*', { count: 'exact', head: true }),
-      supabase.from('civil_code_articles').select('*', { count: 'exact', head: true }).gt('article_number', 0),
+      supabase.from('civil_code_articles').select('*', { count: 'exact', head: true }).like('article_id', 'RA386-ART%'),
+      supabase.from('civil_code_articles').select('*', { count: 'exact', head: true }).like('article_id', 'EO209-ART%'),
       supabase.from('article_jurisprudence_relations').select('*', { count: 'exact', head: true })
     ]);
 
+    const civilCount = civilArtsRes.count ?? 2270;
+    const familyCount = familyArtsRes.count ?? 257;
+
     res.json({
       total_cases: casesRes.count ?? 11879,
-      total_articles: artsRes.count ?? 2270,
+      total_articles: civilCount,
+      civil_code_articles: civilCount,
+      family_code_articles: familyCount,
       total_relations: relsRes.count ?? 11639
     });
   } catch (err) {
     console.error("Error fetching stats:", err);
-    res.json({ total_cases: 11879, total_articles: 2270, total_relations: 11639 });
+    res.json({ total_cases: 11879, total_articles: 2270, civil_code_articles: 2270, family_code_articles: 257, total_relations: 11639 });
   }
 });
 
@@ -78,18 +84,26 @@ router.get('/search', async (req, res) => {
 
     // 1. Exact article lookup by parsed article number
     if (articleNum) {
+      const isFamilyQuery = /\b(?:family|marriage|kasal|asawa|annulment|nullity|filiation|adoption|custody|support|separation|eo\s*209|conjugal|community|psychological|incapacity|spouse|husband|wife|parental|emancipation)\b/i.test(query);
+      const targetArticleIds = isFamilyQuery
+        ? [`EO209-ART${articleNum}`, `RA386-ART${articleNum}`]
+        : [`RA386-ART${articleNum}`, `EO209-ART${articleNum}`];
+
       const { data: numArts, error: numErr } = await supabase
         .from('civil_code_articles')
         .select('article_id, article_number, hierarchy, content')
-        .eq('article_number', articleNum)
-        .limit(1);
+        .in('article_id', targetArticleIds)
+        .limit(2);
 
       if (!numErr && numArts && numArts.length > 0) {
+        // Sort so the preferred ID comes first
+        numArts.sort((a, b) => targetArticleIds.indexOf(a.article_id) - targetArticleIds.indexOf(b.article_id));
         const art = numArts[0];
+        const isFC = art.article_id.startsWith('EO209-');
         exactArticle = {
           article_id: art.article_id,
           article_number: art.article_number,
-          title: `Article ${art.article_number}`,
+          title: `Article ${art.article_number}${isFC ? ' (The Family Code)' : ''}`,
           hierarchy: art.hierarchy || {},
           content: art.content || '',
           snippet: art.content ? (art.content.length > 160 ? art.content.slice(0, 160) + '...' : art.content) : '',
@@ -97,6 +111,22 @@ router.get('/search', async (req, res) => {
         };
         seenArticleIds.add(art.article_id);
         articles.push(exactArticle);
+
+        // If both exist, also push the alternative
+        if (numArts.length > 1) {
+          const alt = numArts[1];
+          const altIsFC = alt.article_id.startsWith('EO209-');
+          seenArticleIds.add(alt.article_id);
+          articles.push({
+            article_id: alt.article_id,
+            article_number: alt.article_number,
+            title: `Article ${alt.article_number}${altIsFC ? ' (The Family Code)' : ''}`,
+            hierarchy: alt.hierarchy || {},
+            content: alt.content || '',
+            snippet: alt.content ? (alt.content.length > 160 ? alt.content.slice(0, 160) + '...' : alt.content) : '',
+            match_type: 'exact_number'
+          });
+        }
       }
     }
 
@@ -283,10 +313,24 @@ router.get('/toc', async (req, res) => {
       return a.hierarchy?.chapter_name || a.hierarchy?.title_name || a.article_id;
     };
 
+    const bookOrder = {
+      "GENERAL OVERVIEW & FOUNDATIONAL PRINCIPLES": -1,
+      "PRELIMINARY TITLE": 0,
+      "BOOK I - PERSONS": 1,
+      "THE FAMILY CODE OF THE PHILIPPINES (EXECUTIVE ORDER NO. 209)": 1.5,
+      "BOOK II - PROPERTY, OWNERSHIP, AND ITS MODIFICATIONS": 2,
+      "BOOK III - DIFFERENT MODES OF ACQUIRING OWNERSHIP": 3,
+      "BOOK IV - OBLIGATIONS AND CONTRACTS": 4
+    };
+
+    const sortedBookEntries = Array.from(booksMap.entries()).sort(
+      ([aTitle], [bTitle]) => (bookOrder[aTitle] ?? 99) - (bookOrder[bTitle] ?? 99)
+    );
+
     const resultTree = [];
     let bIdx = 0;
 
-    for (const [bookName, bookObj] of booksMap.entries()) {
+    for (const [bookName, bookObj] of sortedBookEntries) {
       bIdx++;
       const bookNode = {
         id: `book-${bIdx}`,
@@ -338,16 +382,6 @@ router.get('/toc', async (req, res) => {
 
       resultTree.push(bookNode);
     }
-
-    const bookOrder = {
-      "GENERAL OVERVIEW & FOUNDATIONAL PRINCIPLES": -1,
-      "PRELIMINARY TITLE": 0,
-      "BOOK I - PERSONS": 1,
-      "BOOK II - PROPERTY, OWNERSHIP, AND ITS MODIFICATIONS": 2,
-      "BOOK III - DIFFERENT MODES OF ACQUIRING OWNERSHIP": 3,
-      "BOOK IV - OBLIGATIONS AND CONTRACTS": 4
-    };
-    resultTree.sort((a, b) => (bookOrder[a.title] ?? 99) - (bookOrder[b.title] ?? 99));
 
     res.json({ toc: resultTree });
   } catch (err) {

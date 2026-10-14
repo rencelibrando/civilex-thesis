@@ -247,7 +247,7 @@ function CivilCodeContent() {
                         const matchesTitle = titleLower.includes(q);
                         const matchesId = idLower.includes(q);
                         const matchesNum = articleNum
-                            ? idLower === `ra386-art${articleNum}` || titleLower === `article ${articleNum}`
+                            ? idLower === `ra386-art${articleNum}` || idLower === `eo209-art${articleNum}` || titleLower === `article ${articleNum}`
                             : false;
                         const matchesRemote = remoteSet.has(idLower);
 
@@ -346,7 +346,7 @@ function CivilCodeContent() {
                             Table of Contents
                         </h2>
                         <Badge variant="secondary" className="text-[10px] bg-indigo-500/10 dark:bg-indigo-500/20 text-indigo-700 dark:text-indigo-300 border border-indigo-500/20 font-semibold">
-                            2,270 Articles
+                            2,527 Codal Articles
                         </Badge>
                     </div>
 
@@ -484,6 +484,11 @@ function CivilCodeContent() {
                                     >
                                         {row.title}
                                     </span>
+                                    {row.isLeaf && row.id.startsWith("EO209-") && (
+                                        <Badge variant="outline" className="ml-1 text-[9px] px-1 py-0 border-rose-500/30 text-rose-600 dark:text-rose-400 font-normal shrink-0">
+                                            EO 209
+                                        </Badge>
+                                    )}
                                 </button>
                             );
                         })}
@@ -549,6 +554,11 @@ function CivilCodeContent() {
                           <span className={`flex-1 min-w-0 break-words text-xs sm:text-sm leading-snug ${row.depth === 0 ? "font-semibold text-foreground" : isSelected ? "text-indigo-700 dark:text-indigo-300 font-semibold" : "text-muted-foreground"}`}>
                             {row.title}
                           </span>
+                          {row.isLeaf && row.id.startsWith("EO209-") && (
+                            <Badge variant="outline" className="ml-1 text-[9px] px-1 py-0 border-rose-500/30 text-rose-600 dark:text-rose-400 font-normal shrink-0">
+                              EO 209
+                            </Badge>
+                          )}
                         </button>
                       );
                     })}
@@ -599,14 +609,34 @@ function CivilCodeContent() {
                 ) : (
                     <>
                         <div className="p-3 sm:p-4 2xl:p-5 border-b border-border flex items-start justify-between bg-card/50">
-                            <div>
-                                <div className="text-xs sm:text-sm text-indigo-600 dark:text-indigo-400 font-medium mb-1.5 flex items-center flex-wrap gap-1.5 sm:gap-2">
-                                    {articleData.hierarchy.book_name && <Badge variant="secondary" className="bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-700 dark:text-indigo-300 border border-indigo-500/20 text-[11px] sm:text-xs font-semibold">{articleData.hierarchy.book_name}</Badge>}
-                                    {articleData.hierarchy.title_name && <span className="text-muted-foreground text-xs">&gt; {articleData.hierarchy.title_name}</span>}
-                                    {articleData.hierarchy.chapter_name && <span className="text-muted-foreground text-xs">&gt; {articleData.hierarchy.chapter_name}</span>}
-                                </div>
-                                <h1 className="text-lg sm:text-xl 2xl:text-2xl font-bold text-foreground tracking-tight">Article {articleData.article_number || articleData.article_id}</h1>
-                            </div>
+                            {(() => {
+                                const isFC = articleData.article_id.startsWith("EO209-");
+                                return (
+                                    <div>
+                                        <div className={`text-xs sm:text-sm font-medium mb-1.5 flex items-center flex-wrap gap-1.5 sm:gap-2 ${isFC ? "text-rose-600 dark:text-rose-400" : "text-indigo-600 dark:text-indigo-400"}`}>
+                                            {articleData.hierarchy.book_name && (
+                                                <Badge
+                                                    variant="secondary"
+                                                    className={
+                                                        isFC
+                                                            ? "bg-rose-500/10 hover:bg-rose-500/20 text-rose-700 dark:text-rose-300 border border-rose-500/20 text-[11px] sm:text-xs font-semibold"
+                                                            : "bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-700 dark:text-indigo-300 border border-indigo-500/20 text-[11px] sm:text-xs font-semibold"
+                                                    }
+                                                >
+                                                    {articleData.hierarchy.book_name}
+                                                </Badge>
+                                            )}
+                                            {articleData.hierarchy.title_name && <span className="text-muted-foreground text-xs">&gt; {articleData.hierarchy.title_name}</span>}
+                                            {articleData.hierarchy.chapter_name && <span className="text-muted-foreground text-xs">&gt; {articleData.hierarchy.chapter_name}</span>}
+                                        </div>
+                                        <h1 className="text-lg sm:text-xl 2xl:text-2xl font-bold text-foreground tracking-tight">
+                                            {articleData.article_number > 0
+                                                ? `Article ${articleData.article_number}${isFC ? " (The Family Code)" : ""}`
+                                                : (articleData.hierarchy?.chapter_name || articleData.hierarchy?.title_name || articleData.article_id)}
+                                        </h1>
+                                    </div>
+                                );
+                            })()}
                             <TooltipProvider>
                                 <Tooltip>
                                     <TooltipTrigger className="p-2 sm:p-2.5 text-muted-foreground hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-accent rounded-xl transition-colors focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:outline-none active:scale-95 shadow-sm border border-transparent hover:border-border cursor-pointer">

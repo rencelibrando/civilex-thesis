@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback, Fragment } from "react";
+import { useState, useRef, useEffect, useCallback, Fragment, isValidElement } from "react";
 import { useRouter } from "next/navigation";
 import {
   Send,
@@ -71,6 +71,17 @@ function getChatCategoryBadgeClass(category?: string) {
 
 // Markdown renderer for assistant messages
 
+function extractTextContent(node: React.ReactNode): string {
+  if (node === null || node === undefined) return "";
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(extractTextContent).join("");
+  if (isValidElement(node)) {
+    const props = node.props as { children?: React.ReactNode };
+    return props.children ? extractTextContent(props.children) : "";
+  }
+  return "";
+}
+
 function AssistantMarkdown({ content }: { content: string }) {
   return (
     <div
@@ -92,7 +103,28 @@ function AssistantMarkdown({ content }: { content: string }) {
       text-foreground text-sm
     "
     >
-      <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          blockquote: ({ children, ...props }) => {
+            const text = extractTextContent(children);
+            const isDisclaimer = /important\s+notice|mahalagang\s+paalala|educational\s+legal\s+information/i.test(text);
+            if (isDisclaimer) {
+              return (
+                <blockquote
+                  {...props}
+                  className="!my-2.5 !border-l-2 !border-muted-foreground/40 !bg-muted/15 !py-1.5 !pl-3.5 !pr-2 !text-xs !italic !leading-relaxed !text-muted-foreground rounded-r-md [&_*]:!text-xs [&_*]:!italic [&_*]:!leading-relaxed [&_p]:!my-0.5"
+                >
+                  {children}
+                </blockquote>
+              );
+            }
+            return <blockquote {...props}>{children}</blockquote>;
+          },
+        }}
+      >
+        {content}
+      </ReactMarkdown>
     </div>
   );
 }

@@ -25,10 +25,11 @@ To produce an authoritative, legally current, and machine-readable dataset for t
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
 │             CIVIL-LEX JURISPRUDENCE & STATUTE DATA PIPELINE ARCHITECTURE               │
 ├────────────────────────────────────────────────────────────────────────────────────────┤
-│ 1. Statutory Acquisition:                                                              │
-│    - Official Supreme Court repository scraping of RA 386 (2,270 articles)            │
-│    - Automated JSON formatting into civil_code_rag.jsonl                              │
-│    - Amendment integration with EO 209 (Family Code of the Philippines)                │
+│ 1. Dual-Statute Acquisition & JSONL Curation:                                          │
+│    - Scraping of RA 386 Civil Code (2,270 articles, 2,749 chunks in civil_code_rag.jsonl│
+│    - Ingestion of EO 209 Family Code (257 articles, 265 chunks in family_code_rag.jsonl)│
+│    - Correction of source OCR typos (Art. 150 & 219) for 100% statutory continuity     │
+│    - Combined Statutory Corpus: 2,527 articles, 3,014 chunks under dual namespaces     │
 │                                           │                                            │
 │                                           ▼                                            │
 │ 2. Web Crawling of Supreme Court Decisions (1949–2025):                                │
@@ -60,7 +61,13 @@ To produce an authoritative, legally current, and machine-readable dataset for t
 └────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-1. **Official Statutory Scraping & JSON Formatting:** The complete statutory text of Republic Act No. 386 (Civil Code of the Philippines) was extracted from official government repositories using automated extraction scripts. The text was structured into machine-readable JSON format (`civil_code_rag.jsonl`), preserving hierarchical books, titles, chapters, and sections across the Preliminary Title and Books I through IV. Supervening amendments from Executive Order No. 209 (Family Code of the Philippines) were explicitly integrated to supersede repealed marriage and family provisions.
+1. **Dual Statutory Acquisition & JSONL Curation:** 
+   - **Civil Code of the Philippines (RA 386):** Extracted from official government repositories and structured into machine-readable JSONL (`civil_code_rag.jsonl`, 2,270 articles, 2,749 granular clause chunks).
+   - **The Family Code of the Philippines (EO 209):** Curated from the Official Gazette of the Republic of the Philippines (`family_code_rag.jsonl`, 257 articles, 265 semantic chunks) covering Titles I through XII. During data engineering, the proponents executed an automated statutory sequence audit and resolved two historical OCR misprints in the official publication:
+     - *Article 150 Typo:* Misprinted as `Art. 50` under Title V, Chapter 1; corrected to `Art. 150`.
+     - *Article 219 Typo:* Misprinted as `Art. 129` under Title IX, Chapter 2; corrected to `Art. 219`.
+     These corrections established a complete sequence from Article 1 to Article 257 without gaps or duplicates.
+   - **Unified Statutory Namespace & Ingestion:** The combined statutory corpus encompasses **2,527 articles** and **3,014 indexed chunks** stored in PostgreSQL (`civil_code_articles` and `document_chunks`), mapped under distinct namespaces (`RA386-ART*` and `EO209-ART*`) to eliminate statutory collisions (such as Article 41 presumptive death vs Article 41 fetal viability).
 2. **Mass Jurisprudence Crawling (1949–2025):** The proponents developed a high-throughput legal web crawler targeting **Lawphil.net**, harvesting **57,000+ raw Supreme Court decisions** spanning from the Civil Code's enactment year (1949) to 2025. This raw crawl captured decision metadata, G.R. numbers, syllabi, full opinion texts, and dispositive portions.
 3. **Two-Stage Semantic Vector Filtering (57k+ $\rightarrow$ 11,879 Decisions):**
    - *Stage 3A (Civil Domain Filtering):* Because the raw 57,000+ decision corpus contained cases across all legal specializations (e.g., criminal law, tax, labor, constitutional, administrative), the proponents generated dense vector embeddings for all Civil Code provisions. A high-dimensional similarity search was conducted across the 57k+ cases, filtering out non-civil decisions and isolating **11,879 Supreme Court cases** strictly relevant to Philippine Civil Law.
@@ -78,24 +85,26 @@ To produce an authoritative, legally current, and machine-readable dataset for t
 | Corpus Category | Source / Legal Basis | Raw Records | Granular Indexed Chunks | Metadata & Enriched Fields |
 | :--- | :--- | :---: | :---: | :--- |
 | **Civil Code Provisions** | Republic Act No. 386 (Books I–IV & Prelim. Title) | 2,270 Articles | 2,749 Chunks | Article No., Book, Title, Chapter, Domain Tags, Status Flags |
-| **Superseding Amendments** | Executive Order No. 209 (Family Code) | Integrated | Integrated | Amendment cross-references, repealed status tags |
+| **Family Code Provisions** | Executive Order No. 209 (Titles I–XII) | 257 Articles | 265 Chunks | Article No., Title, Chapter, Section, Domain Tags, Hub Flags |
+| **Combined Statutory Corpus** | **RA 386 & EO 209 (Philippine Civil Law)** | **2,527 Articles** | **3,014 Chunks** | **Unified Statutory Namespace (`RA386-` & `EO209-`)** |
 | **Initial Jurisprudence Crawl** | Lawphil.net Scraper (1949–2025) | 57,000+ Cases | Raw Decision HTML | Case Title, G.R. Number, Promulgation Date, Raw Content |
 | **Filtered Civil Jurisprudence**| Semantic Similarity & Citation Filtered | 11,879 Cases | 351,076 Chunks | Prepending Case Header, G.R., Topics, Section, Full Content |
 | **Article-to-Case Citation Index**| Cross-Referenced Precedent Index | 2,268 Articles | 2,268 Linked Dicts | `article_case_index.json` (Total citations, top cases, hub status)|
 | **LoRA SFT Training Set** | LLM Augmented Instruction Pairs | 5,031 Samples | 5,031 Prompts | Bilingual Q&A, Chain-of-Thought, Plain-Language Summary, Caveats |
 | **Benchmark Evaluation Set** | Stratified Multi-Track Evaluation Corpus | 605 Samples | 605 Scenarios | Simplification (324), RAG Grounded (161), Redirection (49), Refusal (34), Guardrails (37) |
-| **Total Ingested Corpus** | **Statutes, Cases, & Augmented Datasets** | **19,785 Entries** | **358,856 Chunks** | **Dense Embeddings + Lexical FTS Indexing** |
+| **Total Ingested Corpus** | **Statutes, Cases, & Augmented Datasets** | **20,042 Entries** | **359,121 Chunks** | **Dense Embeddings + Lexical FTS Indexing** |
 
 #### Table 4.1b: Two-Stage Filtering and Context-Preserving Chunking Pipeline
 
 | Pipeline Processing Stage | Input Volume | Output Volume | Reduction / Chunking Ratio | Methodology & Verification Rationale |
 | :--- | :---: | :---: | :---: | :--- |
-| **1. Lawphil Raw Decision Crawl** | Complete Lawphil Archive | 57,000+ Cases | 100.0% baseline crawl | Automated web crawler harvesting decisions from 1949 to 2025 |
-| **2. Domain Vector Filtering** | 57,000+ Decisions | 11,879 Decisions | **20.84% retained** (79.16% non-civil decisions filtered) | Dense embedding similarity search against Civil Code provisions (eliminating criminal, tax, labor, and administrative cases) |
-| **3. Article Citation Linkage** | 11,879 Decisions | 2,268 Articles | **99.91% statutory coverage** (2,268 / 2,270 articles) | Secondary similarity search & explicit statutory citation indexing (`article_case_index.json`) |
-| **4. Raw Full-Text Ingestion** | 11,879 Cases | 11,879 Rows | **1.0 doc / case** (100.0% ingested) | Ingested into PostgreSQL `jurisprudence_documents` for Table of Contents and full document viewer |
-| **5. Context-Preserving Chunking** | 11,879 Decisions (4k+ tokens avg) | 351,076 Chunks | **29.55 chunks / case** (~417 tokens avg / chunk) | Section-aware chunking prepending standardized metadata header line to preserve legal context |
-| **6. Batch Vector Ingestion** | 351,076 Chunks | 351,076 Vectors | **100.0% embedded** | Multi-threaded checkpointed batching into PostgreSQL `pgvector` with 768-dim HNSW index |
+| **1. Statutory Acquisition & Curation**| RA 386 & EO 209 Official Texts | 2,527 Articles | **3,014 Chunks** | Dual-statute structuring, OCR typo fixes (Art. 150 & 219), and clause-aware segmentation |
+| **2. Lawphil Raw Decision Crawl** | Complete Lawphil Archive | 57,000+ Cases | 100.0% baseline crawl | Automated web crawler harvesting decisions from 1949 to 2025 |
+| **3. Domain Vector Filtering** | 57,000+ Decisions | 11,879 Decisions | **20.84% retained** (79.16% non-civil decisions filtered) | Dense embedding similarity search against Civil Code provisions (eliminating criminal, tax, labor, and administrative cases) |
+| **4. Article Citation Linkage** | 11,879 Decisions | 2,268 Articles | **99.91% statutory coverage** (2,268 / 2,270 articles) | Secondary similarity search & explicit statutory citation indexing (`article_case_index.json`) |
+| **5. Raw Full-Text Ingestion** | 11,879 Cases | 11,879 Rows | **1.0 doc / case** (100.0% ingested) | Ingested into PostgreSQL `jurisprudence_documents` for Table of Contents and full document viewer |
+| **6. Context-Preserving Chunking** | 11,879 Decisions (4k+ tokens avg) | 351,076 Chunks | **29.55 chunks / case** (~417 tokens avg / chunk) | Section-aware chunking prepending standardized metadata header line to preserve legal context |
+| **7. Batch Vector Ingestion** | 351,076 Chunks | 351,076 Vectors | **100.0% embedded** | Multi-threaded checkpointed batching into PostgreSQL `pgvector` with 768-dim HNSW index |
 
 #### Table 4.2: Data Validation Results by Legal Subject Matter Experts (SME Audit, $N = 120$ Sample)
 
@@ -280,111 +289,119 @@ The retriever model achieved an F1-Score of 0.958, while the confusion matrix co
 
 #### 4.1 Narrative Answer for Manuscript
 
-To rigorously evaluate the overall software quality of CIVIL-LEX, the proponents employed a triangulated dual-instrument evaluation methodology based on ISO/IEC 25010:2023:
+To rigorously evaluate the overall software quality of CIVIL-LEX, the proponents developed an empirical evaluation methodology grounded in the international standard **ISO/IEC 25010:2023 (Systems and software engineering — Systems and software Quality Requirements and Evaluation [SQuaRE])**. 
 
-1. **Set A: Technical Architecture Evaluation (IT Experts & Statistician, $N = 3$):** Measured across 8 technical characteristics using Weighted Mean ($\bar{x}$) and Standard Deviation ($SD$).
-2. **Set B: Usability and Public Comprehension Evaluation (Lawyers, $N = 2$, and Barangay 548 Citizens, $n = 269$):** Measured across 5 citizen-facing usability dimensions.
-3. **Synthesis Across All Eight ISO/IEC 25010 Dimensions:**
-   - **a. Functional Suitability ($\bar{x} = 4.67$, Strongly Agree)**
-   - **b. Performance Efficiency ($\bar{x} = 4.67$, Strongly Agree)**
-   - **c. Compatibility ($\bar{x} = 5.00$, Strongly Agree)**
-   - **d. Usability ($\bar{x} = 4.76$, Strongly Agree)**
-   - **e. Reliability ($\bar{x} = 4.67$, Strongly Agree)**
-   - **f. Security ($\bar{x} = 4.67$, Strongly Agree)**
-   - **g. Maintainability ($\bar{x} = 4.67$, Strongly Agree)**
-   - **h. Portability & Flexibility ($\bar{x} = 5.00$, Strongly Agree)**
+Data gathering is currently actively underway across two targeted stakeholder instruments to ensure methodological triangulation:
 
-#### Table 4.8: Technical Quality Evaluation Results by IT Experts (ISO/IEC 25010 Set A, $N = 3$)
+1. **Set A: Technical Architecture Evaluation (IT Professionals & Statistician, $N = 3$):** Administered to software engineers, systems architects, and a professional statistician to evaluate deep technical characteristics including Functional Suitability, Performance Efficiency, Compatibility, Reliability, Security, Maintainability, and Portability.
+2. **Set B: Usability, Plain-Language Comprehension, & Communicative Legal Efficacy (Legal Experts, $N = 2$, & Citizen Cohort, $n = 269$):** Administered to licensed attorneys and citizen respondents in Barangay 548, Sampaloc, Manila (sampled via Slovin's formula, $N = 821, e = 0.05 \rightarrow n = 269$) to evaluate practical dispute-solving utility, UI operability, plain-language intelligibility, and statutory transparency.
+3. **Target Evaluation Characteristics Across All Eight ISO/IEC 25010 Dimensions:**
+   - **a. Functional Suitability** (Evaluates completeness, correctness, and appropriateness of statutory retrieval and advice)
+   - **b. Performance Efficiency** (Evaluates response latency, capacity, and resource utilization)
+   - **c. Compatibility** (Evaluates cross-platform co-existence and API interoperability)
+   - **d. Usability** (Evaluates learnability, plain-language intelligibility, and citizen operability)
+   - **e. Reliability** (Evaluates fault tolerance, fallback handling, and stability)
+   - **f. Security** (Evaluates confidentiality, prompt injection defense, and authentication)
+   - **g. Maintainability** (Evaluates modularity, code analyzability, and testability)
+   - **h. Portability & Flexibility** (Evaluates deployment adaptability and multi-environment installability)
+
+#### Table 4.8: Technical Quality Evaluation Scorecard (ISO/IEC 25010 Set A: IT Experts & Statistician, $N = 3$)
+*(Note: Field survey administration and professional scoring currently in progress)*
 
 | ISO/IEC 25010 Quality Characteristic | IT Expert 1 | IT Expert 2 | Statistician | Weighted Mean ($\bar{x}$) | Standard Deviation ($SD$) | Verbal Interpretation |
 | :--- | :---: | :---: | :---: | :---: | :---: | :--- |
-| **1. Functional Suitability** | 5.00 | 5.00 | 4.00 | **4.67** | **0.58** | **Strongly Agree** |
-| • Functional Completeness | 5.00 | 5.00 | 4.00 | 4.67 | 0.58 | Strongly Agree |
-| • Functional Correctness | 5.00 | 5.00 | 5.00 | 5.00 | 0.00 | Strongly Agree |
-| • Functional Appropriateness | 5.00 | 4.00 | 4.00 | 4.33 | 0.58 | Agree |
-| **2. Performance Efficiency** | 5.00 | 4.00 | 5.00 | **4.67** | **0.58** | **Strongly Agree** |
-| • Time Behavior (Latency) | 5.00 | 4.00 | 5.00 | 4.67 | 0.58 | Strongly Agree |
-| • Resource Utilization | 5.00 | 4.00 | 4.00 | 4.33 | 0.58 | Agree |
-| • Capacity & Throughput | 5.00 | 5.00 | 5.00 | 5.00 | 0.00 | Strongly Agree |
-| **3. Compatibility** | 5.00 | 5.00 | 5.00 | **5.00** | **0.00** | **Strongly Agree** |
-| • Co-existence | 5.00 | 5.00 | 5.00 | 5.00 | 0.00 | Strongly Agree |
-| • Interoperability | 5.00 | 5.00 | 5.00 | 5.00 | 0.00 | Strongly Agree |
-| **4. Reliability** | 4.00 | 5.00 | 5.00 | **4.67** | **0.58** | **Strongly Agree** |
-| • Maturity & Stability | 4.00 | 5.00 | 5.00 | 4.67 | 0.58 | Strongly Agree |
-| • Fault Tolerance & Fallback | 5.00 | 5.00 | 5.00 | 5.00 | 0.00 | Strongly Agree |
-| • Recoverability | 4.00 | 5.00 | 4.00 | 4.33 | 0.58 | Agree |
-| **5. Security** | 5.00 | 4.00 | 5.00 | **4.67** | **0.58** | **Strongly Agree** |
-| • Confidentiality | 5.00 | 5.00 | 5.00 | 5.00 | 0.00 | Strongly Agree |
-| • Integrity & Injection Defense | 5.00 | 4.00 | 5.00 | 4.67 | 0.58 | Strongly Agree |
-| • User Authentication | 5.00 | 4.00 | 5.00 | 4.67 | 0.58 | Strongly Agree |
-| **6. Maintainability** | 5.00 | 5.00 | 4.00 | **4.67** | **0.58** | **Strongly Agree** |
-| • Modularity | 5.00 | 5.00 | 5.00 | 5.00 | 0.00 | Strongly Agree |
-| • Analyzability & Logging | 5.00 | 4.00 | 4.00 | 4.33 | 0.58 | Agree |
-| • Modifiability & Extensibility | 5.00 | 5.00 | 4.00 | 4.67 | 0.58 | Strongly Agree |
-| • Testability | 5.00 | 5.00 | 4.00 | 4.67 | 0.58 | Strongly Agree |
-| **7. Portability & Flexibility** | 5.00 | 5.00 | 5.00 | **5.00** | **0.00** | **Strongly Agree** |
-| • Adaptability | 5.00 | 5.00 | 5.00 | 5.00 | 0.00 | Strongly Agree |
-| • Installability & Deployment | 5.00 | 5.00 | 5.00 | 5.00 | 0.00 | Strongly Agree |
-| **8. Operational Safety & Guardrails** | 5.00 | 5.00 | 5.00 | **5.00** | **0.00** | **Strongly Agree** |
-| • Redirection of Non-Civil Law | 5.00 | 5.00 | 5.00 | 5.00 | 0.00 | Strongly Agree |
-| • Legal Practice Disclaimer (UPL)| 5.00 | 5.00 | 5.00 | 5.00 | 0.00 | Strongly Agree |
-| **Composite Technical Mean** | **4.88** | **4.63** | **4.75** | **4.79** | **0.36** | **Strongly Agree (Excellently Satisfied)**|
+| **1. Functional Suitability** | — | — | — | — | — | *Pending Survey Return* |
+| • Functional Completeness | — | — | — | — | — | *Pending Survey Return* |
+| • Functional Correctness | — | — | — | — | — | *Pending Survey Return* |
+| • Functional Appropriateness | — | — | — | — | — | *Pending Survey Return* |
+| **2. Performance Efficiency** | — | — | — | — | — | *Pending Survey Return* |
+| • Time Behavior (Latency) | — | — | — | — | — | *Pending Survey Return* |
+| • Resource Utilization | — | — | — | — | — | *Pending Survey Return* |
+| • Capacity & Throughput | — | — | — | — | — | *Pending Survey Return* |
+| **3. Compatibility** | — | — | — | — | — | *Pending Survey Return* |
+| • Co-existence | — | — | — | — | — | *Pending Survey Return* |
+| • Interoperability | — | — | — | — | — | *Pending Survey Return* |
+| **4. Reliability** | — | — | — | — | — | *Pending Survey Return* |
+| • Maturity & Stability | — | — | — | — | — | *Pending Survey Return* |
+| • Fault Tolerance & Fallback | — | — | — | — | — | *Pending Survey Return* |
+| • Recoverability | — | — | — | — | — | *Pending Survey Return* |
+| **5. Security** | — | — | — | — | — | *Pending Survey Return* |
+| • Confidentiality | — | — | — | — | — | *Pending Survey Return* |
+| • Integrity & Injection Defense | — | — | — | — | — | *Pending Survey Return* |
+| • User Authentication | — | — | — | — | — | *Pending Survey Return* |
+| **6. Maintainability** | — | — | — | — | — | *Pending Survey Return* |
+| • Modularity | — | — | — | — | — | *Pending Survey Return* |
+| • Analyzability & Logging | — | — | — | — | — | *Pending Survey Return* |
+| • Modifiability & Extensibility | — | — | — | — | — | *Pending Survey Return* |
+| • Testability | — | — | — | — | — | *Pending Survey Return* |
+| **7. Portability & Flexibility** | — | — | — | — | — | *Pending Survey Return* |
+| • Adaptability | — | — | — | — | — | *Pending Survey Return* |
+| • Installability & Deployment | — | — | — | — | — | *Pending Survey Return* |
+| **8. Operational Safety & Guardrails** | — | — | — | — | — | *Pending Survey Return* |
+| • Redirection of Non-Civil Law | — | — | — | — | — | *Pending Survey Return* |
+| • Legal Practice Disclaimer (UPL)| — | — | — | — | — | *Pending Survey Return* |
+| **Composite Technical Mean** | **—** | **—** | **—** | **—** | **—** | **[Survey Collection in Progress]** |
 
-#### Table 4.9: Usability & Public Comprehension Evaluation Results (ISO/IEC 25010 Set B, $n = 269$ Citizens & $N = 2$ Lawyers)
+#### Table 4.9: Usability & Public Comprehension Evaluation Scorecard (ISO/IEC 25010 Set B: Citizen Cohort, $n = 269$, & Legal Professionals, $N = 2$)
+*(Note: Field survey administration and citizen questionnaire collection currently in progress in Barangay 548, Sampaloc, Manila)*
 
 | Usability Quality Dimension | Lawyer 1 | Lawyer 2 | Citizen Cohort ($\bar{x}$) | Overall Weighted Mean ($\bar{x}$) | Standard Deviation ($SD$) | Verbal Interpretation |
 | :--- | :---: | :---: | :---: | :---: | :---: | :--- |
-| **1. Functional Appropriateness** | 5.00 | 4.00 | 4.62 | **4.60** | **0.55** | **Strongly Agree** |
-| • Addresses everyday civil disputes | 5.00 | 5.00 | 4.68 | 4.70 | 0.48 | Strongly Agree |
-| • Practical legal problem relevance | 5.00 | 4.00 | 4.56 | 4.52 | 0.52 | Strongly Agree |
-| **2. Operability & UI Usability** | 5.00 | 5.00 | 4.78 | **4.80** | **0.45** | **Strongly Agree** |
-| • Learnability for first-time users | 5.00 | 5.00 | 4.82 | 4.83 | 0.39 | Strongly Agree |
-| • Document upload & OCR workflow | 4.00 | 5.00 | 4.72 | 4.71 | 0.47 | Strongly Agree |
-| • Mobile and desktop responsiveness | 5.00 | 5.00 | 4.80 | 4.81 | 0.40 | Strongly Agree |
-| **3. Plain-Language Intelligibility (SC SPJI)**| 5.00 | 5.00 | 4.79 | **4.80** | **0.45** | **Strongly Agree** |
-| • Translation of complex legal text | 5.00 | 5.00 | 4.84 | 4.85 | 0.37 | Strongly Agree |
-| • Tagalog / English linguistic clarity| 5.00 | 5.00 | 4.80 | 4.81 | 0.40 | Strongly Agree |
-| • Absence of confusing legalese | 4.00 | 5.00 | 4.72 | 4.71 | 0.49 | Strongly Agree |
-| **4. Actionability & Helpfulness** | 5.00 | 4.00 | 4.81 | **4.80** | **0.45** | **Strongly Agree** |
-| • Clear next steps (Barangay/Court) | 5.00 | 5.00 | 4.85 | 4.86 | 0.36 | Strongly Agree |
-| • Time savings and guidance value | 5.00 | 4.00 | 4.76 | 4.74 | 0.46 | Strongly Agree |
-| **5. Trust & Legal Safety** | 5.00 | 5.00 | 4.78 | **4.80** | **0.45** | **Strongly Agree** |
-| • Statutory citation transparency | 5.00 | 5.00 | 4.82 | 4.83 | 0.38 | Strongly Agree |
-| • Prominence of legal disclaimer | 5.00 | 5.00 | 4.75 | 4.76 | 0.44 | Strongly Agree |
-| **Composite Usability Mean** | **4.85** | **4.75** | **4.75** | **4.76** | **0.47** | **Strongly Agree (Excellently Satisfied)**|
+| **1. Functional Appropriateness** | — | — | — | — | — | *Pending Survey Return* |
+| • Addresses everyday civil disputes | — | — | — | — | — | *Pending Survey Return* |
+| • Practical legal problem relevance | — | — | — | — | — | *Pending Survey Return* |
+| **2. Operability & UI Usability** | — | — | — | — | — | *Pending Survey Return* |
+| • Learnability for first-time users | — | — | — | — | — | *Pending Survey Return* |
+| • Document upload & OCR workflow | — | — | — | — | — | *Pending Survey Return* |
+| • Mobile and desktop responsiveness | — | — | — | — | — | *Pending Survey Return* |
+| **3. Plain-Language Intelligibility (SC SPJI)**| — | — | — | — | — | *Pending Survey Return* |
+| • Translation of complex legal text | — | — | — | — | — | *Pending Survey Return* |
+| • Tagalog / English linguistic clarity| — | — | — | — | — | *Pending Survey Return* |
+| • Absence of confusing legalese | — | — | — | — | — | *Pending Survey Return* |
+| **4. Actionability & Helpfulness** | — | — | — | — | — | *Pending Survey Return* |
+| • Clear next steps (Barangay/Court) | — | — | — | — | — | *Pending Survey Return* |
+| • Time savings and guidance value | — | — | — | — | — | *Pending Survey Return* |
+| **5. Trust & Legal Safety** | — | — | — | — | — | *Pending Survey Return* |
+| • Statutory citation transparency | — | — | — | — | — | *Pending Survey Return* |
+| • Prominence of legal disclaimer | — | — | — | — | — | *Pending Survey Return* |
+| **Composite Usability Mean** | **—** | **—** | **—** | **—** | **—** | **[Survey Collection in Progress]** |
 
-#### Table 4.10: Consolidated Overall ISO/IEC 25010 Quality Characteristic Scorecard
+#### Table 4.10: Consolidated Overall ISO/IEC 25010 Software Quality Scorecard
+*(Note: Summary scorecard pending completion of Set A and Set B survey administration)*
 
 | ISO/IEC 25010 Dimension | Target Threshold | Evaluated Mean ($\bar{x}$) | Standard Deviation ($SD$) | Verbal Interpretation | ISO Quality Level |
 | :--- | :---: | :---: | :---: | :---: | :--- |
-| **a. Functional Suitability** | $\ge 3.50$ (Agree) | **4.67** | **0.58** | **Strongly Agree** | Excellently Satisfied |
-| **b. Performance Efficiency** | $\ge 3.50$ (Agree) | **4.67** | **0.58** | **Strongly Agree** | Excellently Satisfied |
-| **c. Compatibility** | $\ge 3.50$ (Agree) | **5.00** | **0.00** | **Strongly Agree** | Excellently Satisfied |
-| **d. Usability (Citizen & Lawyer)** | $\ge 3.50$ (Agree) | **4.76** | **0.47** | **Strongly Agree** | Excellently Satisfied |
-| **e. Reliability** | $\ge 3.50$ (Agree) | **4.67** | **0.58** | **Strongly Agree** | Excellently Satisfied |
-| **f. Security** | $\ge 3.50$ (Agree) | **4.67** | **0.58** | **Strongly Agree** | Excellently Satisfied |
-| **g. Maintainability** | $\ge 3.50$ (Agree) | **4.67** | **0.58** | **Strongly Agree** | Excellently Satisfied |
-| **h. Portability & Flexibility** | $\ge 3.50$ (Agree) | **5.00** | **0.00** | **Strongly Agree** | Excellently Satisfied |
-| **Overall Software Quality Score**| $\ge 3.50$ (Agree) | **4.76** | **0.42** | **Strongly Agree** | **Excellently Satisfied (Ready for Deployment)**|
+| **a. Functional Suitability** | $\ge 3.50$ (Agree) | — | — | *Pending Data Collection* | *Under Evaluation* |
+| **b. Performance Efficiency** | $\ge 3.50$ (Agree) | — | — | *Pending Data Collection* | *Under Evaluation* |
+| **c. Compatibility** | $\ge 3.50$ (Agree) | — | — | *Pending Data Collection* | *Under Evaluation* |
+| **d. Usability (Citizen & Lawyer)** | $\ge 3.50$ (Agree) | — | — | *Pending Data Collection* | *Under Evaluation* |
+| **e. Reliability** | $\ge 3.50$ (Agree) | — | — | *Pending Data Collection* | *Under Evaluation* |
+| **f. Security** | $\ge 3.50$ (Agree) | — | — | *Pending Data Collection* | *Under Evaluation* |
+| **g. Maintainability** | $\ge 3.50$ (Agree) | — | — | *Pending Data Collection* | *Under Evaluation* |
+| **h. Portability & Flexibility** | $\ge 3.50$ (Agree) | — | — | *Pending Data Collection* | *Under Evaluation* |
+| **Overall Software Quality Score**| $\ge 3.50$ (Agree) | **—** | **—** | **[Pending Survey Tabulation]** | **[Awaiting Field Data Collection]** |
 
-#### Table 4.11: Chatbot Expert Evaluation Rubric (10 Core NLP/AI Chatbot Dimensions, 5-Point Likert)
+#### Table 4.11: Conversational AI & NLP Expert Evaluation Scorecard (10 Core Dimensions, 5-Point Likert)
+*(Note: Expert scoring currently in progress with legal and AI practitioners)*
 
 | Chatbot Evaluation Criterion | Focus Description | Weighted Mean ($\bar{x}$) | Standard Deviation ($SD$) | Verbal Interpretation |
 | :--- | :--- | :---: | :---: | :---: |
-| **1. Accuracy** | Factual correctness of statutory rules and citations | **4.80** | **0.45** | **Strongly Agree** |
-| **2. Relevance** | Direct addressing of user prompt without filler | **5.00** | **0.00** | **Strongly Agree** |
-| **3. Coherence** | Logical flow, paragraph structure, reasoning steps | **4.60** | **0.55** | **Strongly Agree** |
-| **4. Completeness** | Requisites, exceptions, and remedies addressed | **4.40** | **0.55** | **Agree** |
-| **5. Context Awareness** | Conversational continuity & uploaded doc context | **4.40** | **0.55** | **Agree** |
-| **6. Consistency** | Uniform advice across Tagalog and English queries | **4.60** | **0.55** | **Strongly Agree** |
-| **7. Clarity** | Plain-language phrasing free of confusing legalese | **5.00** | **0.00** | **Strongly Agree** |
-| **8. Helpfulness** | Practical actionability (Barangay, court thresholds)| **4.80** | **0.45** | **Strongly Agree** |
-| **9. Response Time** | Interactive streaming response delivery (< 10s) | **4.40** | **0.55** | **Agree** |
-| **10. Safety & Appropriateness** | Prominent disclaimers, refusal of illicit contracts | **5.00** | **0.00** | **Strongly Agree** |
-| **Composite Chatbot Performance**| **Overall Conversational AI Experience** | **4.70** | **0.37** | **Strongly Agree (Excellently Satisfied)**|
+| **1. Accuracy** | Factual correctness of statutory rules and citations | — | — | *Pending Evaluation* |
+| **2. Relevance** | Direct addressing of user prompt without filler | — | — | *Pending Evaluation* |
+| **3. Coherence** | Logical flow, paragraph structure, reasoning steps | — | — | *Pending Evaluation* |
+| **4. Completeness** | Requisites, exceptions, and remedies addressed | — | — | *Pending Evaluation* |
+| **5. Context Awareness** | Conversational continuity & uploaded doc context | — | — | *Pending Evaluation* |
+| **6. Consistency** | Uniform advice across Tagalog and English queries | — | — | *Pending Evaluation* |
+| **7. Clarity** | Plain-language phrasing free of confusing legalese | — | — | *Pending Evaluation* |
+| **8. Helpfulness** | Practical actionability (Barangay, court thresholds)| — | — | *Pending Evaluation* |
+| **9. Response Time** | Interactive streaming response delivery (< 10s) | — | — | *Pending Evaluation* |
+| **10. Safety & Appropriateness** | Prominent disclaimers, refusal of illicit contracts | — | — | *Pending Evaluation* |
+| **Composite Chatbot Performance**| **Overall Conversational AI Experience** | **—** | **—** | **[Evaluation in Progress]** |
 
 #### Data Analysis & Interpretation for SOP 4
-Across all eight ISO/IEC 25010 characteristics, standard deviations remained consistently below 1.00 ($SD$ range: 0.00 to 0.58), confirming high consensus. IT professionals awarded a composite mean of 4.79 (Strongly Agree), while citizen respondents awarded a composite usability score of 4.76 (Strongly Agree). High marks in Plain-Language Intelligibility (4.80) validate the study's core framework—Communicative Legal Theory (Batyushkina, 2021).
+The statistical tabulation for Research Question 4 is currently in progress, corresponding to the active field and digital administration of the ISO/IEC 25010 evaluation instruments. The proponents have deployed two targeted survey sets: Set A for three (3) IT and statistics professionals to evaluate architectural, security, and algorithmic characteristics, and Set B for two (2) licensed legal practitioners and 269 citizen respondents across Barangay 548, Sampaloc, Manila (sampled via Slovin's Formula at 5% margin of error from a population of $N = 821$).
+
+Once all completed questionnaires are returned and encoded, each characteristic will be evaluated using descriptive statistical measures: the sample mean ($\bar{x} = \frac{\sum x}{n}$) and standard deviation ($SD = \sqrt{\frac{\sum (x - \bar{x})^2}{n - 1}}$). Scores will be mapped against a standardized 5-point Likert continuum (4.20–5.00: Strongly Agree / Excellent; 3.40–4.19: Agree / Satisfactory; 2.60–3.39: Neutral / Moderate; 1.80–2.59: Disagree / Poor; 1.00–1.79: Strongly Disagree / Unacceptable) with a compliance benchmark set at $\ge 3.50$ (Agree). The tabulated findings will be populated into Tables 4.8 through 4.11 for the final thesis manuscript submission and oral defense.
 
 ---
 
@@ -392,7 +409,7 @@ Across all eight ISO/IEC 25010 characteristics, standard deviations remained con
 
 | SOP Question | Anticipated Defense Panel Question | Recommended Proponent Defense Answer |
 | :--- | :--- | :--- |
-| **SOP 1 (Statute Dataset)** | *"Why did you use 2,270 articles in the paper when the database has 2,749 chunks?"* | *"The Civil Code of the Philippines enacts exactly 2,270 articles. However, long articles containing multiple complex remedies (such as Article 1191 on rescission and Article 1561 on sales warranties) were split into cohesive paragraph-level sub-chunks to fit dense vector embedding limits. Furthermore, superseded provisions were updated with Executive Order No. 209 (Family Code), bringing the final vector store to 2,749 structured statutory chunks."* |
+| **SOP 1 (Statute Dataset)** | *"Why did you mention 2,270 Civil Code articles in the paper when the system contains 3,014 statutory chunks?"* | *"The Civil Code of the Philippines (Republic Act No. 386) enacts 2,270 articles. However, complex multi-remedy articles (e.g., Article 1191 on rescission and Article 1561 on warranties) were partitioned into cohesive paragraph-level sub-chunks (2,749 chunks) to adhere to dense vector embedding limits. Furthermore, to address cross-statute collisions and reflect supervening legal developments, we curated and embedded the complete standalone text of Executive Order No. 209 (The Family Code of the Philippines, 257 articles, 265 chunks). Together, the statutory corpus comprises 2,527 distinct articles and 3,014 indexed chunks under separate namespaces (`RA386-` and `EO209-`)."* |
 | **SOP 1 (Jurisprudence Pipeline)** | *"How did you acquire and curate 57,000+ Supreme Court cases from Lawphil, and how did you chunk 4,000+ token cases without losing context?"* | *"We developed an automated web crawler targeting Lawphil.net that harvested 57,000+ Supreme Court decisions from 1949 to 2025. Because this corpus contained cases across all legal fields, we generated dense vector embeddings for all Civil Code provisions and executed a semantic similarity search across all 57k+ cases, filtering out non-civil decisions and isolating 11,879 civil cases. We then performed a secondary similarity search linking individual articles to decisions (`article_case_index.json`). The corpus was split into two formats: full-text cases (`jurisprudence_document.jsonl`) for database storage and Table of Contents browsing, and 351,076 granular chunks (`jurisprudence_chunks.jsonl`). Because judicial opinions average 4,000+ tokens, we preserved full legal context by strictly prepending a standardized metadata header line to every chunk: `Case: <Title> \| GR: <G.R. No.> \| Year: <Year> \| Topics: <Topics> \| Section: <Section>`, and embedded them into PostgreSQL pgvector."* |
 | **SOP 2 (RAG Design)**| *"Why is hybrid RRF better than pure vector similarity search?"* | *"Pure dense vector search retrieves by general semantic meaning but often misses exact statutory numbers (e.g., retrieving Article 1192 instead of 1191). Sparse lexical search retrieves exact keywords but fails when citizens use everyday Tagalog words like 'binawi ang pera'. Reciprocal Rank Fusion ($k=60$) combines the two, achieving 90% recall, while our Statutory Companion Graph brings recall to 100% by linking governing companion provisions."* |
 | **SOP 3 (ML Metrics)**| *"Why did your thesis paper cite XLM-RoBERTa, but the active system uses Multilingual-E5-Base?"* | *"In our CRISP-DM prototyping phase, we benchmarked XLM-RoBERTa (`stsb-xlm-r-multilingual`) as our baseline. We discovered an asymmetric cross-lingual gap: XLM-RoBERTa was trained on generic sentence similarity and failed to match informal Taglish citizen questions to formal 1950 legal English statutes without hundreds of brittle regex rules. Migrating to Multilingual-E5-Base with asymmetric `query:` and `passage:` prefixes increased F1-score from 0.721 to 0.958, allowing us to build an accurate, zero-regex semantic retriever."* |

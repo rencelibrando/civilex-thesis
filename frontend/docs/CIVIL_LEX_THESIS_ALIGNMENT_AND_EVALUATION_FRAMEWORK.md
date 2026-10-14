@@ -16,7 +16,7 @@ A comprehensive technical audit was conducted comparing the thesis manuscript (`
 | Thesis Manuscript Claim | Actual Codebase Implementation | Status | Technical Reality & Defense Action |
 | :--- | :--- | :---: | :--- |
 | **System Architecture:** Web application with FastAPI AI microservice, Node.js API Gateway, Next.js UI, and Supabase PostgreSQL. | `service-rag-python` (FastAPI), `backend-node` (Express), `frontend` (Next.js 15), Supabase (Auth + local container). | **100% ALIGNED** | The 3-tier microservice architecture matches Chapter 1 and Chapter 3 system flow diagrams exactly. |
-| **Statutory Knowledge Base:** Republic Act No. 386 (Preliminary Title + Books I–IV) totaling 2,270 articles. | `document_chunks` table: 2,749 Civil Code statutory chunks (2,270 base articles + Family Code EO 209 amendments + granular clause splits). | **ALIGNED (ENRICHED)** | Statutory text extracted from official Supreme Court website, formatted into structured JSON (`civil_code_rag.jsonl`), integrating supervening amendments (EO 209 Family Code). |
+| **Statutory Knowledge Base (Dual-Statute Corpus):** Republic Act No. 386 (Civil Code, 2,270 articles) & Executive Order No. 209 (Family Code, 257 articles). | `civil_code_articles` table (2,527 total articles) & `document_chunks` table (3,014 statutory chunks: 2,749 Civil Code + 265 Family Code). | **100% ALIGNED (DUAL STATUTE EXPANSION)** | Extracted from official Supreme Court & Official Gazette repositories, formatted into structured JSONL (`civil_code_rag.jsonl` & `family_code_rag.jsonl`). Resolved historical OCR misprints (Art. 150 & 219) for 100% statutory continuity. Disambiguated via namespacing (`RA386-ART*` vs `EO209-ART*`). |
 | **Jurisprudence Corpus:** 11,879 Supreme Court cases linked to Civil Code articles. | `jurisprudence_cases` (11,879 cases) and `document_chunks` (351,076 jurisprudence text chunks). | **100% ALIGNED (AUTHENTIC PIPELINE)** | Harvested 57,000+ Supreme Court cases (1949–2025) via Lawphil crawler, filtered down to 11,879 civil decisions using dense similarity against Civil Code embeddings, segregated into full-text for Table of Contents (`jurisprudence_document.jsonl`) and 351,076 context-preserving chunks with prepended metadata headers (`jurisprudence_chunks.jsonl`), embedded into PostgreSQL `pgvector`. |
 | **Retriever Model:** "Fine-tuned XLM-RoBERTa multilingual sentence encoder" (`stsb-xlm-r-multilingual`). | Upgraded to **`intfloat/multilingual-e5-base`** (768-dim) with task prefixes (`query: ` and `passage: `). | **EVOLVED / DISCREPANCY** | **Critical Finding:** `stsb-xlm-r-multilingual` was trained on generic sentence similarity and failed to bridge the lexical gap between colloquial Tagalog/Taglish citizen queries and formal 1950 legal English statutes. The developers upgraded to Multilingual-E5-Base, eliminating over 500 lines of brittle regex expansions. **Defense Action:** Report XLM-RoBERTa as the *Baseline Retriever* and Multilingual-E5-Base as the *Optimized Fine-Tuned Retriever*. |
 | **Generator Model:** Gemma 4 (E4B) Instruct via LM Studio with LoRA fine-tuning. | `google/gemma-4-E4B-it` via LoRA fine-tuning (`finetune_gemma4.py`, $r=32, \alpha=64$), GGUF export (`civilex-gemma4-q4_k_m.gguf`), served via LM Studio (`10.57.24.131:1234`). | **100% ALIGNED** | The fine-tuning scripts and quantized GGUF weights match Chapter 1 (Figure 1.5) and Chapter 3 specifications. |
@@ -49,6 +49,22 @@ During our deep scan of `CIVIL-LEX_ Group 7 THESIS.pdf`, three key gaps were ide
 3. **Retriever Identity Evolution (XLM-RoBERTa vs. Multilingual-E5-Base):**
    - The thesis text refers to XLM-RoBERTa throughout Chapters 1, 2, 3, and 4.
    - The codebase actually uses `intfloat/multilingual-e5-base` because XLM-RoBERTa (stsb bi-encoder) struggled with bilingual Taglish legal retrieval. The thesis should document this as an ablation study: *Baseline Model (XLM-RoBERTa)* vs *Proposed Production Model (Multilingual-E5-Base)*.
+
+---
+
+### 1.3 Full Statutory Dataset Integration: The Family Code of the Philippines (Executive Order No. 209)
+
+In Philippine jurisprudence, Executive Order No. 209 (promulgated July 6, 1987, effective August 3, 1988) expressly repealed and superseded Book I (Persons and Family Relations) of Republic Act No. 386 pursuant to Article 254. 
+
+To address cross-statute retrieval collisions (such as Article 41 for presumptive death in remarriage vs. Article 41 for fetal viability in the Civil Code, or Article 36 for psychological incapacity vs. Article 36 for pre-judicial declarations), the proponents expanded the statutory knowledge base by curating and embedding the complete, standalone text of the Family Code:
+
+1. **Official Text Extraction & Curation (`FAMILY-CODE-EO-209.txt`):** Extracted from the Official Gazette of the Republic of the Philippines. During statutory continuity audits, two historical typographical errors in the source were identified and surgically corrected:
+   - **Article 150 Typo:** In Title V (The Family), Chapter 1, the opening definition was mislabeled as `Art. 50`. This was corrected to `Art. 150. Family relations include those:...`.
+   - **Article 219 Typo:** In Title IX (Parental Authority), Chapter 2, the provision on solidary liability of schools and teachers was misprinted as `Art. 129`. This was corrected to `Art. 219. Those given the authority and responsibility under the preceding Article...`.
+   This yielded a 100% continuous statutory sequence spanning Articles 1 through 257.
+2. **Machine-Readable Dataset (`family_code_rag.jsonl`):** Transformed into structured JSONL matching the schema of `civil_code_rag.jsonl`. Each record encodes the article ID (`EO209-ART{n}`), number, law title (`Executive Order No. 209, s. 1987`), hierarchical path across 12 Titles, Chapters, and Sections, clean statutory text, domain topic tags, keywords, and internal cross-references.
+3. **High-Throughput Vector Embedding & Storage:** All 257 articles and 265 semantic chunks were vectorized using `intfloat/multilingual-e5-base` (768 dimensions, normalized, with the `passage: ` prefix) and ingested into PostgreSQL `pgvector` (`civil_code_articles` and `document_chunks`).
+4. **Pipeline Disambiguation Architecture:** In `core/article_parser.py`, candidate article resolution (`resolve_candidate_article_ids`) detects statutory qualifiers (`Family Code` vs `Civil Code`) and dynamically qualifies ambiguous numeric references (`EO209-ART41` vs `RA386-ART41`), with dense similarity and cross-encoder re-ranking ensuring the appropriate statute is cited.
 
 ---
 
@@ -411,13 +427,15 @@ To finalize the thesis paper and prepare for the oral defense, execute the follo
   - Update Answer Relevancy to Reverse Hypothetical Question Cosine Similarity.
 - [x] **Task 3: Document Model Evolution in Section 3.1 & Chapter 4**
   - Present `stsb-xlm-r-multilingual` as the *Initial Baseline Retriever* and explain how the lexical gap prompted the upgrade to `intfloat/multilingual-e5-base` as the *Enhanced Production Retriever*.
-- [ ] **Task 4: Execute the Comprehensive Evaluation Script**
+- [x] **Task 4: Ingest and Integrate Standalone Family Code Dataset (EO 209)**
+  - Curate official text into `family_code_rag.jsonl` (257 articles, 265 chunks), correct source OCR typos (Art. 150 & 219), vectorize via `intfloat/multilingual-e5-base`, and enable cross-statute disambiguation.
+- [ ] **Task 5: Execute the Comprehensive Evaluation Script**
   ```bash
   cd service-rag-python
   .venv/bin/python eval_comprehensive_metrics.py
   ```
-- [ ] **Task 5: Administer the Two-Tier ISO/IEC 25010 Google Forms**
+- [ ] **Task 6: Administer the Two-Tier ISO/IEC 25010 Google Forms**
   - Distribute Set A to 3 IT/Statistics experts.
   - Distribute Set B to 2 lawyers and the citizen cohort in Barangay 548.
-- [ ] **Task 6: Populate Chapter 4 Tables and Results**
+- [ ] **Task 7: Populate Chapter 4 Tables and Results**
   - Copy the generated tables into Chapter 4 of `CIVIL-LEX_ Group 7 THESIS.pdf` to directly answer Research Questions 1, 2, 3, and 4.

@@ -1,195 +1,268 @@
-# CIVIL-LEX: Architectural & Implementation Plan
+# CIVIL-LEX: Architectural & Implementation Specification
 
 ## 1. System Architecture Overview
 
-CIVIL-LEX is a bilingual (English/Tagalog) legal hybrid Retrieval-Augmented Generation (RAG) system designed to provide accurate, citation-backed explanations of the Philippine Civil Code and Jurisprudence.
+CIVIL-LEX is a bilingual (English and Tagalog) legal hybrid Retrieval-Augmented Generation (RAG) system engineered to deliver accurate, citation-backed legal analysis grounded in the Civil Code of the Philippines (Republic Act No. 386), the Family Code of the Philippines (Executive Order No. 209), and Philippine Supreme Court jurisprudence.
 
-### Full Technology Stack
-*   **Frontend:** Next.js (TSX), TailwindCSS, Vercel AI SDK (for streaming). Hosted on Vercel.
-    *   *Caching:* **TanStack Query (React Query)** to cache fetched jurisprudence cases and prevent redundant database calls when opening popups.
-*   **Gateway Backend:** Node.js (Express). Hosted locally on Ubuntu.
-*   **Database:** Supabase (PostgreSQL 15+) via Local Docker.
-    *   *Extensions:* `pgvector` (Vector similarity). *Note: Full-Text Search uses `tsvector` which is built natively into Postgres.*
-*   **RAG Microservice:** Python (FastAPI). Hosted locally on Ubuntu.
-    *   *Document Extraction:* `PyMuPDF` (for fast digital text) + `Tesseract OCR` (fallback for scanned images). 
-    *   *Embeddings:* XML-RoBERTa Multilingual v1.
-    *   *Vector Search:* Hybrid Search (Postgres Full-Text Search `tsvector` + `pgvector` HNSW) fused via Reciprocal Rank Fusion (RRF).
-*   **LLM Inference:** Gemma 4 (E4B) hosted exclusively via LM Studio on a dedicated laptop, exposed via zerotier sd wan / local network. 
+### Technology Stack Inventory
+
+- **Frontend:** Next.js 16 (App Router, React 19, TypeScript), TailwindCSS, Radix UI primitives, Lucide Icons.
+  - *State & Cache Management:* React Context (`ChatContext`, `DocChatContext`, `AuthContext`) for real-time Server-Sent Events (SSE) tracking and in-memory caching of jurisprudence cases and Table of Contents nodes.
+- **API Gateway Backend:** Node.js (Express 5, ECMAScript Modules). Hosted locally on Linux (Port `4000`).
+  - *Authentication & Authorization:* Bearer JWT verification via Supabase Auth (`requireAuth` middleware) and request-scoped Supabase client creation.
+  - *Reverse Proxy:* `http-proxy-middleware` forwarding streaming chat requests (`/api/chat` to Python `/search`), cancellation commands (`/api/chat/cancel` to Python `/cancel`), and storage assets (`/api/storage` to Supabase Storage).
+  - *Internal Services:* Direct PostgreSQL/Supabase data access for Civil Code Table of Contents, statutory queries, jurisprudence retrieval, user session persistence, profiles, avatar in-memory caching, and presence telemetry.
+- **Database & Storage Engine:** Supabase PostgreSQL 15+ running in local Docker (Port `54322`).
+  - *Vector Search:* `pgvector` extension supporting 768-dimensional vector cosine similarity with dedicated partial HNSW indexes.
+  - *Full-Text Search:* Native PostgreSQL `tsvector` and `tsquery` utilizing the `simple` dictionary configuration with GIN indexing.
+  - *Object Storage:* Supabase Storage buckets (`documents` for uploaded contracts/deeds with a 50MB file limit; `avatars` for user profile photos).
+- **RAG Core Microservice:** Python 3.11+ (FastAPI, Uvicorn). Hosted locally on Linux (Port `8000`).
+  - *Embedding Model:* `intfloat/multilingual-e5-base` (768-dimensional dense vectors) with explicit `query: ` and `passage: ` instruction prefixes.
+  - *Document Extraction Pipeline:* `PyMuPDF` (`fitz`) for digital text extraction, `python-docx` for Word documents, and `pytesseract` (Tesseract OCR) as fallback for scanned image-based PDFs and images (PNG, JPEG).
+  - *Hybrid Retrieval & Fusion:* Reciprocal Rank Fusion (RRF, $k=60$) combining `pgvector` HNSW cosine similarity and PostgreSQL Full-Text Search (`ts_rank_cd`), augmented by exact article regex matching, statutory companion graph expansion, and graph-linked jurisprudence.
+  - *Semantic Guardrails:* Embedding centroid domain router (`DomainRouter`) separating civil law inquiries from non-legal topics, specialized external statutes, and illicit contract requests.
+  - *Ambiguity Detection:* LLM-driven query analyzer (`services/ambiguity.py`) determining missing factual requisites and generating interactive clarification questions.
+  - *Verification & NLI:* Neuro-symbolic hybrid Natural Language Inference (NLI) engine combining deontic modality rules, polarity inversion checks, statutory anchor validation, and local LLM semantic entailment.
+  - *Concurrency & Resource Management:* In-memory FIFO queue manager (`QueryQueueManager`) strictly enforcing 1-query concurrency to safeguard 6GB VRAM GPUs from out-of-memory crashes.
+- **Local LLM Inference Engine:** Google Gemma 4 E4B (Fine-Tuned via LoRA $r=32, \alpha=64$, 16-bit Brain Floating Point / BF16 GGUF quantization) hosted locally via LM Studio (Port `1234`), exposed over an encrypted ZeroTier SD-WAN virtual network.
 
 ---
 
-## 2. End-to-End Data Flow (Chat & Document Upload)
+## 2. Physical Network Deployment Topology
+
+The system operates across a distributed hybrid environment connecting cloud deployment with local hardware:
+
+```mermaid
+flowchart TD
+    User(["User Browser"]) -->|"HTTPS / WSS"| Vercel["Vercel Cloud Deployment<br/>Next.js 16 Frontend (:3000)"]
+    Vercel -->|"Secure Tunnel HTTPS"| Tunnel["Cloudflare / Dev Tunnel"]
+    
+    subgraph HostServer ["Host Machine (Ubuntu Linux)"]
+        Tunnel --> NodeGW["Node.js API Gateway (:4000)"]
+        NodeGW -->|"Internal HTTP (:8000)"| PyRAG["Python FastAPI RAG Service (:8000)"]
+        NodeGW -->|"PostgreSQL TCP (:54322)"| SupaDB[("Supabase PostgreSQL 15+<br/>pgvector + FTS")]
+        PyRAG -->|"PostgreSQL TCP (:54322)"| SupaDB
+        NodeGW -->|"Storage API (:54321)"| SupaStore["Supabase Storage Service"]
+    end
+    
+    PyRAG -->|"ZeroTier Encrypted SD-WAN (10.57.24.131:1234)"| LLMHost
+    
+    subgraph LLMHost ["Dedicated Inference Machine"]
+        LLMServer["LM Studio Server (:1234)"] --> GPU["Gemma 4 E4B Fine-Tuned GGUF<br/>Local VRAM Inference"]
+    end
+```
+
+### Network Configuration Details
+1. **Frontend to Gateway:** The Next.js client transmits authenticated requests via public endpoints routed through secure HTTPS tunnels (Cloudflare Tunnel or Microsoft Dev Tunnel) directly into the Node.js API Gateway on Port `4000`.
+2. **Gateway to RAG Microservice:** The Node.js server proxies streaming endpoints (`/api/chat` -> `/search`, `/api/chat/cancel` -> `/cancel`) over internal `http://localhost:8000`, injecting authenticated user identity headers (`x-user-id`, `x-user-email`, `x-user-name`).
+3. **RAG Microservice to LLM Host:** The Python RAG service connects to the LM Studio OpenAI-compatible endpoint (`http://10.57.24.131:1234/v1`) through an isolated ZeroTier SD-WAN network.
+
+---
+
+## 3. End-to-End System Sequence Flows
+
+### 3.1 Document Ingestion and Analysis Flow
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant Client as Next.js UI (Vercel)
-    participant Node as Node.js Gateway (Ubuntu)
-    participant DB as Postgres (pgvector)
-    participant FastAPI as Python RAG Service
-    participant LLM as LM Studio (Gemma 4 E4B)
+    participant Client as Next.js UI
+    participant Gateway as Node.js Gateway (:4000)
+    participant Storage as Supabase Storage
+    participant DB as Supabase PostgreSQL (:54322)
+    participant Python as Python RAG Service (:8000)
 
-    %% Document Upload Flow
-    Note over Client, DB: Document Upload Pipeline
-    Client->>DB: Upload PDF to Supabase Storage
-    DB-->>Client: Returns File URL
-    Client->>Node: POST /api/documents {file_url}
-    Node->>FastAPI: POST /extract {file_url} (Background Task)
-    FastAPI->>FastAPI: PyMuPDF / teseract OCR Extraction
-    FastAPI->>FastAPI: Chunk Document (Sliding Window)
-    FastAPI->>FastAPI: Embed Chunks (XML-RoBERTa)
-    FastAPI->>DB: Insert into document_chunks
-    FastAPI->>DB: Update status = 'completed'
+    Client->>Gateway: POST /api/documents/upload (multipart/form-data)
+    Gateway->>Gateway: Validate Bearer token & MIME type
+    Gateway->>Storage: Upload binary to 'documents' bucket
+    Storage-->>Gateway: File upload acknowledged
+    Gateway->>DB: INSERT into user_documents (status='uploading')
+    Gateway->>Python: POST /extract {file_url, document_id, filename} (Async)
+    Gateway-->>Client: 201 Created {id, file_url, status='uploading'}
 
-    %% Chat Flow
-    Note over Client, DB: Standard Chat Flow
-    Client->>Node: POST /api/chat {query}
-    Node->>FastAPI: POST /search {query} (Check doc status)
-    FastAPI->>DB: RPC match_documents(embedding, keywords)
-    DB-->>FastAPI: Top 5 Context Chunks
-    FastAPI->>LLM: POST /v1/chat/completions (Stream)
-    LLM-->>FastAPI: Stream Markdown Tokens
-    FastAPI-->>Node: Forward SSE Stream
-    Node-->>Client: Proxy SSE Stream
+    Note over Python, DB: Background Asynchronous Processing
+    Python->>DB: UPDATE user_documents SET status='extracting'
+    Python->>Storage: Download file bytes
+    alt Format is Digital PDF / Word / TXT
+        Python->>Python: Extract text via PyMuPDF / python-docx
+    else Format is Scanned PDF or Image
+        Python->>Python: Downsample image & run Tesseract OCR
+    end
+    Python->>Python: Slice into sliding window chunks (350 words, 50 overlap)
+    loop For each chunk
+        Python->>Python: Vectorize with E5 Base ('passage: ' prefix)
+        Python->>DB: INSERT into document_chunks (parent_type='user_document')
+        Python->>DB: UPDATE user_documents SET progress=percent
+    end
+    Python->>DB: UPDATE user_documents SET status='completed', progress=100
 ```
 
----
-
-## 2.1 Physical Network Deployment Topology
-
-Because the system relies on specialized hardware (a dedicated LLM laptop) and local hosting (an Ubuntu laptop for database and API logic), the architecture uses secure tunneling and SD-WAN networks to connect cloud and local services.
-
-### Components & Connectivity:
-1. **Frontend (Vercel)**: Hosted in the cloud. Needs a public internet URL to communicate with the backend.
-2. **Node.js Gateway & Python RAG (Ubuntu Laptop)**: Hosted locally on the same machine.
-   - **Vercel -> Node.js Connection**: Uses **Cloudflare Tunnels** (or Ngrok) to securely expose the local Node.js port (e.g., 3000) to the public internet (`https://api.yourdomain.com`). Vercel environment variables point to this tunnel URL.
-   - **Node.js -> Python RAG**: Communicates securely over internal `localhost:8000`.
-3. **LLM Inference (Remote Laptop)**: Hosted on a separate dedicated machine.
-   - **Python RAG -> LM Studio Connection**: Uses **ZeroTier** (SD-WAN). ZeroTier places both laptops on a secure, virtual private network. The Python service connects to LM Studio via the ZeroTier private IP (e.g., `10.x.x.x:1234`), keeping the LLM completely inaccessible to the public internet.
+### 3.2 Real-Time Chat & Retrieval-Augmented Generation Flow
 
 ```mermaid
-graph TD
-    User((User)) -->|Public Internet| Vercel[Vercel Frontend]
-    Vercel -->|Public Internet / HTTPS| Tunnel[Cloudflare Tunnel]
+sequenceDiagram
+    autonumber
+    participant Client as Next.js UI (ChatContext)
+    participant Gateway as Node.js Gateway (:4000)
+    participant Queue as QueryQueueManager
+    participant Python as Python RAG Service (:8000)
+    participant DB as Supabase PostgreSQL (:54322)
+    participant LLM as LM Studio (Gemma 4 E4B)
+
+    Client->>Gateway: POST /api/chat {query, session_id, history, document_id}
+    Gateway->>Gateway: requireAuth validation & attach user headers
+    Gateway->>Python: Proxy POST /search (Keep-Alive, No Buffering)
     
-    subgraph Ubuntu Laptop
-        Tunnel --> Node[Node.js Gateway :3000]
-        Node -->|localhost| Python[Python RAG API :8000]
-        Python -->|localhost| Postgres[(Supabase / pgvector)]
+    Python->>Queue: enter_queue(user_id, session_id)
+    alt Execution Slot Busy (Active == 1)
+        Queue-->>Python: Enqueued at position #N
+        Python-->>Client: SSE status: queued (queue_position=N)
+        Queue->>Queue: Wait for FIFO slot signal
     end
+    Queue-->>Python: Execution slot granted
+    Python-->>Client: SSE status: embedding
+
+    Python->>DB: Load canonical session history & recent citations
+    Python->>Python: Intent gating (DomainRouter) & Ambiguity detection
     
-    Python -->|ZeroTier Private Network| LLM Laptop
-    
-    subgraph LLM Laptop
-        LLM Laptop[LM Studio :1234] --> GPU[Local GPU Inference]
+    alt Query is Ambiguous (Missing Facts)
+        Python-->>Client: SSE clarification_needed {questions, options}
+        Python-->>Client: SSE done
+    else In-Domain Civil Query
+        Python->>Python: Dense vectorization ('query: ' prefix)
+        Python-->>Client: SSE status: retrieving
+        Python->>DB: Hybrid Search (Exact Match + HNSW Cosine + GIN FTS)
+        DB-->>Python: Ranked candidate statutory articles & cases
+        Python->>DB: Graph expansion (Statutory companion graph & linked cases)
+        Python->>Python: Reciprocal Rank Fusion (RRF, k=60) & noise pruning
+        Python-->>Client: SSE status: retrieving_done {count}
+        Python-->>Client: SSE status: prompting
+        Python->>Python: Inverted pyramid prompt assembly with statutory primacy
+        Python-->>Client: SSE status: thinking
+        Python->>LLM: POST /v1/chat/completions (stream=True, temp=0.3)
+        LLM-->>Python: Stream delta tokens
+        Python-->>Client: SSE text {delta}
+        LLM-->>Python: Stream finished (finish_reason='stop')
+        
+        Python-->>Client: SSE citations {data} & accumulated_citations {data}
+        Python-->>Client: SSE status: evaluating_nli
+        Python->>Python: Execute Neuro-Symbolic NLI verification
+        Python-->>Client: SSE legal_analytics {nli_score, status, top_score}
+        Python->>Python: Generate 3 unilingual follow-up suggestions
+        Python-->>Client: SSE follow_ups {data}
+        Python-->>Client: SSE done
+        Python->>DB: Persist assistant message, citations & analytics
+        Python->>Queue: release_slot(ticket)
     end
 ```
 
 ---
 
-## 3. Database & Dataset Schema
+## 4. Database Schema Specification
 
-To support both the Hybrid RAG pipeline and the complex Next.js UI requirements (Table of Contents, Jurisprudence popups, Document uploads, and Chat History), the database uses a fully normalized relational schema.
+The database utilizes Supabase PostgreSQL with the `pgvector` extension and native full-text search indexing.
 
-### Core Data Models (Powers the UI)
+### 4.1 Statutory & Jurisprudence Models
 
-1.  **`civil_code_articles` (Table of Contents)**
-    *   `article_id` (PK, e.g., 'RA386-ART1')
-    *   `article_number` (INT)
-    *   `hierarchy` (JSONB) - Stores the exact `{book, title, chapter, section}` object from the dataset.
-    *   `content` (TEXT) - Full clean text of the article.
-    *   `is_hub` (BOOLEAN) - Used to highlight heavily-cited foundational articles.
-2.  **`jurisprudence_cases` (Case Popup Dialog)**
-    *   `case_uid` (PK, e.g., 'GR_256194_2024')
-    *   `title` (TEXT) - Case title (maps to `case_id` in dataset).
-    *   `gr_number` (TEXT)
-    *   `decision_date` (TEXT)
-    *   `source_url` (TEXT) - Link to LawPhil/ChanRobles.
-    *   `content_summary` (TEXT) - Concise LLM-generated summary from the dataset.
-    *   `full_text` (TEXT) - The complete raw text (stitched from chunks during Python ingestion) so the Next.js UI can render it perfectly with original formatting in the dialog.
-3.  **`article_jurisprudence_relations` (Related Cases)**
-    *   `article_id` (FK to civil_code_articles)
-    *   `case_uid` (FK to jurisprudence_cases)
-    *   `citation_type` (TEXT) - e.g., 'interpreted', 'applied', 'mentioned' (from `jurisprudence_linkage`).
-    *   *Implementation Note: This table is populated rapidly during ingestion using the pre-computed `article_case_index.json` dataset. The index is also loaded into memory by the FastAPI RAG service to instantly boost 'hub' articles without extra database joins.*
+1. **`civil_code_articles` (Statutory Corpus):**
+   - `article_id` (`TEXT`, PK): Canonical identifier (e.g., `RA386-ART1191`, `EO209-ART1`).
+   - `article_number` (`INT`): Sequential integer (1 to 2270 for Civil Code; 1 to 257 for Family Code).
+   - `hierarchy` (`JSONB`): Structural taxonomy containing `{book_name, title_name, chapter_name, section_name}`.
+   - `content` (`TEXT`): Full enacted text of the statute.
+   - `is_hub` (`BOOLEAN`): Flags heavily cross-referenced foundational anchor articles.
 
-### User Uploaded Documents (Powers the Document Analysis UI)
+2. **`jurisprudence_cases` (Supreme Court Precedents):**
+   - `case_uid` (`TEXT`, PK): Unique precedent identifier (e.g., `GR_189871_2012`).
+   - `title` (`TEXT`): Official Supreme Court case title.
+   - `gr_number` (`TEXT`): General Register docket number.
+   - `decision_date` (`TEXT`): Date promulgated.
+   - `source_url` (`TEXT`): Source reference link.
+   - `content_summary` (`TEXT`): Pre-computed analytical case doctrine summary.
+   - `full_text` (`TEXT`): Complete unabridged judicial decision text.
+
+3. **`article_jurisprudence_relations` (Knowledge Graph Edges):**
+   - `article_id` (`TEXT`): Foreign key referencing `civil_code_articles.article_id`.
+   - `case_uid` (`TEXT`): Foreign key referencing `jurisprudence_cases.case_uid`.
+   - `citation_type` (`TEXT`): Relationship qualification (`interpreted`, `applied`, `cited`, or `mentioned`).
+
+### 4.2 Vector & Chunk Storage
+
 ```sql
-CREATE TABLE user_documents (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  user_id UUID REFERENCES auth.users(id),
-  filename TEXT,
-  file_url TEXT,
-  status TEXT CHECK (status IN ('uploading', 'extracting', 'completed', 'error')),
-  created_at TIMESTAMPTZ DEFAULT NOW()
+CREATE TABLE public.document_chunks (
+    chunk_id TEXT PRIMARY KEY,
+    parent_type TEXT CHECK (parent_type IN ('article', 'case', 'user_document')),
+    parent_id TEXT,
+    content TEXT NOT NULL,
+    legal_topics TEXT[],
+    embedding VECTOR(768),
+    fts tsvector GENERATED ALWAYS AS (to_tsvector('simple', content)) STORED
 );
+
+-- Full-text search index
+CREATE INDEX IF NOT EXISTS fts_idx ON public.document_chunks USING GIN (fts);
+
+-- Dedicated partial HNSW and GIN indexes for fast partition retrieval
+CREATE INDEX IF NOT EXISTS article_vector_idx ON public.document_chunks 
+    USING hnsw (embedding vector_cosine_ops) WHERE parent_type = 'article';
+CREATE INDEX IF NOT EXISTS article_parent_id_idx ON public.document_chunks(parent_id) 
+    WHERE parent_type = 'article';
+CREATE INDEX IF NOT EXISTS article_fts_idx ON public.document_chunks 
+    USING gin (fts) WHERE parent_type = 'article';
+CREATE INDEX IF NOT EXISTS doc_vector_idx ON public.document_chunks 
+    USING hnsw (embedding vector_cosine_ops) WHERE parent_type = 'user_document';
 ```
 
-### RAG Vector Storage (Powers the AI)
-```sql
-CREATE TABLE document_chunks (
-  chunk_id TEXT PRIMARY KEY,
-  parent_type TEXT CHECK (parent_type IN ('article', 'case', 'user_document')),
-  parent_id TEXT, -- FK to articles, cases, or user_documents
-  content TEXT, -- 350-450 token chunks
-  legal_topics TEXT[], 
-  embedding VECTOR(768), 
-  fts tsvector GENERATED ALWAYS AS (to_tsvector('english', content)) STORED
-);
-CREATE INDEX fts_idx ON document_chunks USING GIN (fts);
-CREATE INDEX vector_idx ON document_chunks USING hnsw (embedding vector_cosine_ops);
-```
+### 4.3 User Documents & Session History
 
-### Chat History (Powers the Conversation UI)
 ```sql
-CREATE TABLE chat_sessions (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  user_id UUID REFERENCES auth.users(id),
-  title TEXT,
-  created_at TIMESTAMPTZ DEFAULT NOW()
+CREATE TABLE public.user_documents (
+    id UUID PRIMARY KEY DEFAULT extensions.uuid_generate_v4(),
+    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
+    filename TEXT NOT NULL,
+    file_url TEXT NOT NULL,
+    status TEXT CHECK (status IN ('uploading', 'extracting', 'completed', 'rejected_unrelated', 'error')),
+    progress INT DEFAULT 0,
+    error_message TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE TABLE chat_messages (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  session_id UUID REFERENCES chat_sessions(id) ON DELETE CASCADE,
-  role TEXT CHECK (role IN ('user', 'assistant')),
-  content TEXT,
-  citations JSONB, -- Stores the linked case_uids or article_ids
-  created_at TIMESTAMPTZ DEFAULT NOW()
+CREATE TABLE public.chat_sessions (
+    id UUID PRIMARY KEY DEFAULT extensions.uuid_generate_v4(),
+    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
+    title TEXT DEFAULT 'New Chat',
+    session_type TEXT DEFAULT 'legal_chat',
+    document_id UUID REFERENCES public.user_documents(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE public.chat_messages (
+    id UUID PRIMARY KEY DEFAULT extensions.uuid_generate_v4(),
+    session_id UUID REFERENCES public.chat_sessions(id) ON DELETE CASCADE,
+    role TEXT CHECK (role IN ('user', 'assistant')),
+    content TEXT NOT NULL,
+    citations JSONB,
+    legal_analytics JSONB,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE public.profiles (
+    id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+    full_name TEXT,
+    avatar_url TEXT,
+    role TEXT,
+    organization TEXT,
+    practice_area TEXT,
+    phone_number TEXT,
+    notification_preferences JSONB DEFAULT '{"email": true, "push": false}'::jsonb,
+    theme_preferences TEXT DEFAULT 'system',
+    created_at TIMESTAMPTZ DEFAULT NOW()
 );
 ```
 
 ---
 
-## 4. Document Analysis Pipeline (Background Task)
+## 5. Security & Verification Directives
 
-When a user uploads a document:
-1. **Upload & Status:** The file uploads to Supabase Storage. The UI creates a `user_documents` row with `status = 'uploading'`.
-2. **Extraction (Python):** A background task runs in FastAPI. It attempts `PyMuPDF` (fast text extraction). If no text is found (image PDF), it falls back to lightweight `Tesseract OCR` (or PaddleOCR if resources permit). During this, the UI polls and shows `status = 'extracting'` in the chat if they ask questions.
-3. **Chunking & Embedding:** The extracted text is instantly sliced using a sliding window (350 tokens, 50 overlap), embedded using `sentence-transformers`, and inserted into `document_chunks`.
-4. **Completion:** The database is updated with `progress = 100` and `status = 'completed'`, ready for querying by the LLM during chat.
-
----
-
-## 5. Concrete Implementation Plan (Execution Phases)
-
-### Phase 1: Database Setup & Data Ingestion (✅ Completed)
-1. [x] Initialize local Supabase instance using Docker.
-2. [x] Enable `vector` extension and execute the schema creation SQL.
-3. [x] **Data Ingestion Script (Python)**:
-    *   [x] **Local Embeddings**: Read `civil_code_rag.jsonl` and `jurisprudence_chunks.jsonl`. Generate embeddings locally (zero API costs) using `sentence-transformers` (XML-RoBERTa). Insert directly into `pgvector` using the Supabase Python Client in batches.
-    *   [x] **Relations Ingestion**: Iterate through the lightweight `article_case_index.json` to instantly populate the `article_jurisprudence_relations` junction table.
-    *   [x] **Full Text Reconstruction**: Stitch jurisprudence chunks together to populate the `full_text` column in `jurisprudence_cases` to serve the Next.js UI dialogs.
-
-### Phase 2: Python RAG Microservice (✅ Completed)
-1. [x] Scaffold FastAPI and implement `/search` using XML-RoBERTa and RRF RPC.
-2. [x] Implement the `/extract` endpoint for the Document Analysis Pipeline (PyMuPDF + OCR fallback + Chunking + Embedding).
-3. [x] Implement LLM streaming with LM Studio + Cloud fallback.
-
-### Phase 3: Node.js Gateway Service (✅ Completed)
-1. [x] Scaffold Express app with Supabase Auth middleware.
-2. [x] Create `/chat` and `/documents` proxies.
-
-### Phase 4: Next.js Frontend Integration
-1. [ ] **Chat UI:** Implement Vercel AI SDK. Render Markdown. Show document extraction loading states inside the chat.
-2. [ ] **Table of Contents & Popups:** Implement the Article listing. Use **TanStack Query** to cache the full jurisprudence case fetches so the popup dialog opens instantly on subsequent clicks. Format the popup to accurately reflect the original case document structure.
+1. **Row Level Security (RLS):** All user tables (`chat_sessions`, `chat_messages`, `user_documents`, `profiles`) enforce RLS policies restricting data visibility to `auth.uid() = user_id`.
+2. **Reverse Proxy Security:** The Node.js gateway validates incoming Bearer JWT tokens with the Supabase Auth server before executing proxy forwarding. Downstream microservices run on internal loopback interfaces or encrypted SD-WAN subnets.
+3. **Prompt Hardening:** Prompts incorporate closed-book constraints, strict unilingual output directives, system prompt confidentiality rules, and rejection of foreign common law doctrines.

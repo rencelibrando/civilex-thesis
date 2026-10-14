@@ -18,6 +18,7 @@ import {
   X,
   Sparkles,
   Database,
+  Users,
 } from "lucide-react";
 import { buttonVariants, Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -79,35 +80,42 @@ const CIVIL_CODE_BOOKS = [
   {
     name: "Preliminary Title",
     scope: "Effect & Application of Laws (Arts. 1–36)",
-    tocId: "book-1",
+    tocId: "book-2",
     articleId: "RA386-ART1",
     tag: "Arts. 1–36",
   },
   {
     name: "Book I: Persons",
-    scope: "Persons & Family Relations (Arts. 37–413)",
-    tocId: "book-2",
+    scope: "Civil Personality & Capacity (Arts. 37–413)",
+    tocId: "book-3",
     articleId: "RA386-ART37",
     tag: "Arts. 37–413",
   },
   {
+    name: "The Family Code (EO 209)",
+    scope: "Marriage, Property, Filiation & Family (Arts. 1–257)",
+    tocId: "book-4",
+    articleId: "EO209-ART1",
+    tag: "Arts. 1–257 (EO 209)",
+  },
+  {
     name: "Book II: Property",
     scope: "Ownership, Co-ownership, Possession (Arts. 414–711)",
-    tocId: "book-4",
+    tocId: "book-5",
     articleId: "RA386-ART414",
     tag: "Arts. 414–711",
   },
   {
     name: "Book III: Succession",
     scope: "Wills, Inheritance, Donations (Arts. 712–1155)",
-    tocId: "book-5",
+    tocId: "book-6",
     articleId: "RA386-ART712",
     tag: "Arts. 712–1155",
   },
   {
     name: "Book IV: Obligations",
     scope: "Contracts, Sales, Quasi-Delicts (Arts. 1156–2270)",
-    tocId: "book-3",
+    tocId: "book-7",
     articleId: "RA386-ART1156",
     tag: "Arts. 1156–2270",
   },
@@ -123,6 +131,7 @@ export default function DashboardPage() {
   const [userDocs, setUserDocs] = useState<UserDocItem[]>([]);
   const [jurisprudenceCount, setJurisprudenceCount] = useState<number>(11879);
   const [articlesCount, setArticlesCount] = useState<number>(2270);
+  const [familyArticlesCount, setFamilyArticlesCount] = useState<number>(257);
   const [isLoading, setIsLoading] = useState(true);
 
   // Default copy shared by every user
@@ -170,7 +179,9 @@ export default function DashboardPage() {
           .then((res) => (res.ok ? res.json() : null))
           .then((stats) => {
             if (stats?.total_cases) setJurisprudenceCount(stats.total_cases);
-            if (stats?.total_articles) setArticlesCount(stats.total_articles);
+            if (stats?.civil_code_articles) setArticlesCount(stats.civil_code_articles);
+            else if (stats?.total_articles) setArticlesCount(stats.total_articles);
+            if (stats?.family_code_articles) setFamilyArticlesCount(stats.family_code_articles);
           })
           .catch((err) => console.error("Failed to load civil code stats:", err));
 
@@ -377,7 +388,7 @@ export default function DashboardPage() {
 
         {/* 2. EXECUTIVE LEGAL KPI METRICS STRIP                              */}
 
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 sm:gap-2.5 2xl:gap-3.5">
+        <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-2 sm:gap-2.5 2xl:gap-3.5">
           <Card className="rounded-2xl border-border/80 bg-card shadow-xs hover:border-blue-500/30 transition-all">
             <CardContent className="p-3 sm:p-3.5 2xl:p-4.5 flex items-center justify-between">
               <div className="space-y-0.5">
@@ -417,7 +428,20 @@ export default function DashboardPage() {
             </CardContent>
           </Card>
 
-          <Card className="rounded-2xl border-border/80 bg-card shadow-xs hover:border-amber-500/30 transition-all">
+          <Card className="rounded-2xl border-border/80 bg-card shadow-xs hover:border-rose-500/30 transition-all">
+            <CardContent className="p-3 sm:p-3.5 2xl:p-4.5 flex items-center justify-between">
+              <div className="space-y-0.5">
+                <p className="text-[10px] sm:text-xs text-muted-foreground font-medium">Family Code Articles</p>
+                <div className="text-base sm:text-lg 2xl:text-2xl font-bold tracking-tight text-foreground">
+                  {familyArticlesCount.toLocaleString()}
+                </div>
+                <p className="text-[9px] sm:text-[10px] 2xl:text-[11px] text-muted-foreground/80">Executive Order No. 209</p>
+              </div>
+              <Users className="w-5 h-5 sm:w-6 sm:h-6 text-rose-600 dark:text-rose-400 shrink-0" />
+            </CardContent>
+          </Card>
+
+          <Card className="rounded-2xl border-border/80 bg-card shadow-xs hover:border-amber-500/30 transition-all col-span-2 sm:col-span-1 md:col-span-1 xl:col-span-1">
             <CardContent className="p-3 sm:p-3.5 2xl:p-4.5 flex items-center justify-between">
               <div className="space-y-0.5">
                 <p className="text-[10px] sm:text-xs text-muted-foreground font-medium">Jurisprudence Cases</p>
@@ -593,7 +617,7 @@ export default function DashboardPage() {
                   <div className="flex items-center justify-between px-1">
                     <p className="text-[11px] font-semibold text-amber-600 dark:text-amber-400 uppercase tracking-wider flex items-center gap-1.5">
                       <BookOpen className="w-3.5 h-3.5" />
-                      Civil Code Articles ({activeCivilCodeArticles.length})
+                      Codal Articles ({activeCivilCodeArticles.length})
                     </p>
                     <span className="text-[10px] text-muted-foreground">
                       Click to open article reader
@@ -601,7 +625,11 @@ export default function DashboardPage() {
                   </div>
                   <div className="space-y-1">
                     {activeCivilCodeArticles.slice(0, 5).map((art) => {
-                      const bookName = art.hierarchy?.book_name?.replace(/^(BOOK [IVXLCDM]+ - |PRELIMINARY TITLE - )/i, "") || "";
+                      const rawBook = art.hierarchy?.book_name || "";
+                      const isFC = art.article_id.startsWith("EO209-") || /family code/i.test(rawBook);
+                      const bookName = isFC
+                        ? "Family Code"
+                        : rawBook.replace(/^(BOOK [IVXLCDM]+ - |PRELIMINARY TITLE - )/i, "");
                       const sectionName = art.hierarchy?.chapter_name || art.hierarchy?.title_name || "";
                       const breadcrumb = [bookName, sectionName].filter(Boolean).join(" • ");
 

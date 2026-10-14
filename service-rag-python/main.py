@@ -27,7 +27,8 @@ from core.article_parser import (
     is_matching_article_id,
     is_compound_or_multi_intent_query,
     is_jurisprudence_query,
-    get_out_of_bounds_articles
+    get_out_of_bounds_articles,
+    resolve_candidate_article_ids
 )
 from services import memory as session_memory
 from services import followups as followup_svc
@@ -177,6 +178,42 @@ async def get_system_queue_status():
     return status_data
 
 
+@app.get("/api/civil-code/stats")
+def get_civil_code_stats():
+    """
+    Returns counts for jurisprudence cases, civil code articles, and family code articles.
+    """
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT count(*) FROM jurisprudence_cases;")
+            total_cases = cur.fetchone()[0]
+            cur.execute("SELECT count(*) FROM civil_code_articles WHERE article_id LIKE 'RA386-ART%';")
+            civil_articles = cur.fetchone()[0]
+            cur.execute("SELECT count(*) FROM civil_code_articles WHERE article_id LIKE 'EO209-ART%';")
+            family_articles = cur.fetchone()[0]
+            cur.execute("SELECT count(*) FROM article_jurisprudence_relations;")
+            total_relations = cur.fetchone()[0]
+            return {
+                "total_cases": total_cases,
+                "total_articles": civil_articles,
+                "civil_code_articles": civil_articles,
+                "family_code_articles": family_articles,
+                "total_relations": total_relations
+            }
+    except Exception as e:
+        print(f"Error fetching stats: {e}")
+        return {
+            "total_cases": 11879,
+            "total_articles": 2270,
+            "civil_code_articles": 2270,
+            "family_code_articles": 257,
+            "total_relations": 11639
+        }
+    finally:
+        conn.close()
+
+
 @app.get("/api/civil-code/toc")
 def get_civil_code_toc():
     """
@@ -237,6 +274,7 @@ def get_civil_code_toc():
                 "GENERAL OVERVIEW & FOUNDATIONAL PRINCIPLES": -1,
                 "PRELIMINARY TITLE": 0,
                 "BOOK I - PERSONS": 1,
+                "THE FAMILY CODE OF THE PHILIPPINES (EXECUTIVE ORDER NO. 209)": 1.5,
                 "BOOK II - PROPERTY, OWNERSHIP, AND ITS MODIFICATIONS": 2,
                 "BOOK III - DIFFERENT MODES OF ACQUIRING OWNERSHIP": 3,
                 "BOOK IV - OBLIGATIONS AND CONTRACTS": 4
@@ -717,16 +755,16 @@ def ensure_mandatory_legal_disclaimer(text: str, lang: str = "en") -> str:
     if lang == "tl":
         trailer = (
             "\n\n---\n"
-            "> **Mahalagang Paalala (Educational Legal Information)**: "
-            "Ang impormasyong ito ay para sa pangkalahatang kaalaman at pag-unawa sa batas sibil lamang at hindi pormal na legal advice. "
-            "Para sa pormal na payo o aksyong legal, kumonsulta sa Public Attorney's Office (PAO) o sa isang lisensyadong abogado."
+            "> ***Mahalagang Paalala (Educational Legal Information)***: "
+            "*Ang impormasyong ito ay para sa pangkalahatang kaalaman at pag-unawa sa batas sibil lamang at hindi pormal na legal advice. "
+            "Para sa pormal na payo o aksyong legal, kumonsulta sa Public Attorney's Office (PAO) o sa isang lisensyadong abogado.*"
         )
     else:
         trailer = (
             "\n\n---\n"
-            "> **Important Notice (Educational Legal Information)**: "
-            "This information is provided for general educational purposes under Philippine Civil Law and does not constitute formal legal advice. "
-            "For actionable legal counsel or court representation, please consult the Public Attorney's Office (PAO) or a licensed attorney."
+            "> ***Important Notice (Educational Legal Information)***: "
+            "*This information is provided for general educational purposes under Philippine Civil Law and does not constitute formal legal advice. "
+            "For actionable legal counsel or court representation, please consult the Public Attorney's Office (PAO) or a licensed attorney.*"
         )
 
     return text.rstrip() + trailer
@@ -754,14 +792,13 @@ def align_refusal_language(text: str, lang: str = "en") -> str:
     return text
 
 
-def fetch_article_citations(art_nums: List[int]) -> List[dict]:
-    # Retrieves formatted citation dicts for valid Philippine Civil Code articles
+def fetch_article_citations(art_nums: List[int], query: str = "") -> List[dict]:
+    # Retrieves formatted citation dicts for valid statutory articles across Civil Code and Family Code
     if not art_nums:
         return []
-    valid_nums = [int(n) for n in art_nums if 1 <= int(n) <= 2270]
-    if not valid_nums:
-        return []
-    target_ids = [f"RA386-ART{n}" for n in valid_nums]
+    target_ids = resolve_candidate_article_ids(query, [str(n) for n in art_nums])
+    if not target_ids:
+        target_ids = [f"RA386-ART{n}" for n in art_nums if 1 <= int(n) <= 2270]
     conn = get_db_connection()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -788,7 +825,12 @@ def fetch_article_citations(art_nums: List[int]) -> List[dict]:
                 seen_ids.add(pid)
                 meta = meta_map.get(pid, {})
                 art_num = meta.get('article_number')
-                title_str = f"Article {art_num} (Republic Act No. 386 - Civil Code of the Philippines)" if art_num else f"Civil Code Provision ({pid})"
+                if pid.startswith("EO209-"):
+                    title_str = f"Article {art_num} (Executive Order No. 209 - Family Code of the Philippines)" if art_num else f"Family Code Provision ({pid})"
+                elif art_num:
+                    title_str = f"Article {art_num} (Republic Act No. 386 - Civil Code of the Philippines)"
+                else:
+                    title_str = f"Civil Code Provision ({pid})"
                 citations.append({
                     'chunk_id': row['chunk_id'],
                     'parent_type': 'article',
@@ -841,12 +883,12 @@ def reconcile_response_citations(
                 except (ValueError, TypeError):
                     pass
             pid = str(c.get("parent_id") or "")
-            m = re.search(r'RA386-ART(\d+)', pid)
+            m = re.search(r'(?:RA386|EO209)-ART(\d+)', pid)
             if m:
                 existing_art_nums.add(int(m.group(1)))
 
         missing_nums = [n for n in mentioned_nums if n not in existing_art_nums]
-        new_cits = fetch_article_citations(missing_nums) if missing_nums else []
+        new_cits = fetch_article_citations(missing_nums, full_text) if missing_nums else []
 
         # Deduplicate final citations list by parent_id
         final_cits = []
@@ -1073,6 +1115,13 @@ LEGAL_DOMAIN_EXPANSIONS = [
     },
     {
         "patterns": [
+            r'\b(?:presumptive\s+death|presumed\s+dead|declaration\s+of\s+presumptive\s+death|absence|absent\s+spouse|remarriage\s+after\s+absence|subsequent\s+marriage\s+due\s+to\s+absence)\b',
+            r'\b(?:nawawalang\s+asawa|deklarasyon\s+ng\s+pagkamatay)\b',
+        ],
+        "expansion": "presumptive death Article 41 Family Code well-founded belief absence four years subsequent marriage Article 42 Article 43 Article 390 Article 391 presumption of death"
+    },
+    {
+        "patterns": [
             r'\b(?:aksidente|bangga|nabangga|nasagasaan|nadisgrasya|pinsala|kapabayaan|danyos|perwisyo)\b',
             r'\b(?:away|awayan|away-pitasan|pananakit|suntukan|bugbugan|pambubugbog|tumama|tinamaan|tamaan|nasaktan|sinaktan|nanakit|binugbog|sinuntok|biktima|sugat|nasugatan|gulpi|ginulpi|sakitan|kaguluhan|gulo sa kalsada|road rage|nagasgasan|nabaril|nasaksak|saksakan)\b',
             r'\b(?:patay|napatay|nakapatay|naka\s+patay|pagpatay|pinatay|pagkamatay|kamatayan|namatay|nasawi|buhay|killing|homicide|murder|death|manslaughter|loss of life|fatality)\b',
@@ -1118,10 +1167,13 @@ LEGAL_DOMAIN_EXPANSIONS = [
 ]
 
 def expand_legal_query(query: str) -> str:
-    # Enrich colloquial lay queries with governing Philippine Civil Code concepts
+    # Enrich colloquial lay queries with governing Philippine legal concepts
     expansions = []
     q_lower = query.lower()
+    is_presumptive_death = bool(re.search(r'\b(?:presumptive\s+death|presumed\s+dead|absent\s+spouse)\b', q_lower))
     for domain in LEGAL_DOMAIN_EXPANSIONS:
+        if is_presumptive_death and "quasi-delict" in domain["expansion"]:
+            continue
         for pat in domain["patterns"]:
             if re.search(pat, q_lower, re.IGNORECASE):
                 expansions.append(domain["expansion"])
@@ -1932,7 +1984,7 @@ def search_with_embedding(q_emb: list, query: str, document_id: Optional[str] = 
 
             unique_art_nums = parse_article_numbers(user_facing_q)
             if unique_art_nums:
-                exact_ids = [f"RA386-ART{num}" for num in unique_art_nums]
+                exact_ids = resolve_candidate_article_ids(user_facing_q, unique_art_nums)
                 cur.execute("""
                     SELECT chunk_id, parent_type, parent_id, content
                     FROM document_chunks
@@ -2199,18 +2251,26 @@ def format_context_item(row: dict, doc_filename: Optional[str] = None) -> str:
         h = meta.get('hierarchy') or {}
         h_parts = [h.get('book_name'), h.get('title_name'), h.get('chapter_name'), h.get('section_name')]
         h_str = " > ".join([str(p) for p in h_parts if p])
-        if art_num and int(art_num) > 0:
+        if str(source_id).startswith("EO209-"):
+            prov = f"Article {art_num} (Executive Order No. 209 - Family Code of the Philippines)" if art_num and int(art_num) > 0 else f"Family Code Provision ({source_id})"
+            source_type_label = "THE FAMILY CODE OF THE PHILIPPINES (EXECUTIVE ORDER NO. 209)"
+        elif art_num and int(art_num) > 0:
             prov = f"Article {art_num} (Republic Act No. 386 - Civil Code of the Philippines)"
+            source_type_label = "PHILIPPINE CIVIL CODE ARTICLE"
         elif source_id == "RA386-STRUCTURE-AND-ARTICLES" or "STRUCTURE" in str(source_id):
             prov = "Republic Act No. 386 - Codified Structure & Total Articles (Civil Code of the Philippines)"
+            source_type_label = "PHILIPPINE CIVIL CODE ARTICLE"
         elif source_id == "RA386-GENERAL-INFO" or "GENERAL-INFO" in str(source_id):
             prov = "Republic Act No. 386 - General Information, Enactment & Scope (Civil Code of the Philippines)"
+            source_type_label = "PHILIPPINE CIVIL CODE ARTICLE"
         elif source_id == "RA386-SPECIAL-LAWS-AND-AMENDMENTS" or "SPECIAL-LAWS" in str(source_id):
             prov = "Philippine Civil Law - Interaction with Special Laws & Judicial Jurisdiction"
+            source_type_label = "PHILIPPINE CIVIL CODE ARTICLE"
         else:
             prov = f"Civil Code Provision ({source_id})"
+            source_type_label = "PHILIPPINE CIVIL CODE ARTICLE"
         loc_line = f"LOCATION: {h_str}\n" if h_str else ""
-        return f"SOURCE TYPE: PHILIPPINE CIVIL CODE ARTICLE\nPROVISION: {prov}\n{loc_line}STATUTORY TEXT: {row.get('content', '')}\n"
+        return f"SOURCE TYPE: {source_type_label}\nPROVISION: {prov}\n{loc_line}STATUTORY TEXT: {row.get('content', '')}\n"
 
     else:
         title = meta.get('title')
@@ -3348,7 +3408,7 @@ MANDATORY MARKDOWN FORMAT:
 
 ### Governing Statutory Basis
 (Quote the governing statutory basis for {art_str} EXACTLY ONCE:)
-> **Article [Number] (Republic Act No. 386 - Civil Code of the Philippines)**
+> **Article [Number] ([Law Title, e.g. Republic Act No. 386 or Executive Order No. 209 - Family Code of the Philippines as given in CONTEXT])**
 > "[Quote statutory text verbatim from CONTEXT]"
 
 ### Related Supreme Court Jurisprudence & Doctrines

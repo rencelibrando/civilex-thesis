@@ -42,6 +42,32 @@ function invalidateCachedAvatar(userId) {
   if (userId) avatarMemoryCache.delete(userId);
 }
 
+// In-memory profile data cache (30s TTL per user)
+const profileMemoryCache = new Map();
+const PROFILE_CACHE_TTL_MS = 30 * 1000;
+
+function getCachedProfile(userId) {
+  const item = profileMemoryCache.get(userId);
+  if (!item) return null;
+  if (Date.now() - item.timestamp > PROFILE_CACHE_TTL_MS) {
+    profileMemoryCache.delete(userId);
+    return null;
+  }
+  return item.data;
+}
+
+function setCachedProfile(userId, data) {
+  if (profileMemoryCache.size > 200) {
+    const oldestKey = profileMemoryCache.keys().next().value;
+    if (oldestKey) profileMemoryCache.delete(oldestKey);
+  }
+  profileMemoryCache.set(userId, { timestamp: Date.now(), data });
+}
+
+function invalidateCachedProfile(userId) {
+  if (userId) profileMemoryCache.delete(userId);
+}
+
 // Memory storage for avatar images (max 5MB, images only)
 const avatarUpload = multer({
   storage: multer.memoryStorage(),
@@ -209,6 +235,15 @@ router.get('/avatar/:userId', async (req, res) => {
 router.get('/me', requireAuth, async (req, res) => {
   try {
     const userId = req.user.id;
+    const cached = getCachedProfile(userId);
+    if (cached) {
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
+      res.setHeader('Surrogate-Control', 'no-store');
+      return res.json(cached);
+    }
+
     let { data, error } = await req.supabase
       .from('profiles')
       .select('*')
@@ -263,6 +298,9 @@ router.get('/me', requireAuth, async (req, res) => {
     if (data?.avatar_url && (data.avatar_url.includes('localhost:54321') || data.avatar_url.includes('127.0.0.1:54321'))) {
       data.avatar_url = rewriteToPublicUrl(data.avatar_url);
     }
+
+    // Store in fast memory cache for subsequent instant page navigation
+    setCachedProfile(userId, data);
 
     // Strictly prohibit caching of user-private profile responses
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
@@ -339,6 +377,7 @@ router.post('/me/avatar', requireAuth, avatarUpload.single('avatar'), async (req
       console.warn('Could not sync user auth metadata:', metaErr);
     }
 
+    invalidateCachedProfile(userId);
     return res.json({
       success: true,
       avatar_url: newAvatarUrl,
@@ -361,7 +400,8 @@ router.patch('/me', requireAuth, async (req, res) => {
       theme_preferences
     } = req.body;
 
-    // Invalidate avatar cache if avatar is being changed or deleted
+    // Invalidate avatar and profile cache
+    invalidateCachedProfile(userId);
     if (avatar_url !== undefined) {
       invalidateCachedAvatar(userId);
     }
@@ -414,8 +454,9 @@ router.delete('/me', requireAuth, async (req, res) => {
   try {
     const userId = req.user.id;
 
-    // 1. Invalidate memory cache for avatar
+    // 1. Invalidate memory cache for avatar and profile
     invalidateCachedAvatar(userId);
+    invalidateCachedProfile(userId);
 
     // 2. Remove avatar storage files if any
     try {

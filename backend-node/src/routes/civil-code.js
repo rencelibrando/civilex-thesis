@@ -11,7 +11,14 @@ const supabase = createClient(
   process.env.SUPABASE_ANON_KEY || 'dummy'
 );
 
+let cachedStats = null;
+let cachedStatsExpiry = 0;
+const STATS_CACHE_TTL_MS = 600000;
+
 router.get('/stats', async (req, res) => {
+  if (cachedStats && Date.now() < cachedStatsExpiry) {
+    return res.json(cachedStats);
+  }
   try {
     const [casesRes, civilArtsRes, familyArtsRes, relsRes] = await Promise.all([
       supabase.from('jurisprudence_cases').select('*', { count: 'exact', head: true }),
@@ -23,13 +30,16 @@ router.get('/stats', async (req, res) => {
     const civilCount = civilArtsRes.count ?? 2270;
     const familyCount = familyArtsRes.count ?? 257;
 
-    res.json({
+    cachedStats = {
       total_cases: casesRes.count ?? 11879,
       total_articles: civilCount,
       civil_code_articles: civilCount,
       family_code_articles: familyCount,
       total_relations: relsRes.count ?? 11639
-    });
+    };
+    cachedStatsExpiry = Date.now() + STATS_CACHE_TTL_MS;
+
+    res.json(cachedStats);
   } catch (err) {
     console.error("Error fetching stats:", err);
     res.json({ total_cases: 11879, total_articles: 2270, civil_code_articles: 2270, family_code_articles: 257, total_relations: 11639 });
@@ -68,12 +78,46 @@ function makeSnippet(content, query) {
   return snippet;
 }
 
+// In-memory LRU/TTL cache for search queries
+const searchCache = new Map();
+const SEARCH_CACHE_TTL_MS = 5 * 60 * 1000;
+const MAX_SEARCH_CACHE_SIZE = 250;
+
+function getCachedSearch(cacheKey) {
+  const entry = searchCache.get(cacheKey);
+  if (!entry) return null;
+  if (Date.now() - entry.timestamp > SEARCH_CACHE_TTL_MS) {
+    searchCache.delete(cacheKey);
+    return null;
+  }
+  return entry.data;
+}
+
+function setCachedSearch(cacheKey, data) {
+  if (searchCache.size >= MAX_SEARCH_CACHE_SIZE) {
+    const oldestKey = searchCache.keys().next().value;
+    searchCache.delete(oldestKey);
+  }
+  searchCache.set(cacheKey, { timestamp: Date.now(), data });
+}
+
+// In-memory cache for static TOC structure (1 hour TTL)
+let cachedToc = null;
+let cachedTocTimestamp = 0;
+const TOC_CACHE_TTL_MS = 60 * 60 * 1000;
+
 router.get('/search', async (req, res) => {
   const query = (req.query.q || '').toString().trim();
   const limit = Math.min(parseInt(req.query.limit || '15', 10), 50);
 
   if (!query) {
     return res.json({ query: '', exact_article: null, articles: [], toc_sections: [], total_matches: 0 });
+  }
+
+  const cacheKey = `${query.toLowerCase()}_${limit}`;
+  const cached = getCachedSearch(cacheKey);
+  if (cached) {
+    return res.json(cached);
   }
 
   try {
@@ -235,14 +279,16 @@ router.get('/search', async (req, res) => {
       }
     }
 
-    res.json({
+    const payload = {
       query,
       exact_article: exactArticle,
       articles,
       toc_sections: Array.from(tocMap.values()).slice(0, 5),
       cases,
       total_matches: articles.length + cases.length
-    });
+    };
+    setCachedSearch(cacheKey, payload);
+    res.json(payload);
   } catch (err) {
     console.error('Error in /api/civil-code/search:', err);
     res.status(500).json({ error: 'Search failed', articles: [], total_matches: 0 });
@@ -250,6 +296,10 @@ router.get('/search', async (req, res) => {
 });
 
 router.get('/toc', async (req, res) => {
+  if (cachedToc && Date.now() - cachedTocTimestamp < TOC_CACHE_TTL_MS) {
+    return res.json(cachedToc);
+  }
+
   try {
     let rows = [];
     let from = 0;
@@ -383,7 +433,9 @@ router.get('/toc', async (req, res) => {
       resultTree.push(bookNode);
     }
 
-    res.json({ toc: resultTree });
+    cachedToc = { toc: resultTree };
+    cachedTocTimestamp = Date.now();
+    res.json(cachedToc);
   } catch (err) {
     console.error("Error fetching TOC:", err);
     res.status(500).json({ error: "Failed to load table of contents" });

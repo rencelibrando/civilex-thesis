@@ -21,10 +21,30 @@ const defaultClient = createClient(
   }
 );
 
-/**
- * Hardened Authentication Middleware for Backend Gateway
- * Validates JWT Bearer tokens against Supabase Auth service.
- */
+// Short-lived token cache to eliminate remote auth round-trips on rapid requests
+const tokenCache = new Map();
+const TOKEN_CACHE_TTL_MS = 45000;
+
+function getCachedUser(token) {
+  const cached = tokenCache.get(token);
+  if (!cached) return null;
+  if (Date.now() > cached.expiresAt) {
+    tokenCache.delete(token);
+    return null;
+  }
+  return cached.user;
+}
+
+function setCachedUser(token, user) {
+  if (tokenCache.size > 1000) {
+    const now = Date.now();
+    for (const [k, v] of tokenCache.entries()) {
+      if (now > v.expiresAt) tokenCache.delete(k);
+    }
+  }
+  tokenCache.set(token, { user, expiresAt: Date.now() + TOKEN_CACHE_TTL_MS });
+}
+
 export const requireAuth = async (req, res, next) => {
   // Prohibit browser and intermediary caching for all private authenticated endpoints
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
@@ -51,15 +71,20 @@ export const requireAuth = async (req, res, next) => {
       });
     }
 
-    const { data: { user }, error } = await defaultClient.auth.getUser(token);
+    let user = getCachedUser(token);
+    if (!user) {
+      const { data: { user: fetchedUser }, error } = await defaultClient.auth.getUser(token);
 
-    if (error || !user) {
-      return res.status(401).json({
-        error: 'Unauthorized',
-        code: 'INVALID_OR_EXPIRED_TOKEN',
-        message: 'Session token is invalid, expired, or revoked.',
-        details: error?.message
-      });
+      if (error || !fetchedUser) {
+        return res.status(401).json({
+          error: 'Unauthorized',
+          code: 'INVALID_OR_EXPIRED_TOKEN',
+          message: 'Session token is invalid, expired, or revoked.',
+          details: error?.message
+        });
+      }
+      user = fetchedUser;
+      setCachedUser(token, user);
     }
 
     // Create a request-scoped authenticated client for RLS

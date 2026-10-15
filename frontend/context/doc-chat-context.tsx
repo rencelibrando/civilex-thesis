@@ -215,7 +215,9 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
       const queue = charQueueRef.current;
       if (queue.length === 0) return;
 
-      const batch = queue.splice(0, 4).join("");
+      // Adaptively scale batch size when queue buffers to prevent artificial typing stalls
+      const chunkSize = queue.length > 200 ? 32 : queue.length > 60 ? 16 : queue.length > 20 ? 8 : 4;
+      const batch = queue.splice(0, chunkSize).join("");
       const currentDocId = activeStreamDocIdRef.current;
       const currentAssistantId = activeStreamAssistantIdRef.current;
       if (!currentDocId || currentAssistantId === null) return;

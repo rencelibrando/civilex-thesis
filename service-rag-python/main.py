@@ -10,6 +10,7 @@ from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 import psycopg2
+from psycopg2 import pool
 from psycopg2.extras import RealDictCursor
 from pydantic import BaseModel
 from typing import List, Dict, Optional, Any
@@ -106,36 +107,55 @@ DEFAULT_DB_URL = os.getenv(
     "postgresql://postgres:postgres@localhost:54322/postgres"
 )
 
+_db_pool: Optional[pool.ThreadedConnectionPool] = None
+
+class PooledConnWrapper:
+    """Wraps pooled connection to return it to pool on close()."""
+    def __init__(self, raw_conn, pool_ref):
+        self._conn = raw_conn
+        self._pool = pool_ref
+        self._is_closed = False
+
+    def close(self):
+        if not self._is_closed and self._pool:
+            self._is_closed = True
+            try:
+                if not self._conn.closed:
+                    self._conn.rollback()
+                self._pool.putconn(self._conn)
+            except Exception:
+                try:
+                    self._conn.close()
+                except Exception:
+                    pass
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+
+def get_db_pool() -> pool.ThreadedConnectionPool:
+    global _db_pool
+    if _db_pool is None:
+        _db_pool = pool.ThreadedConnectionPool(minconn=2, maxconn=15, dsn=DEFAULT_DB_URL)
+    return _db_pool
+
 def get_db_connection():
     try:
-        conn = psycopg2.connect(DEFAULT_DB_URL)
-        return conn
+        p = get_db_pool()
+        raw_conn = p.getconn()
+        return PooledConnWrapper(raw_conn, p)
     except Exception as e:
-        print(f"Error connecting to database: {e}")
-        raise HTTPException(status_code=500, detail="Database connection failed")
+        try:
+            return psycopg2.connect(DEFAULT_DB_URL)
+        except Exception:
+            logging.error(f"Error connecting to database: {e}")
+            raise HTTPException(status_code=500, detail="Database connection failed")
 
-def init_db():
-    print("Initializing database FTS dictionary and vector indexes...")
-    # NOTE: The schema is managed by Supabase migrations.
-    # Do NOT drop and recreate the FTS column here, as it forces a complete rewrite 
-    # of the entire 4.8GB table on every startup and destroys the GIN index.
-    try:
-        conn = get_db_connection()
-        with conn.cursor() as cur:
-            # Full-text search index
-            cur.execute("CREATE INDEX IF NOT EXISTS fts_idx ON document_chunks USING GIN (fts);")
-            # Dedicated partial HNSW, B-Tree, and GIN indexes for small partitions to prevent 351,000 cases from drowning them out
-            cur.execute("CREATE INDEX IF NOT EXISTS article_vector_idx ON public.document_chunks USING hnsw (embedding vector_cosine_ops) WHERE parent_type = 'article';")
-            cur.execute("CREATE INDEX IF NOT EXISTS article_parent_id_idx ON public.document_chunks(parent_id) WHERE parent_type = 'article';")
-            cur.execute("CREATE INDEX IF NOT EXISTS article_fts_idx ON public.document_chunks USING gin (fts) WHERE parent_type = 'article';")
-            cur.execute("CREATE INDEX IF NOT EXISTS doc_vector_idx ON public.document_chunks USING hnsw (embedding vector_cosine_ops) WHERE parent_type = 'user_document';")
-            conn.commit()
-        conn.close()
-    except Exception as e:
-        print(f"Failed to update FTS/index schema: {e}")
-
-# Run once on startup
-init_db()
 
 @app.get("/health")
 def health_check():
@@ -2462,13 +2482,24 @@ async def search_documents(request: SearchRequest, raw_req: Request = None):
                 logging.info("Starting SSE stream with granular RAG stages and context memory...")
 
                 # ── Per-chat server-authoritative memory ──
-                # DB is source of truth; client `history` is fallback only.
-                _db_history = await asyncio.to_thread(
-                    session_memory.load_session_history,
-                    request.session_id,
-                    session_memory.HISTORY_LIMIT,
-                    user_identifier if user_identifier != "anon" else None,
-                    get_db_connection,
+                # Load session history, summary, and recent citations concurrently
+                _db_history, session_summary, server_citations = await asyncio.gather(
+                    asyncio.to_thread(
+                        session_memory.load_session_history,
+                        request.session_id,
+                        session_memory.HISTORY_LIMIT,
+                        user_identifier if user_identifier != "anon" else None,
+                        get_db_connection,
+                    ),
+                    asyncio.to_thread(
+                        session_memory.load_session_summary, request.session_id, get_db_connection
+                    ),
+                    asyncio.to_thread(
+                        session_memory.load_recent_citations,
+                        request.session_id,
+                        session_memory.PRIOR_CITATIONS_LIMIT,
+                        get_db_connection,
+                    ),
                 )
                 _client_dicts = [{"role": m.role, "content": m.content} for m in (request.history or [])]
                 canonical_history = session_memory.resolve_history(_client_dicts, _db_history)
@@ -2476,15 +2507,6 @@ async def search_documents(request: SearchRequest, raw_req: Request = None):
                 # Snapshot before the current turn is persisted — history-recall
                 # answers must quote *prior* queries, not the recall question itself.
                 _recall_base = list(canonical_history)
-                session_summary = await asyncio.to_thread(
-                    session_memory.load_session_summary, request.session_id, get_db_connection
-                )
-                server_citations = await asyncio.to_thread(
-                    session_memory.load_recent_citations,
-                    request.session_id,
-                    session_memory.PRIOR_CITATIONS_LIMIT,
-                    get_db_connection,
-                )
                 merged_prior_citations = session_memory.merge_prior_citations(
                     server_citations, request.prior_citations
                 )
@@ -2604,16 +2626,14 @@ async def search_documents(request: SearchRequest, raw_req: Request = None):
 
                 # Stage 0: Document Domain Classification (Guardrail for Document Analysis)
                 if request.document_id:
-                    doc_domain_info = classify_document_domain(doc_sample_text, doc_filename)
+                    doc_domain_info = await asyncio.to_thread(classify_document_domain, doc_sample_text, doc_filename)
                     logging.info(f"Document domain classification for '{doc_filename}': {doc_domain_info}")
                     doc_display_name = doc_filename or "Uploaded Document"
 
                     # Branch Doc-Refusal: Uploaded document is entirely non-legal / has no civil law concepts
                     if doc_domain_info['category'] == 'out_of_domain_non_legal':
                         yield f"data: {dumps({'type': 'status', 'stage': 'embedding', 'message': 'Evaluating document content & legal domain boundaries...'})}\n\n"
-                        await asyncio.sleep(0.3)
                         yield f"data: {dumps({'type': 'status', 'stage': 'thinking', 'message': 'Document contains non-legal material; formulating civil scope boundary refusal...'})}\n\n"
-                        await asyncio.sleep(0.3)
 
                         analytics_payload = {
                             'nli_score': None,
@@ -2698,9 +2718,7 @@ Please upload a legal document falling under Philippine Civil Law to proceed wit
                     if doc_domain_info['category'] == 'out_of_domain_legal':
                         target_domain = doc_domain_info.get('target_domain', 'Specialized Philippine Law')
                         yield f"data: {dumps({'type': 'status', 'stage': 'embedding', 'message': f'Analyzing legal jurisdiction for {doc_display_name}...'})}\n\n"
-                        await asyncio.sleep(0.3)
                         yield f"data: {dumps({'type': 'status', 'stage': 'thinking', 'message': f'Identifying governing statutory framework for {target_domain}...'})}\n\n"
-                        await asyncio.sleep(0.3)
 
                         analytics_payload = {
                             'nli_score': None,
@@ -2804,15 +2822,15 @@ CIVIL-LEX is strictly specialized in Philippine Civil Law (RA 386). Please uploa
                         "reason": "Clarification context provided for validated in-domain civil query.",
                     }
                 else:
-                    intent_info = classify_query_intent(effective_query, canonical_msgs, request.document_id, doc_filename)
+                    intent_info = await asyncio.to_thread(
+                        classify_query_intent, effective_query, canonical_msgs, request.document_id, doc_filename
+                    )
                 logging.info(f"Query intent classification: {intent_info}")
 
                 # Branch A: Completely Non-Legal Inquiries (Bypass vector retrieval & suppress citations)
                 if intent_info['category'] == 'out_of_domain_non_legal':
                     yield f"data: {dumps({'type': 'status', 'stage': 'embedding', 'message': 'Evaluating domain boundaries & scope...'})}\n\n"
-                    await asyncio.sleep(0.3)
                     yield f"data: {dumps({'type': 'status', 'stage': 'thinking', 'message': 'Query outside legal domain; formulating scope boundary notice...'})}\n\n"
-                    await asyncio.sleep(0.3)
 
                     analytics_payload = {
                         'nli_score': None,
@@ -2868,9 +2886,7 @@ YOUR MANDATORY RESPONSE RULES:
                 if intent_info['category'] == 'out_of_domain_legal':
                     target_domain = intent_info.get('target_domain', 'Specialized Philippine Law')
                     yield f"data: {dumps({'type': 'status', 'stage': 'embedding', 'message': f'Analyzing legal jurisdiction: {target_domain}...'})}\n\n"
-                    await asyncio.sleep(0.3)
                     yield f"data: {dumps({'type': 'status', 'stage': 'thinking', 'message': f'Identifying governing framework for {target_domain}...'})}\n\n"
-                    await asyncio.sleep(0.3)
 
                     analytics_payload = {
                         'nli_score': None,
@@ -2923,9 +2939,7 @@ YOUR MANDATORY REDIRECTION RULES:
                 if intent_info['category'] == 'out_of_domain_fake_article':
                     target_domain = intent_info.get('target_domain', 'Out-of-Bounds Article')
                     yield f"data: {dumps({'type': 'status', 'stage': 'embedding', 'message': 'Verifying statutory boundaries of RA 386...'})}\n\n"
-                    await asyncio.sleep(0.3)
                     yield f"data: {dumps({'type': 'status', 'stage': 'thinking', 'message': f'Auditing validity of {target_domain}...'})}\n\n"
-                    await asyncio.sleep(0.3)
 
                     analytics_payload = {
                         'nli_score': None,
@@ -2977,9 +2991,7 @@ YOUR MANDATORY STATUTORY BOUNDARY RULES:
                 if intent_info['category'] == 'out_of_domain_illicit':
                     target_domain = intent_info.get('target_domain', 'Illicit Transaction')
                     yield f"data: {dumps({'type': 'status', 'stage': 'embedding', 'message': 'Evaluating legality of contract object and cause...'})}\n\n"
-                    await asyncio.sleep(0.3)
                     yield f"data: {dumps({'type': 'status', 'stage': 'thinking', 'message': 'Detecting unlawful object under Civil Code Art. 1409 & 1347...'})}\n\n"
-                    await asyncio.sleep(0.3)
 
                     analytics_payload = {
                         'nli_score': None,
@@ -3072,7 +3084,6 @@ YOUR MANDATORY REFUSAL AND STATUTORY RULES:
                 )
                 yield f"data: {dumps({'type': 'status', 'stage': 'embedding', 'message': emb_msg})}\n\n"
                 q_emb = await asyncio.to_thread(compute_embedding, search_query)
-                await asyncio.sleep(0.65)
 
                 # Stage 2: Getting the relevant document & statutory authorities
                 ret_msg = (
@@ -3083,7 +3094,6 @@ YOUR MANDATORY REFUSAL AND STATUTORY RULES:
                 yield f"data: {dumps({'type': 'status', 'stage': 'retrieving', 'message': ret_msg})}\n\n"
                 results = await asyncio.to_thread(search_with_embedding, q_emb, search_query, request.document_id, effective_query)
                 logging.info(f"Found {len(results)} relevant citations for current query.")
-                await asyncio.sleep(0.65)
 
                 # Deduplicate prior citations and newly retrieved citations using parent/case keys
                 def get_citation_key(cit: dict) -> str:
@@ -3161,7 +3171,6 @@ YOUR MANDATORY REFUSAL AND STATUTORY RULES:
                     else f"Retrieved {len(results)} relevant legal provisions & doctrines ({len(accumulated_citations)} retained in active chat)"
                 )
                 yield f"data: {dumps({'type': 'status', 'stage': 'retrieving_done', 'message': ret_done_msg, 'count': len(results)})}\n\n"
-                await asyncio.sleep(0.45)
 
                 # Pre-generation: set initial analytics state (real NLI is computed post-generation)
                 nli_score_val = None
@@ -3188,7 +3197,6 @@ YOUR MANDATORY REFUSAL AND STATUTORY RULES:
                     else "Synthesizing statutory context & preparing model prompt..."
                 )
                 yield f"data: {dumps({'type': 'status', 'stage': 'prompting', 'message': prompt_msg})}\n\n"
-                await asyncio.sleep(0.65)
                 
                 # Separate retrieved and prior items by type to enforce strict statutory Civil Code priority
                 statutory_items = []
@@ -3776,6 +3784,14 @@ CONTEXT:
                     if suggestions:
                         yield f"data: {dumps({'type': 'follow_ups', 'data': suggestions})}\n\n"
 
+                # Release GPU queue slot immediately after LLM calls finish to unblock waiting queries
+                try:
+                    if ticket is not None and ticket in queue_manager._active_slots:
+                        await asyncio.shield(queue_manager.release_slot(ticket))
+                        ticket = None
+                except Exception as rel_err:
+                    logging.warning(f"Early queue slot release failed: {rel_err}")
+
                 # Signal completion
                 logging.info("Finished streaming response.")
                 yield f"data: {dumps({'type': 'done'})}\n\n"
@@ -3799,10 +3815,11 @@ CONTEXT:
                 yield f"data: {dumps({'type': 'error', 'message': clean_msg})}\n\n"
             finally:
                 try:
-                    if ticket in queue_manager._active_slots:
-                        await asyncio.shield(queue_manager.release_slot(ticket))
-                    else:
-                        await asyncio.shield(queue_manager.cancel_waiter(ticket))
+                    if ticket is not None:
+                        if ticket in queue_manager._active_slots:
+                            await asyncio.shield(queue_manager.release_slot(ticket))
+                        else:
+                            await asyncio.shield(queue_manager.cancel_waiter(ticket))
                 except Exception as clean_err:
                     logging.error(f"Error releasing queue slot for ticket #{ticket}: {clean_err}")
 

@@ -222,13 +222,17 @@ export default function DashboardPage() {
           })
           .catch((err) => console.error("Failed to load profile:", err));
 
-        // Fetch real sessions
-        const sessionsRes = await fetch(apiUrl("/api/sessions"), {
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-          cache: "no-store",
-        });
+        // Parallelize sessions and documents retrieval
+        const [sessionsRes, docsRes] = await Promise.all([
+          fetch(apiUrl("/api/sessions"), {
+            headers: { Authorization: `Bearer ${token}` },
+            cache: "no-store",
+          }),
+          fetch(apiUrl("/api/documents"), {
+            headers: { Authorization: `Bearer ${token}` },
+            cache: "no-store",
+          }),
+        ]);
 
         if (sessionsRes.ok) {
           const sessionsData: SessionItem[] = await sessionsRes.json();
@@ -237,14 +241,6 @@ export default function DashboardPage() {
             setRecentSessions(userSessions);
           }
         }
-
-        // Fetch user documents count
-        const docsRes = await fetch(apiUrl("/api/documents"), {
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-          cache: "no-store",
-        });
 
         if (docsRes.ok) {
           const docsData: UserDocItem[] = await docsRes.json();

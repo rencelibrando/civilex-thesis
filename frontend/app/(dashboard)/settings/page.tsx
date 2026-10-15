@@ -65,11 +65,15 @@ export default function SettingsPage() {
           session.user.user_metadata?.picture ||
           null;
 
-        // Step 1: 0ms instant hydration from device cache strictly for this user
+        // Step 1: 0ms instant hydration from device cache or session metadata
         const cached = getCachedProfile(session.user.id);
         if (cached && cached.id === session.user.id) {
           setName(cached.full_name || session.user.user_metadata?.full_name || "");
           setAvatarUrl(cached.avatar_url || metaAvatar);
+          setIsLoading(false);
+        } else {
+          setName(session.user.user_metadata?.full_name || "");
+          setAvatarUrl(metaAvatar);
           setIsLoading(false);
         }
 
@@ -824,28 +828,32 @@ export default function SettingsPage() {
 
         {/* Profile Picture Pop-Up Preview Modal */}
         <Dialog open={isPreviewOpen} onOpenChange={setIsPreviewOpen}>
-          <DialogContent className="sm:max-w-md p-0 overflow-hidden bg-card/95 backdrop-blur-md border-border shadow-2xl rounded-2xl">
-            <DialogHeader className="p-4 sm:p-5 pb-3 border-b border-border/60">
-              <div className="flex items-center gap-2.5">
-                <div className="p-2 rounded-xl bg-primary/10 text-primary">
+          <DialogContent className="sm:max-w-md p-0 gap-0 overflow-hidden bg-card/95 backdrop-blur-xl border-border shadow-2xl rounded-2xl">
+            <DialogHeader className="p-5 pb-4 border-b border-border/60">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 rounded-xl bg-primary/10 text-primary border border-primary/20">
                   <User className="w-4 h-4" />
                 </div>
                 <div>
                   <DialogTitle className="text-base font-semibold text-foreground">Profile Picture Preview</DialogTitle>
-                  <DialogDescription className="text-xs text-muted-foreground">
-                    {name ? name : "Your profile avatar"}
+                  <DialogDescription className="text-xs text-muted-foreground mt-0.5">
+                    Preview how your avatar appears across CIVIL-LEX
                   </DialogDescription>
                 </div>
               </div>
             </DialogHeader>
 
-            <div className="p-6 flex flex-col items-center justify-center bg-muted/20">
-              <div className="relative group/modalAvatar w-60 h-60 sm:w-72 sm:h-72 rounded-2xl overflow-hidden border-2 border-border/80 shadow-md bg-background flex items-center justify-center">
+            <div className="p-6 sm:p-8 flex flex-col items-center justify-center bg-muted/20 relative">
+              {/* Ambient backdrop glow */}
+              <div className="absolute w-48 h-48 rounded-full bg-primary/15 blur-3xl pointer-events-none" />
+
+              {/* Elevated circular avatar preview matching application-wide geometry */}
+              <div className="relative group/modalAvatar w-52 h-52 sm:w-60 sm:h-60 rounded-full overflow-hidden ring-4 ring-primary/20 shadow-2xl bg-background flex items-center justify-center transition-all duration-300 group-hover/modalAvatar:ring-primary/40">
                 {avatarUrl ? (
                   <img
                     src={normalizeAvatarSrc(avatarUrl) || (userId ? `/api/profiles/avatar/${userId}` : undefined)}
                     alt={name || "Profile Picture"}
-                    className="w-full h-full object-cover transition-transform duration-300 group-hover/modalAvatar:scale-105"
+                    className="w-full h-full object-cover transition-transform duration-500 group-hover/modalAvatar:scale-105"
                     onError={(e) => {
                       if (userId && !e.currentTarget.src.includes('/api/profiles/avatar')) {
                         e.currentTarget.src = `/api/profiles/avatar/${userId}`;
@@ -853,64 +861,69 @@ export default function SettingsPage() {
                     }}
                   />
                 ) : (
-                  <div className="flex flex-col items-center justify-center text-center p-6 space-y-3">
-                    <div className="w-24 h-24 rounded-full bg-primary/10 text-primary flex items-center justify-center text-4xl font-bold border border-primary/20 shadow-sm">
+                  <div className="flex flex-col items-center justify-center text-center p-6 space-y-2">
+                    <div className="w-20 h-20 rounded-full bg-primary/10 text-primary flex items-center justify-center text-3xl font-bold border border-primary/20 shadow-sm">
                       {name ? name.charAt(0).toUpperCase() : 'U'}
                     </div>
-                    <div>
-                      <p className="text-sm font-semibold text-foreground">{name || "Default Avatar"}</p>
-                      <p className="text-xs text-muted-foreground mt-0.5">No custom profile photo uploaded yet.</p>
-                    </div>
+                    <p className="text-xs text-muted-foreground">No custom photo</p>
                   </div>
                 )}
               </div>
 
-              <div className="mt-4 text-center">
-                <h3 className="text-sm font-semibold text-foreground">{name || "CIVIL-LEX User"}</h3>
-                {email && <p className="text-xs text-muted-foreground mt-0.5">{email}</p>}
+              <div className="mt-5 text-center space-y-1">
+                <h3 className="text-base font-bold text-foreground">{name || "CIVIL-LEX User"}</h3>
+                {email && (
+                  <div className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs text-muted-foreground bg-muted/60 border border-border/50">
+                    {email}
+                  </div>
+                )}
               </div>
             </div>
 
-            <DialogFooter className="p-3.5 sm:p-4 bg-muted/40 border-t border-border flex flex-row items-center justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="rounded-xl text-xs h-9 cursor-pointer"
-                  onClick={() => {
-                    fileInputRef.current?.click();
-                    setIsPreviewOpen(false);
-                  }}
-                  disabled={isUploadingAvatar}
-                >
-                  <Camera className="w-3.5 h-3.5 mr-1.5" />
-                  Change Photo
-                </Button>
-                {avatarUrl && (
+            {/* Action bar without redundant close button */}
+            <div className="p-4 sm:p-5 bg-muted/30 border-t border-border flex items-center justify-center gap-3 w-full">
+              {avatarUrl ? (
+                <>
                   <Button
                     variant="ghost"
-                    size="sm"
-                    className="rounded-xl text-xs h-9 text-destructive hover:text-destructive hover:bg-destructive/10 cursor-pointer"
+                    className="h-10 sm:h-11 px-4 rounded-xl text-xs sm:text-sm font-medium text-destructive hover:text-destructive hover:bg-destructive/10 cursor-pointer flex-1"
                     onClick={async () => {
                       await handleRemoveAvatar();
                       setIsPreviewOpen(false);
                     }}
                     disabled={isUploadingAvatar}
                   >
-                    <Trash2 className="w-3.5 h-3.5 mr-1.5" />
-                    Remove
+                    <Trash2 className="w-4 h-4 mr-1.5" />
+                    Remove Photo
                   </Button>
-                )}
-              </div>
-              <Button
-                variant="secondary"
-                size="sm"
-                className="rounded-xl text-xs h-9 px-4 cursor-pointer"
-                onClick={() => setIsPreviewOpen(false)}
-              >
-                Close
-              </Button>
-            </DialogFooter>
+                  <Button
+                    variant="default"
+                    className="h-10 sm:h-11 px-4 rounded-xl text-xs sm:text-sm font-semibold cursor-pointer shadow-sm bg-primary text-primary-foreground hover:bg-primary/90 flex-1"
+                    onClick={() => {
+                      fileInputRef.current?.click();
+                      setIsPreviewOpen(false);
+                    }}
+                    disabled={isUploadingAvatar}
+                  >
+                    <Camera className="w-4 h-4 mr-1.5" />
+                    Change Photo
+                  </Button>
+                </>
+              ) : (
+                <Button
+                  variant="default"
+                  className="h-10 sm:h-11 px-6 rounded-xl text-xs sm:text-sm font-semibold cursor-pointer shadow-sm bg-primary text-primary-foreground hover:bg-primary/90 w-full max-w-xs"
+                  onClick={() => {
+                    fileInputRef.current?.click();
+                    setIsPreviewOpen(false);
+                  }}
+                  disabled={isUploadingAvatar}
+                >
+                  <Camera className="w-4 h-4 mr-2" />
+                  Change Photo
+                </Button>
+              )}
+            </div>
           </DialogContent>
         </Dialog>
       </div>

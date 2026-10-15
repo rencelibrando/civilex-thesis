@@ -227,26 +227,58 @@ def extract_and_process_document(file_url: str, document_id: str, filename: str)
         return
 
     try:
+        from psycopg2.extras import execute_values
+
         conn = psycopg2.connect(DEFAULT_DB_URL)
         total_chunks = len(chunks)
+        batch_size = 16
+        last_progress = 0
+
         with conn.cursor() as cur:
-            for i, chunk in enumerate(chunks):
-                chunk_id = f"{document_id}_c{i}"
-                passage_text = f"passage: {chunk}" if "e5" in EMBEDDING_MODEL_NAME.lower() else chunk
-                embedding = model.encode(passage_text, normalize_embeddings=True).tolist()
-                cur.execute("""
+            for batch_start in range(0, total_chunks, batch_size):
+                batch_chunks = chunks[batch_start:batch_start + batch_size]
+                passages = [
+                    f"passage: {c}" if "e5" in EMBEDDING_MODEL_NAME.lower() else c
+                    for c in batch_chunks
+                ]
+                embeddings = model.encode(passages, batch_size=batch_size, normalize_embeddings=True).tolist()
+
+                rows = [
+                    (
+                        f"{document_id}_c{batch_start + idx}",
+                        "user_document",
+                        document_id,
+                        batch_chunks[idx],
+                        embeddings[idx],
+                    )
+                    for idx in range(len(batch_chunks))
+                ]
+
+                execute_values(
+                    cur,
+                    """
                     INSERT INTO document_chunks (chunk_id, parent_type, parent_id, content, embedding)
-                    VALUES (%s, 'user_document', %s, %s, %s::vector)
+                    VALUES %s
                     ON CONFLICT (chunk_id) DO NOTHING;
-                """, (chunk_id, document_id, chunk, embedding))
-                
-                # Update progress every 5 chunks or on the last chunk
-                if (i + 1) % 5 == 0 or (i + 1) == total_chunks:
-                    progress_percent = int(((i + 1) / total_chunks) * 100)
-                    cur.execute("UPDATE user_documents SET progress = %s WHERE id = %s", (progress_percent, document_id))
+                    """,
+                    rows,
+                    template="(%s, %s, %s, %s, %s::vector)",
+                )
+
+                current_count = min(batch_start + len(batch_chunks), total_chunks)
+                progress_percent = int((current_count / total_chunks) * 100)
+                if progress_percent - last_progress >= 20 or current_count == total_chunks:
+                    cur.execute(
+                        "UPDATE user_documents SET progress = %s WHERE id = %s;",
+                        (progress_percent, document_id),
+                    )
                     conn.commit()
-            
-            cur.execute("UPDATE user_documents SET status = 'completed', progress = 100, error_message = NULL WHERE id = %s", (document_id,))
+                    last_progress = progress_percent
+
+            cur.execute(
+                "UPDATE user_documents SET status = 'completed', progress = 100, error_message = NULL WHERE id = %s;",
+                (document_id,),
+            )
             conn.commit()
             print(f"Successfully processed and embedded {total_chunks} chunks for {document_id}")
     except Exception as e:

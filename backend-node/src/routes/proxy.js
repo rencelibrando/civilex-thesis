@@ -58,10 +58,13 @@ export const setupProxies = (app) => {
           }
         },
         proxyRes: (proxyRes, req, res) => {
-          // Prevent proxy buffering on SSE streams so chunks and heartbeats reach the frontend immediately
+          // Prevent proxy buffering on SSE streams so chunks reach the frontend immediately
           res.setHeader('X-Accel-Buffering', 'no');
           res.setHeader('Cache-Control', 'no-cache, no-transform');
           res.setHeader('Connection', 'keep-alive');
+          if (typeof res.flushHeaders === 'function') {
+            res.flushHeaders();
+          }
           req.socket.setTimeout(0);
           if (proxyRes.socket) {
             proxyRes.socket.setTimeout(0);

@@ -302,6 +302,51 @@ async def detect_ambiguity(
             reasoning="Illicit transactions, fraudulent evasion, or persona jailbreaks are not ambiguous civil disputes."
         )
 
+    # 1.9 Fast bypass: definitional or conceptual legal queries
+    definitional_cue = bool(re.search(
+        r'^(?:what\s+is(?:\s+a|\s+an)?|define|meaning\s+of|explain|ano\s+ang\s+(?:ibig\s+sabihin\s+ng|kahulugan\s+ng|katuturan\s+ng)|pakipaliwanag\s+ang)\b',
+        q_clean,
+        re.IGNORECASE
+    ))
+    if definitional_cue and not dispute_cues:
+        return AmbiguityResult(
+            is_ambiguous=False,
+            confidence=0.0,
+            category="",
+            original_query=q_clean,
+            reasoning="Definitional or conceptual legal inquiry does not lack essential factual requisites."
+        )
+
+    # 1.10 Fast bypass: Supreme Court jurisprudence citations or case title lookups
+    jurisprudence_cue = bool(re.search(
+        r'\b(?:g\.?r\.?\s*(?:no\.?|nos\.?|l-)?\s*\d+|scra|phil\.?|\bvs?\.?\s+[a-z]+)\b',
+        q_clean,
+        re.IGNORECASE
+    ))
+    if jurisprudence_cue:
+        return AmbiguityResult(
+            is_ambiguous=False,
+            confidence=0.0,
+            category="",
+            original_query=q_clean,
+            reasoning="Supreme Court case or jurisprudence citation lookup."
+        )
+
+    # 1.11 Fast bypass: summary, restatement, or structure queries
+    summary_cue = bool(re.search(
+        r'\b(?:in\s+short|summarize|summary|buod|pakibuod|paikliin|ilang\s+artikulo|total\s+articles|structure\s+of\s+civil\s+code)\b',
+        q_clean,
+        re.IGNORECASE
+    ))
+    if summary_cue:
+        return AmbiguityResult(
+            is_ambiguous=False,
+            confidence=0.0,
+            category="",
+            original_query=q_clean,
+            reasoning="Summary or structural inquiry."
+        )
+
     # 2. Build history context to avoid re-asking facts already stated
     history_context = ""
     if history:
@@ -335,7 +380,7 @@ async def detect_ambiguity(
         raw_content = await call_chat_completion_async(
             messages=messages,
             temperature=0.1,
-            max_tokens=1000,
+            max_tokens=600,
             timeout_sec=30.0,
         )
         if not raw_content:

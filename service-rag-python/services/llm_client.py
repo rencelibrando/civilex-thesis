@@ -1,11 +1,68 @@
+import re
 import json
 import logging
+import time
 from typing import Optional
 import httpx
 from core.config import LM_STUDIO_URL
 
 _async_client: Optional[httpx.AsyncClient] = None
 _sync_client: Optional[httpx.Client] = None
+_model_online_cache: tuple[bool, str, float] = (False, "server_offline", 0.0)
+
+def set_model_offline() -> None:
+    global _model_online_cache
+    _model_online_cache = (False, "server_offline", time.time())
+
+async def check_model_readiness(timeout: float = 1.5) -> tuple[bool, str]:
+    global _model_online_cache
+    if not LM_STUDIO_URL:
+        return False, "LM Studio URL is not configured."
+    is_ready, reason, checked_at = _model_online_cache
+    ttl = 2.5 if is_ready else 4.0
+    if time.time() - checked_at < ttl:
+        if is_ready:
+            return True, "ready"
+        if reason == "no_model_loaded":
+            return False, "LM Studio is running, but no model is loaded into memory. Please load your model in LM Studio and try again."
+        return False, "Unable to connect to the language model. LM Studio is currently offline or unreachable. Please verify that LM Studio is running and try again."
+
+    try:
+        base_url = re.sub(r"/v1/?$", "", LM_STUDIO_URL.rstrip("/"))
+        v0_url = f"{base_url}/api/v0/models"
+        client = get_async_client()
+        resp = await client.get(v0_url, timeout=httpx.Timeout(timeout, connect=timeout))
+        if resp.status_code == 200:
+            data = resp.json()
+            loaded = [m.get("id") for m in data.get("data", []) if m.get("state") == "loaded"]
+            if not loaded:
+                _model_online_cache = (False, "no_model_loaded", time.time())
+                return False, "LM Studio is running, but no model is loaded into memory. Please load your model in LM Studio and try again."
+            _model_online_cache = (True, "ready", time.time())
+            return True, "ready"
+
+        # Fallback to standard OpenAI models endpoint
+        url = f"{LM_STUDIO_URL.rstrip('/')}/models"
+        resp = await client.get(url, timeout=httpx.Timeout(timeout, connect=timeout))
+        if resp.status_code != 200:
+            _model_online_cache = (False, "server_offline", time.time())
+            return False, "Unable to connect to the language model. LM Studio is currently offline or unreachable. Please verify that LM Studio is running and try again."
+
+        data = resp.json()
+        models = data.get("data", [])
+        if not models:
+            _model_online_cache = (False, "no_model_loaded", time.time())
+            return False, "LM Studio is running, but no model is loaded into memory. Please load your model in LM Studio and try again."
+
+        _model_online_cache = (True, "ready", time.time())
+        return True, "ready"
+    except Exception:
+        _model_online_cache = (False, "server_offline", time.time())
+        return False, "Unable to connect to the language model. LM Studio is currently offline or unreachable. Please verify that LM Studio is running and try again."
+
+async def is_model_online(timeout: float = 1.5) -> bool:
+    ready, _ = await check_model_readiness(timeout=timeout)
+    return ready
 
 def get_async_client() -> httpx.AsyncClient:
     global _async_client
@@ -114,19 +171,19 @@ async def generate_response_stream(
         return
 
     except (httpx.TimeoutException, httpx.ConnectError, httpx.HTTPStatusError) as e:
+        set_model_offline()
         logging.error(f"LM Studio connection error: {type(e).__name__} - {e}")
-        yield (
-            "> **Model Service Offline**\n>\n"
-            "> Unable to connect to the language model. LM Studio is currently offline or unreachable. "
-            "Please ensure LM Studio is running and try again."
-        )
+        if isinstance(e, httpx.HTTPStatusError) and e.response.status_code in (400, 404):
+            try:
+                err_text = e.response.text.lower()
+                if "no model" in err_text:
+                    raise RuntimeError("LM Studio is running, but no model is loaded into memory. Please load your model in LM Studio and try again.") from e
+            except Exception:
+                pass
+        raise RuntimeError("Unable to connect to the language model. LM Studio is currently offline or unreachable.") from e
     except Exception as e:
         logging.error(f"Unexpected error during LM Studio streaming: {type(e).__name__} - {e}")
-        yield (
-            "> **Service Temporarily Unavailable**\n>\n"
-            "> An unexpected error occurred while communicating with the language model service. "
-            "Please try submitting your question again."
-        )
+        raise RuntimeError(f"Unexpected error during LM Studio streaming: {e}") from e
 
 
 async def call_chat_completion_async(
@@ -155,6 +212,7 @@ async def call_chat_completion_async(
         msg = data["choices"][0]["message"]
         return msg.get("content") or msg.get("reasoning_content") or ""
     except (httpx.TimeoutException, httpx.ConnectError, httpx.HTTPStatusError) as e:
+        set_model_offline()
         logging.warning(f"LM Studio async completion failed ({type(e).__name__}: {e})")
         return None
     except Exception as e:
@@ -188,6 +246,7 @@ def call_chat_completion_sync(
         msg = data["choices"][0]["message"]
         return msg.get("content") or msg.get("reasoning_content") or ""
     except (httpx.TimeoutException, httpx.ConnectError, httpx.HTTPStatusError) as e:
+        set_model_offline()
         logging.warning(f"LM Studio sync completion failed ({type(e).__name__}: {e})")
         return None
     except Exception as e:

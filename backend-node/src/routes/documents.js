@@ -6,7 +6,7 @@ import { createClient } from '@supabase/supabase-js';
 import dotenv from 'dotenv';
 import { requireAuth } from '../middleware/auth.js';
 
-dotenv.config();
+dotenv.config({ quiet: true });
 
 // Re-use native fetch if available, else import
 const globalFetch = typeof fetch !== 'undefined' ? fetch : (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));

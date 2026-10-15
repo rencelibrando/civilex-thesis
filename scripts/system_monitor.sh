@@ -1,12 +1,9 @@
 #!/usr/bin/env bash
 
-# ==============================================================================
 # CIVIL-LEX Live System, Resource & LLM Concurrency Queue Monitor
-# ==============================================================================
 # Displays real-time host hardware metrics (CPU, RAM, Swap, Disk, Net I/O),
 # per-core CPU load, service process resources, service health statuses,
-# a scrollable online users directory, and live LLM inference concurrency queue statistics
-# (strict 6GB VRAM protection for LM Studio Gemma 4).
+# a scrollable online users directory, and live LLM inference concurrency queue statistics.
 
 set -u
 
@@ -15,13 +12,15 @@ ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 MONITOR_SCRIPT="${SCRIPT_DIR}/system_monitor.sh"
 START_MTIME=$(stat -c %Y "${MONITOR_SCRIPT}" 2>/dev/null || echo 0)
 
-# Source root .env if present
-if [ -f "${ROOT_DIR}/.env" ]; then
-  # shellcheck source=/dev/null
-  set -a
-  source "${ROOT_DIR}/.env" 2>/dev/null || true
-  set +a
-fi
+# Source environment files if present
+for env_file in "${ROOT_DIR}/.env" "${ROOT_DIR}/service-rag-python/.env" "${ROOT_DIR}/backend-node/.env"; do
+  if [ -f "$env_file" ]; then
+    # shellcheck source=/dev/null
+    set -a
+    source "$env_file" 2>/dev/null || true
+    set +a
+  fi
+done
 
 SESSION_NAME="${CIVILEX_TMUX_SESSION:-civilex}"
 MONITOR_WINDOW_NAME="System-Monitor"
@@ -31,8 +30,8 @@ CACHE_DIR="/dev/shm"
 [ ! -d "$CACHE_DIR" ] && CACHE_DIR="/tmp"
 QUEUE_CACHE="${CACHE_DIR}/civilex_mon_queue.json"
 USERS_CACHE="${CACHE_DIR}/civilex_mon_users.json"
+LM_CACHE="${CACHE_DIR}/civilex_mon_lm.json"
 POLL_LOCK="${CACHE_DIR}/civilex_mon_poll.lock"
-PROC_CACHE="${CACHE_DIR}/civilex_mon_procs.tsv"
 
 # ANSI Color & Formatting Tokens
 BOLD="\033[1m"
@@ -57,7 +56,6 @@ RESIZE_NEEDED=0
 
 # Terminal restoration & cleanup handler
 cleanup() {
-  # Disable SGR mouse tracking, exit alternate buffer, restore cursor & echo
   printf "\033[?1000l\033[?1006l" 2>/dev/null || true
   if [ "$in_alternate_screen" = true ]; then
     printf "\033[?1049l\033[?25h" 2>/dev/null || true
@@ -78,6 +76,9 @@ trap handle_winch WINCH
 CPU_MODEL=$(lscpu 2>/dev/null | grep -m1 "Model name:" | sed 's/Model name:[[:space:]]*//' | sed 's/[[:space:]]\+/ /g' || true)
 [ -z "$CPU_MODEL" ] && CPU_MODEL="Generic x86_64 CPU"
 CPU_CORES=$(nproc 2>/dev/null || echo 1)
+HOST_NAME=$(hostname -s 2>/dev/null || uname -n 2>/dev/null || echo "localhost")
+ARCH_NAME=$(uname -m 2>/dev/null || echo "x86_64")
+DEFAULT_IFACE=$(ip route 2>/dev/null | grep -m1 '^default' | awk '{print $5}' || echo "")
 
 # CPU calculation state maintained across ticks
 PREV_TOTAL=0
@@ -103,7 +104,15 @@ BE_STATS="-"
 PY_STATS="-"
 TU_STATS="-"
 
-# Update Total CPU Usage
+# Cached Disk Space (updated every 5 seconds)
+LAST_DISK_CHECK=0
+CACHED_DISK_INFO="-"
+CACHED_DISK_PCT="0"
+
+# Background Poller State (debounced every 3 seconds)
+LAST_POLL_TIME=0
+
+# Update Total CPU Usage with pure integer math
 update_cpu_usage() {
   local cpu_line
   cpu_line=$(grep '^cpu ' /proc/stat 2>/dev/null || true)
@@ -136,10 +145,11 @@ update_cpu_usage() {
     return
   fi
 
-  CPU_PCT=$(awk -v dt="$diff_total" -v di="$diff_idle" 'BEGIN { printf "%.1f", ((dt - di) / dt) * 100 }')
+  local pct_10x=$(( ((diff_total - diff_idle) * 1000) / diff_total ))
+  CPU_PCT="$(( pct_10x / 10 )).$(( pct_10x % 10 ))"
 }
 
-# Update Per-Core CPU Usage
+# Update Per-Core CPU Usage with pure integer math
 update_core_stats() {
   local c_idx=0
   while read -r c_name user nice sys idle iowait irq softirq steal _; do
@@ -155,12 +165,12 @@ update_core_stats() {
       local dt=$(( tot - prev_t ))
       local di=$(( idl - prev_i ))
       if [ "$dt" -gt 0 ]; then
-        CORE_PCTS[$c_idx]=$(awk -v dt="$dt" -v di="$di" 'BEGIN { printf "%.0f", ((dt - di) / dt) * 100 }')
+        CORE_PCTS[$c_idx]=$(( ((dt - di) * 100) / dt ))
       else
-        CORE_PCTS[$c_idx]="0"
+        CORE_PCTS[$c_idx]=0
       fi
     else
-      CORE_PCTS[$c_idx]="0"
+      CORE_PCTS[$c_idx]=0
     fi
     c_idx=$((c_idx + 1))
   done < <(grep -E '^cpu[0-9]+' /proc/stat 2>/dev/null || true)
@@ -168,8 +178,16 @@ update_core_stats() {
 
 # Update Real-time Network Throughput
 update_network_usage() {
-  local cur_rx=0 cur_tx=0
-  read -r cur_rx cur_tx < <(awk 'NR>2 && $1 !~ /^lo:/ {rx += $2; tx += $10} END {printf "%d %d\n", rx, tx}' /proc/net/dev 2>/dev/null || echo "0 0")
+  local cur_rx=0 cur_tx=0 line iface r_bytes t_bytes
+  while read -r line; do
+    [[ "$line" =~ : ]] || continue
+    iface="${line%%:*}"
+    iface="${iface// /}"
+    [ "$iface" = "lo" ] && continue
+    read -r r_bytes _ _ _ _ _ _ _ t_bytes _ <<< "${line#*:}"
+    cur_rx=$(( cur_rx + r_bytes ))
+    cur_tx=$(( cur_tx + t_bytes ))
+  done < /proc/net/dev 2>/dev/null
   local now
   now=$(date +%s)
 
@@ -195,19 +213,19 @@ update_network_usage() {
   PREV_NET_SEC=$now
 
   if [ "$diff_rx" -ge 1048576 ]; then
-    RX_RATE_STR=$(awk -v b="$diff_rx" -v s="$dt" 'BEGIN { printf "%.2f MB/s", (b / 1048576) / s }')
+    RX_RATE_STR="$(( diff_rx / (1048576 * dt) )).$(( ((diff_rx % (1048576 * dt)) * 10) / (1048576 * dt) )) MB/s"
   else
-    RX_RATE_STR=$(awk -v b="$diff_rx" -v s="$dt" 'BEGIN { printf "%.1f KB/s", (b / 1024) / s }')
+    RX_RATE_STR="$(( diff_rx / (1024 * dt) )).$(( ((diff_rx % (1024 * dt)) * 10) / (1024 * dt) )) KB/s"
   fi
 
   if [ "$diff_tx" -ge 1048576 ]; then
-    TX_RATE_STR=$(awk -v b="$diff_tx" -v s="$dt" 'BEGIN { printf "%.2f MB/s", (b / 1048576) / s }')
+    TX_RATE_STR="$(( diff_tx / (1048576 * dt) )).$(( ((diff_tx % (1048576 * dt)) * 10) / (1048576 * dt) )) MB/s"
   else
-    TX_RATE_STR=$(awk -v b="$diff_tx" -v s="$dt" 'BEGIN { printf "%.1f KB/s", (b / 1024) / s }')
+    TX_RATE_STR="$(( diff_tx / (1024 * dt) )).$(( ((diff_tx % (1024 * dt)) * 10) / (1024 * dt) )) KB/s"
   fi
 }
 
-# Update Service Process Resource Telemetry (cached for 2s)
+# Update Service Process Resource Telemetry (cached for 2s, PID file first)
 update_proc_metrics() {
   local now
   now=$(date +%s)
@@ -217,10 +235,24 @@ update_proc_metrics() {
   LAST_PROC_UPDATE=$now
 
   local p_fe="" p_be="" p_py="" p_tu=""
-  p_fe=$(fuser 3000/tcp 2>/dev/null | awk '{print $1}')
-  p_be=$(fuser 4000/tcp 2>/dev/null | awk '{print $1}')
-  p_py=$(fuser 8000/tcp 2>/dev/null | awk '{print $NF}')
-  p_tu=$(pgrep -f "devtunnel host" 2>/dev/null | head -n 1 || true)
+  local pid_dir="${ROOT_DIR}/.logs"
+  [ -f "${pid_dir}/frontend.pid" ] && p_fe=$(cat "${pid_dir}/frontend.pid" 2>/dev/null || true)
+  [ -f "${pid_dir}/backend.pid" ] && p_be=$(cat "${pid_dir}/backend.pid" 2>/dev/null || true)
+  [ -f "${pid_dir}/python-rag.pid" ] && p_py=$(cat "${pid_dir}/python-rag.pid" 2>/dev/null || true)
+  [ -f "${pid_dir}/azure-tunnel.pid" ] && p_tu=$(cat "${pid_dir}/azure-tunnel.pid" 2>/dev/null || true)
+
+  if [ -z "$p_fe" ] || ! kill -0 "$p_fe" 2>/dev/null; then
+    p_fe=$(fuser 3000/tcp 2>/dev/null | awk '{print $1}')
+  fi
+  if [ -z "$p_be" ] || ! kill -0 "$p_be" 2>/dev/null; then
+    p_be=$(fuser 4000/tcp 2>/dev/null | awk '{print $1}')
+  fi
+  if [ -z "$p_py" ] || ! kill -0 "$p_py" 2>/dev/null; then
+    p_py=$(fuser 8000/tcp 2>/dev/null | awk '{print $NF}')
+  fi
+  if [ -z "$p_tu" ] || ! kill -0 "$p_tu" 2>/dev/null; then
+    p_tu=$(pgrep -f "devtunnel host" 2>/dev/null | head -n 1 || true)
+  fi
 
   FE_STATS="-"
   BE_STATS="-"
@@ -240,9 +272,9 @@ update_proc_metrics() {
       local mem_str=""
       if [ -n "$rss" ] && [ "$rss" -gt 0 ] 2>/dev/null; then
         if [ "$rss" -ge 1048576 ]; then
-          mem_str=$(awk -v r="$rss" 'BEGIN { printf "%.1fG", r / 1048576 }')
+          mem_str="$(( rss / 1048576 )).$(( ((rss % 1048576) * 10) / 1048576 ))G"
         else
-          mem_str=$(awk -v r="$rss" 'BEGIN { printf "%dM", r / 1024 }')
+          mem_str="$(( rss / 1024 ))M"
         fi
       fi
       local stat_str="${pcpu}% CPU, ${mem_str} RAM"
@@ -260,14 +292,10 @@ update_cpu_usage
 update_core_stats
 update_network_usage
 
-# Check if a local port is responding (timeout 0.3s)
+# Fast local port check using pure bash socket (fallback to nc)
 check_port() {
   local port=$1
-  if command -v nc >/dev/null 2>&1; then
-    nc -z -w 1 127.0.0.1 "$port" 2>/dev/null
-  else
-    (echo > "/dev/tcp/127.0.0.1/${port}") 2>/dev/null
-  fi
+  (exec 3<>"/dev/tcp/127.0.0.1/${port}" && exec 3<&-) 2>/dev/null || (command -v nc >/dev/null 2>&1 && nc -z -w 1 127.0.0.1 "$port" 2>/dev/null)
 }
 
 # Fast Progress Bar Renderer that scales proportionally to width
@@ -312,42 +340,45 @@ draw_mini_bar() {
   printf "%b %2d%%" "$b" "$p"
 }
 
-# Non-blocking Asynchronous API Poller
+# Non-blocking Asynchronous API Poller (debounced every 3s in memory)
 trigger_background_poll() {
   local force=${1:-false}
   local now
   now=$(date +%s)
 
-  if [ "$force" != true ] && [ -f "$POLL_LOCK" ]; then
-    local mtime
-    mtime=$(stat -c %Y "$POLL_LOCK" 2>/dev/null || echo 0)
-    # If lock is less than 3 seconds old, skip spawning redundant poll
-    if [ $(( now - mtime )) -lt 3 ]; then
+  if [ "$force" != true ]; then
+    if [ $(( now - LAST_POLL_TIME )) -lt 3 ]; then
       return
     fi
   fi
+  LAST_POLL_TIME=$now
 
-  touch "$POLL_LOCK"
   (
     # 1. Fetch Python RAG queue status
-    curl -s --connect-timeout 0.4 --max-time 0.8 http://localhost:8000/system/queue-status > "${QUEUE_CACHE}.tmp" 2>/dev/null && \
-      mv -f "${QUEUE_CACHE}.tmp" "$QUEUE_CACHE" 2>/dev/null || rm -f "${QUEUE_CACHE}.tmp" 2>/dev/null
+    curl -s --connect-timeout 0.6 --max-time 1.2 http://localhost:8000/system/queue-status > "${QUEUE_CACHE}.tmp" 2>/dev/null && \
+      mv -f "${QUEUE_CACHE}.tmp" "$QUEUE_CACHE" 2>/dev/null || rm -f "${QUEUE_CACHE}.tmp" "$QUEUE_CACHE" 2>/dev/null
 
     # 2. Fetch Backend Node online users
-    curl -s --connect-timeout 0.4 --max-time 0.8 http://localhost:4000/api/system/online-users > "${USERS_CACHE}.tmp" 2>/dev/null && \
-      mv -f "${USERS_CACHE}.tmp" "$USERS_CACHE" 2>/dev/null || rm -f "${USERS_CACHE}.tmp" 2>/dev/null
+    curl -s --connect-timeout 0.5 --max-time 1.0 http://localhost:4000/api/system/online-users > "${USERS_CACHE}.tmp" 2>/dev/null && \
+      mv -f "${USERS_CACHE}.tmp" "$USERS_CACHE" 2>/dev/null || rm -f "${USERS_CACHE}.tmp" "$USERS_CACHE" 2>/dev/null
 
-    rm -f "$POLL_LOCK" 2>/dev/null || true
+    # 3. Direct LM Studio models check
+    local lm_endpoint="${LM_STUDIO_URL:-http://10.57.24.131:1234/v1}"
+    local lm_base="${lm_endpoint%/v1}"
+    lm_base="${lm_base%/v1/}"
+    lm_base="${lm_base%/}"
+    curl -s --connect-timeout 0.6 --max-time 1.2 "${lm_base}/api/v0/models" > "${LM_CACHE}.tmp" 2>/dev/null && \
+      mv -f "${LM_CACHE}.tmp" "$LM_CACHE" 2>/dev/null || rm -f "${LM_CACHE}.tmp" "$LM_CACHE" 2>/dev/null
   ) &
 }
 
 # Initial synchronization if cache does not exist
-if [ ! -f "$QUEUE_CACHE" ] || [ ! -f "$USERS_CACHE" ]; then
+if [ ! -f "$QUEUE_CACHE" ] || [ ! -f "$USERS_CACHE" ] || [ ! -f "$LM_CACHE" ]; then
   trigger_background_poll true
-  sleep 0.2
+  sleep 0.15
 fi
 
-# Tmux launcher subroutine
+# Dedicated Tmux Launcher Subroutine
 launch_in_tmux() {
   if ! command -v tmux >/dev/null 2>&1; then
     echo -e "${YELLOW}[!] tmux is not installed on this system. Falling back to direct terminal monitor...${RESET}"
@@ -359,7 +390,7 @@ launch_in_tmux() {
   local MON_SESSION="civilex-monitor"
 
   if ! tmux has-session -t "$MON_SESSION" 2>/dev/null; then
-    echo -e "${GREEN}[✔] Launching dedicated system monitor session '${MON_SESSION}'...${RESET}"
+    echo -e "${GREEN}[OK] Launching dedicated system monitor session '${MON_SESSION}'...${RESET}"
     tmux new-session -d -s "$MON_SESSION" -n "$MONITOR_WINDOW_NAME" "bash '${MONITOR_SCRIPT}'"
     tmux set-option -t "$MON_SESSION" -g mouse on 2>/dev/null || true
     tmux set-window-option -t "$MON_SESSION" -g aggressive-resize on 2>/dev/null || true
@@ -373,16 +404,10 @@ launch_in_tmux() {
   exit 0
 }
 
-# Detect current terminal dimensions honoring COLUMNS, LINES, tput and stty
+# Detect terminal dimensions in pure bash / stty
 get_terminal_dimensions() {
-  local cols="${COLUMNS:-}"
-  local lines="${LINES:-}"
-  if [ -z "$cols" ] || [ "$cols" -le 0 ] 2>/dev/null; then
-    cols=$(tput cols 2>/dev/null || stty size 2>/dev/null | awk '{print $2}' || echo 80)
-  fi
-  if [ -z "$lines" ] || [ "$lines" -le 0 ] 2>/dev/null; then
-    lines=$(tput lines 2>/dev/null || stty size 2>/dev/null | awk '{print $1}' || echo 24)
-  fi
+  local lines="" cols=""
+  read -r lines cols < <(stty size 2>/dev/null || echo "${LINES:-24} ${COLUMNS:-80}")
   [ -z "$cols" ] || [ "$cols" -lt 80 ] 2>/dev/null && cols=80
   [ -z "$lines" ] || [ "$lines" -lt 20 ] 2>/dev/null && lines=20
   echo "$lines $cols"
@@ -393,13 +418,13 @@ generate_frame() {
   local term_lines=${1:-24}
   local term_cols=${2:-80}
 
-  # Ensure minimum dimensions for clean presentation
   [ "$term_cols" -lt 80 ] && term_cols=80
   [ "$term_lines" -lt 20 ] && term_lines=20
 
   local inner_width=$(( term_cols - 2 ))
   local border_str
-  printf -v border_str '═%.0s' $(seq 1 "$inner_width")
+  printf -v border_str '%*s' "$inner_width" ''
+  border_str="${border_str// /═}"
 
   local BOX_TOP="${BOLD}${BLUE}╔${border_str}╗${RESET}${CLEAR_LINE}\n"
   local BOX_MID="${BOLD}${BLUE}╠${border_str}╣${RESET}${CLEAR_LINE}\n"
@@ -408,11 +433,33 @@ generate_frame() {
   local now_str
   now_str=$(date "+%Y-%m-%d %H:%M:%S %Z")
 
-  local uptime_str
-  uptime_str=$(uptime -p 2>/dev/null || uptime | awk -F'( |,|:)+' '{print $6,"hrs,", $7,"min"}')
+  local uptime_str=""
+  if [ -f /proc/uptime ]; then
+    local up_sec
+    read -r up_sec _ < /proc/uptime
+    up_sec=${up_sec%.*}
+    local days=$(( up_sec / 86400 ))
+    local hours=$(( (up_sec % 86400) / 3600 ))
+    local mins=$(( (up_sec % 3600) / 60 ))
+    if [ "$days" -gt 0 ]; then
+      uptime_str="${days}d ${hours}h ${mins}m"
+    elif [ "$hours" -gt 0 ]; then
+      uptime_str="${hours}h ${mins}m"
+    else
+      uptime_str="${mins}m"
+    fi
+  else
+    uptime_str=$(uptime -p 2>/dev/null || echo "live")
+  fi
 
-  local load_avg
-  load_avg=$(cat /proc/loadavg 2>/dev/null | awk '{print $1, $2, $3}')
+  local load_avg=""
+  if [ -f /proc/loadavg ]; then
+    local la1 la2 la3
+    read -r la1 la2 la3 _ < /proc/loadavg
+    load_avg="$la1 $la2 $la3"
+  else
+    load_avg="0.0 0.0 0.0"
+  fi
 
   # Real-time resource updates
   update_cpu_usage
@@ -422,14 +469,13 @@ generate_frame() {
 
   # Real-time CPU Frequency
   local cpu_freq_ghz=""
-  local cur_khz
-  cur_khz=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq 2>/dev/null || true)
-  if [ -n "$cur_khz" ] && [ "$cur_khz" -gt 0 ] 2>/dev/null; then
-    cpu_freq_ghz=$(awk -v k="$cur_khz" 'BEGIN { printf "%.2f GHz", k / 1000000 }')
-  else
-    local mhz
-    mhz=$(grep -m1 "cpu MHz" /proc/cpuinfo 2>/dev/null | awk '{print $4}' || true)
-    [ -n "$mhz" ] && cpu_freq_ghz=$(awk -v m="$mhz" 'BEGIN { printf "%.2f GHz", m / 1000 }')
+  if [ -f /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq ]; then
+    local cur_khz
+    read -r cur_khz < /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq
+    if [ -n "$cur_khz" ] && [ "$cur_khz" -gt 0 ] 2>/dev/null; then
+      local ghz_100x=$(( cur_khz / 10000 ))
+      cpu_freq_ghz="$(( ghz_100x / 100 )).$(( ghz_100x % 100 )) GHz"
+    fi
   fi
   [ -z "$cpu_freq_ghz" ] && cpu_freq_ghz="Dynamic"
 
@@ -445,73 +491,135 @@ generate_frame() {
   done < /proc/meminfo
 
   local mem_used_kb=$(( mem_total_kb - mem_avail_kb ))
-  local mem_pct=0
-  [ "$mem_total_kb" -gt 0 ] && mem_pct=$(awk -v u="$mem_used_kb" -v t="$mem_total_kb" 'BEGIN { printf "%.1f", (u / t) * 100 }')
+  local mem_pct="0.0"
+  if [ "$mem_total_kb" -gt 0 ]; then
+    local m_10x=$(( (mem_used_kb * 1000) / mem_total_kb ))
+    mem_pct="$(( m_10x / 10 )).$(( m_10x % 10 ))"
+  fi
 
   local swap_used_kb=$(( swap_total_kb - swap_free_kb ))
-  local swap_pct=0
-  [ "$swap_total_kb" -gt 0 ] && swap_pct=$(awk -v u="$swap_used_kb" -v t="$swap_total_kb" 'BEGIN { printf "%.1f", (u / t) * 100 }')
+  local swap_pct="0.0"
+  if [ "$swap_total_kb" -gt 0 ]; then
+    local s_10x=$(( (swap_used_kb * 1000) / swap_total_kb ))
+    swap_pct="$(( s_10x / 10 )).$(( s_10x % 10 ))"
+  fi
 
-  local mem_total_gb mem_used_gb mem_avail_gb swap_total_gb swap_used_gb
-  mem_total_gb=$(awk -v k="$mem_total_kb" 'BEGIN { printf "%.1f", k / 1048576 }')
-  mem_used_gb=$(awk -v k="$mem_used_kb" 'BEGIN { printf "%.1f", k / 1048576 }')
-  mem_avail_gb=$(awk -v k="$mem_avail_kb" 'BEGIN { printf "%.1f", k / 1048576 }')
-  swap_total_gb=$(awk -v k="$swap_total_kb" 'BEGIN { printf "%.1f", k / 1048576 }')
-  swap_used_gb=$(awk -v k="$swap_used_kb" 'BEGIN { printf "%.1f", k / 1048576 }')
+  local mem_total_gb="$(( mem_total_kb / 1048576 )).$(( ((mem_total_kb % 1048576) * 10) / 1048576 ))"
+  local mem_used_gb="$(( mem_used_kb / 1048576 )).$(( ((mem_used_kb % 1048576) * 10) / 1048576 ))"
+  local mem_avail_gb="$(( mem_avail_kb / 1048576 )).$(( ((mem_avail_kb % 1048576) * 10) / 1048576 ))"
+  local swap_total_gb="$(( swap_total_kb / 1048576 )).$(( ((swap_total_kb % 1048576) * 10) / 1048576 ))"
+  local swap_used_gb="$(( swap_used_kb / 1048576 )).$(( ((swap_used_kb % 1048576) * 10) / 1048576 ))"
 
-  # Disk usage for root
-  local disk_info="-" disk_pct="0"
-  disk_info=$(df -hP / 2>/dev/null | awk 'NR==2 {print $3 "/" $2, "(" $5 ")"}')
-  disk_pct=$(df -P / 2>/dev/null | awk 'NR==2 {gsub("%","",$5); print $5}')
+  # Cached disk space (updated once every 5 seconds)
+  local now_sec
+  now_sec=$(date +%s)
+  if [ $(( now_sec - LAST_DISK_CHECK )) -ge 5 ] || [ -z "$CACHED_DISK_INFO" ]; then
+    LAST_DISK_CHECK=$now_sec
+    local d_size d_used d_pct
+    {
+      read -r _
+      read -r _ d_size d_used _ d_pct _
+    } < <(df -hP / 2>/dev/null)
+    CACHED_DISK_INFO="${d_used:-0}/${d_size:-0}"
+    d_pct="${d_pct%%%}"
+    CACHED_DISK_PCT="${d_pct:-0}"
+  fi
+  local disk_info="${CACHED_DISK_INFO:--}"
+  local disk_pct="${CACHED_DISK_PCT:-0}"
 
   # Read Python RAG queue status from cached JSON in /dev/shm
   local queue_json=""
   [ -f "$QUEUE_CACHE" ] && queue_json=$(cat "$QUEUE_CACHE" 2>/dev/null || true)
 
   local active_queries=0 queued_queries=0 max_concurrent=1 total_served=0 avg_latency="0.0"
-  local lm_online=false lm_latency="-" lm_url="${LM_STUDIO_URL:-http://10.57.24.131:1234/v1}"
-  local active_model="None"
+  local lm_server_online=false lm_model_loaded=false lm_latency="-" lm_url="${LM_STUDIO_URL:-http://10.57.24.131:1234/v1}"
+  local active_model="None" lm_ctx=""
   local -a active_slot_lines=()
   local -a waiter_lines=()
 
   if [ -n "$queue_json" ] && command -v jq >/dev/null 2>&1; then
-    IFS=$'\t' read -r max_concurrent active_queries queued_queries total_served avg_latency lm_online_raw lm_lat active_model < <(
+    # Parse scalar queue metrics with non-empty placeholders to prevent TSV column shifts
+    local q_srv_online q_mod_loaded q_lat q_model q_ctx
+    IFS=$'\t' read -r max_concurrent active_queries queued_queries total_served avg_latency q_srv_online q_mod_loaded q_lat q_model q_ctx < <(
       echo "$queue_json" | jq -r '[
         (.max_concurrent // 1),
         (.active_queries // 0),
         (.queued_queries // 0),
         (.total_served // 0),
         (.avg_latency_sec // 0.0),
-        (if .lm_studio.online then "true" else "false" end),
-        (.lm_studio.latency_ms // ""),
-        (.lm_studio.models[0] // "None")
-      ] | @tsv' 2>/dev/null || echo -e "1\t0\t0\t0\t0.0\tfalse\t\tNone"
+        (if (.lm_studio.server_online // .lm_studio.online) then "true" else "false" end),
+        (if .lm_studio.model_loaded then "true" else "false" end),
+        (if (.lm_studio.latency_ms == null or .lm_studio.latency_ms == "") then "-" else (.lm_studio.latency_ms|tostring) end),
+        (if (.lm_studio.active_model != null and .lm_studio.active_model != "") then .lm_studio.active_model elif (.lm_studio.models[0] != null and .lm_studio.models[0] != "") then .lm_studio.models[0] else "-" end),
+        (if (.lm_studio.context_length != null and .lm_studio.context_length != "" and .lm_studio.context_length != 0) then (.lm_studio.context_length|tostring) else "-" end)
+      ] | @tsv' 2>/dev/null || echo -e "1\t0\t0\t0\t0.0\tfalse\tfalse\t-\t-\t-"
     )
-    [ "$lm_online_raw" = "true" ] && lm_online=true
-    [ -n "$lm_lat" ] && lm_latency="${lm_lat}ms"
+    [ "$q_srv_online" = "true" ] && lm_server_online=true
+    [ "$q_mod_loaded" = "true" ] && lm_model_loaded=true
+    if [ "$q_lat" != "-" ] && [ -n "$q_lat" ]; then
+      lm_latency="${q_lat}ms"
+    fi
+    if [ "$q_model" != "-" ] && [ -n "$q_model" ]; then
+      active_model="$q_model"
+    fi
+    if [ "$q_ctx" != "-" ] && [ -n "$q_ctx" ]; then
+      lm_ctx="$q_ctx"
+    fi
 
-    # Parse active slots
+    # Parse active slots with non-empty placeholders
     while IFS=$'\t' read -r t_num u_display u_mail run_sec; do
       [ -z "$t_num" ] && continue
+      [ "$u_mail" = "-" ] && u_mail=""
       active_slot_lines+=("$t_num	$u_display	$u_mail	$run_sec")
     done < <(echo "$queue_json" | jq -r '(.active_slots // [])[] | [
       (.ticket|tostring),
       ([.user_name, .user_email, .user_id] | map(select(. != null and . != "")) | first // "Unknown"),
-      (.user_email // ""),
+      (if (.user_email == null or .user_email == "") then "-" else .user_email end),
       ((.running_time_sec // 0)|tostring)
     ] | @tsv' 2>/dev/null || true)
 
-    # Parse waiters
+    # Parse waiters with non-empty placeholders
     while IFS=$'\t' read -r pos t_num u_display u_mail wait_sec; do
       [ -z "$t_num" ] && continue
+      [ "$u_mail" = "-" ] && u_mail=""
       waiter_lines+=("$pos	$t_num	$u_display	$u_mail	$wait_sec")
     done < <(echo "$queue_json" | jq -r '(.waiters // [])[] | [
       ((.position // 1)|tostring),
       (.ticket|tostring),
       ([.user_name, .user_email, .user_id] | map(select(. != null and . != "")) | first // "Unknown"),
-      (.user_email // ""),
+      (if (.user_email == null or .user_email == "") then "-" else .user_email end),
       ((.wait_time_sec // 0)|tostring)
     ] | @tsv' 2>/dev/null || true)
+  fi
+
+  # Direct LM Studio status fallback/reconciliation from LM_CACHE
+  local lm_json=""
+  [ -f "$LM_CACHE" ] && lm_json=$(cat "$LM_CACHE" 2>/dev/null || true)
+  if [ -n "$lm_json" ] && command -v jq >/dev/null 2>&1; then
+    local d_valid d_loaded d_model d_ctx
+    IFS=$'\t' read -r d_valid d_loaded d_model d_ctx < <(
+      echo "$lm_json" | jq -r '[
+        (if (.data | type == "array") then "true" else "false" end),
+        ([.data[]? | select(.state == "loaded")] | length > 0),
+        ([.data[]? | select(.state == "loaded") | .id] | first // "-"),
+        ([.data[]? | select(.state == "loaded") | (.loaded_context_length // .max_context_length)] | first // "-")
+      ] | @tsv' 2>/dev/null || echo -e "false\tfalse\t-\t-"
+    )
+    if [ "$d_valid" = "true" ]; then
+      lm_server_online=true
+      if [ "$d_loaded" = "true" ]; then
+        lm_model_loaded=true
+        if [ "$d_model" != "-" ] && [ -n "$d_model" ]; then
+          active_model="$d_model"
+        fi
+        if [ "$d_ctx" != "-" ] && [ -n "$d_ctx" ]; then
+          lm_ctx="$d_ctx"
+        fi
+      else
+        lm_model_loaded=false
+        active_model="None"
+      fi
+    fi
   fi
 
   # Read Online Users from cached JSON in /dev/shm
@@ -524,42 +632,18 @@ generate_frame() {
   if [ -n "$users_json" ] && command -v jq >/dev/null 2>&1; then
     online_count=$(echo "$users_json" | jq -r '.onlineCount // (.users | length) // 0' 2>/dev/null || echo 0)
     while IFS=$'\t' read -r u_name u_email u_status u_last_seen u_ip u_client; do
+      [ "$u_name" = "-" ] && u_name=""
+      [ "$u_email" = "-" ] && u_email=""
       [ -z "$u_email" ] && [ -z "$u_name" ] && continue
       online_users_lines+=("$u_name	$u_email	$u_status	$u_last_seen	$u_ip	$u_client")
-    done < <(echo "$users_json" | jq -r '(.users // [])[] | [.fullName // "", .email // "", .status // "Active", ((.lastSeenSec // 0)|tostring), .ip // "-", .client // "Browser"] | @tsv' 2>/dev/null || true)
-  fi
-
-  # Direct database fallback only if backend returned 0 users AND Postgres port 54322 is responding
-  if [ "$online_count" -eq 0 ] && command -v docker >/dev/null 2>&1 && check_port 54322; then
-    local pg_out=""
-    pg_out=$(docker exec supabase_db_civilex-thesis psql -U postgres -d postgres -t -A -F$'\t' -c "
-      SELECT DISTINCT ON (s.user_id)
-        COALESCE(u.raw_user_meta_data->>'full_name', split_part(u.email, '@', 1)) as full_name,
-        u.email,
-        'Recent Session' as status,
-        ROUND(EXTRACT(EPOCH FROM (NOW() - s.updated_at)))::int as last_seen_sec,
-        COALESCE(host(s.ip), 'local') as ip,
-        COALESCE(s.user_agent, 'Browser') as client
-      FROM auth.sessions s
-      JOIN auth.users u ON u.id = s.user_id
-      WHERE s.updated_at >= NOW() - INTERVAL '30 minutes'
-      ORDER BY s.user_id, s.updated_at DESC;
-    " 2>/dev/null || true)
-
-    if [ -n "$pg_out" ]; then
-      while IFS=$'\t' read -r u_name u_email u_status u_last_seen u_ip u_client; do
-        [ -z "$u_email" ] && [ -z "$u_name" ] && continue
-        local short_client="Browser"
-        if [[ "$u_client" =~ (iPhone|iPad) ]]; then short_client="iOS Safari";
-        elif [[ "$u_client" =~ Android ]]; then short_client="Android";
-        elif [[ "$u_client" =~ Windows ]]; then short_client="Windows";
-        elif [[ "$u_client" =~ Linux ]]; then short_client="Linux";
-        elif [[ "$u_client" =~ (Macintosh|Mac OS) ]]; then short_client="macOS";
-        fi
-        online_users_lines+=("$u_name	$u_email	$u_status	$u_last_seen	$u_ip	$short_client")
-      done <<< "$pg_out"
-      online_count=${#online_users_lines[@]}
-    fi
+    done < <(echo "$users_json" | jq -r '(.users // [])[] | [
+      (if (.fullName == null or .fullName == "") then "-" else .fullName end),
+      (if (.email == null or .email == "") then "-" else .email end),
+      (if (.status == null or .status == "") then "Active" else .status end),
+      ((.lastSeenSec // 0)|tostring),
+      (if (.ip == null or .ip == "") then "-" else .ip end),
+      (if (.client == null or .client == "") then "Browser" else .client end)
+    ] | @tsv' 2>/dev/null || true)
   fi
 
   # Service Port Statuses
@@ -569,10 +653,34 @@ generate_frame() {
   check_port 8000 && st_py="${GREEN}● ONLINE${RESET}" || st_py="${RED}○ OFFLINE${RESET}"
   check_port 54322 && st_db="${GREEN}● ONLINE${RESET}" || st_db="${RED}○ OFFLINE${RESET}"
   check_port 54321 && st_sb="${GREEN}● ONLINE${RESET}" || st_sb="${RED}○ OFFLINE${RESET}"
-  if [ "$lm_online" = true ]; then
+  if [ "$lm_server_online" = true ]; then
     st_lm="${GREEN}● CONNECTED ${DIM}(${lm_latency})${RESET}"
   else
     st_lm="${RED}○ DISCONNECTED${RESET}"
+  fi
+
+  local ctx_tag=""
+  if [ -n "$lm_ctx" ] && [ "$lm_ctx" -gt 0 ] 2>/dev/null; then
+    if [ "$lm_ctx" -ge 1000 ]; then
+      ctx_tag="$(( lm_ctx / 1000 )).$(( (lm_ctx % 1000) / 100 ))k ctx"
+    else
+      ctx_tag="${lm_ctx} ctx"
+    fi
+  fi
+
+  local model_display=""
+  if [ "$lm_server_online" = true ]; then
+    if [ "$lm_model_loaded" = true ]; then
+      local ctx_disp=""
+      [ -n "$ctx_tag" ] && ctx_disp=" ${DIM}(${ctx_tag})${RESET}"
+      model_display="${GREEN}● LOADED${RESET} ${CYAN}${active_model}${RESET}${ctx_disp}"
+    else
+      model_display="${YELLOW}${BOLD}○ NO MODEL LOADED${RESET} ${DIM}(Load in LM Studio)${RESET}"
+      active_model="None (Not Loaded)"
+    fi
+  else
+    model_display="${DIM}○ Offline / None${RESET}"
+    active_model="Offline / None"
   fi
 
   local devtunnel_pid
@@ -583,7 +691,7 @@ generate_frame() {
     st_tu="${DIM}○ INACTIVE${RESET}"
   fi
 
-  # Progress bar sizing dynamically adapted to screen width
+  # Dynamic progress bar sizing
   local main_bar_width=16
   if [ "$term_cols" -ge 180 ]; then
     main_bar_width=45
@@ -597,40 +705,41 @@ generate_frame() {
     main_bar_width=10
   fi
 
-  # Build atomic frame buffer
   local frame=""
 
-  # ----------------------------------------------------------------------------
-  # Header Box
-  # ----------------------------------------------------------------------------
+  # Section: Header
   frame+="${BOX_TOP}"
   if [ "$term_cols" -ge 140 ]; then
-    frame+="${BOLD}${BLUE}║${RESET}  ${BOLD}${CYAN}CIVIL-LEX LIVE SYSTEM, RESOURCE & CONCURRENCY MONITOR${RESET}  ${DIM}│ Host:${RESET} ${WHITE}fedora${RESET}  ${DIM}│ Arch:${RESET} ${WHITE}x86_64${RESET}  ${DIM}│ CPU:${RESET} ${CYAN}${CPU_MODEL}${RESET}  ${DIM}│ Cores:${RESET} ${YELLOW}${CPU_CORES}T AMD Ryzen 5${RESET}  ${DIM}│ Status:${RESET} ${GREEN}Live Telemetry${RESET}${CLEAR_LINE}\n"
-    frame+="${BOLD}${BLUE}║${RESET}  ${DIM}Time:${RESET} ${WHITE}${now_str}${RESET}  ${DIM}│ Uptime:${RESET} ${WHITE}${uptime_str}${RESET}  ${DIM}│ Session:${RESET} ${CYAN}${SESSION_NAME}${RESET}  ${DIM}│ Window:${RESET} ${CYAN}${MONITOR_WINDOW_NAME}${RESET}  ${DIM}│ Screen:${RESET} ${YELLOW}${term_cols}x${term_lines}${RESET}  ${DIM}│ RAM:${RESET} ${WHITE}${mem_total_gb}G Total${RESET}  ${DIM}│ Swap:${RESET} ${WHITE}${swap_total_gb}G${RESET}  ${DIM}│ Poll:${RESET} ${GREEN}0.8s real-time${RESET}${CLEAR_LINE}\n"
+    frame+="${BOLD}${BLUE}║${RESET}  ${BOLD}${CYAN}CIVIL-LEX LIVE SYSTEM, RESOURCE & CONCURRENCY MONITOR${RESET}  ${DIM}│ Host:${RESET} ${WHITE}${HOST_NAME}${RESET}  ${DIM}│ Arch:${RESET} ${WHITE}${ARCH_NAME}${RESET}  ${DIM}│ CPU:${RESET} ${CYAN}${CPU_MODEL}${RESET}  ${DIM}│ Threads:${RESET} ${YELLOW}${CPU_CORES}T${RESET}  ${DIM}│ Status:${RESET} ${GREEN}Live Telemetry${RESET}${CLEAR_LINE}\n"
+    frame+="${BOLD}${BLUE}║${RESET}  ${DIM}Time:${RESET} ${WHITE}${now_str}${RESET}  ${DIM}│ Uptime:${RESET} ${WHITE}${uptime_str}${RESET}  ${DIM}│ Session:${RESET} ${CYAN}${SESSION_NAME}${RESET}  ${DIM}│ Window:${RESET} ${CYAN}${MONITOR_WINDOW_NAME}${RESET}  ${DIM}│ Screen:${RESET} ${YELLOW}${term_cols}x${term_lines}${RESET}  ${DIM}│ RAM:${RESET} ${WHITE}${mem_total_gb}G Total${RESET}  ${DIM}│ Swap:${RESET} ${WHITE}${swap_total_gb}G${RESET}  ${DIM}│ Poll:${RESET} ${GREEN}Real-time${RESET}${CLEAR_LINE}\n"
   else
     frame+="${BOLD}${BLUE}║${RESET}  ${BOLD}${CYAN}CIVIL-LEX LIVE SYSTEM, RESOURCE & CONCURRENCY MONITOR${RESET}${CLEAR_LINE}\n"
     frame+="${BOLD}${BLUE}║${RESET}  ${DIM}Time:${RESET} ${WHITE}${now_str}${RESET}  ${DIM}│ Uptime:${RESET} ${WHITE}${uptime_str}${RESET}  ${DIM}│ Win:${RESET} ${CYAN}${MONITOR_WINDOW_NAME}${RESET}  ${DIM}│ Screen:${RESET} ${YELLOW}${term_cols}x${term_lines}${RESET}${CLEAR_LINE}\n"
   fi
   frame+="${BOX_MID}"
 
-  # ----------------------------------------------------------------------------
   # Section 1: LLM Inference & Concurrency Queue
-  # ----------------------------------------------------------------------------
   frame+="${BOLD}${BLUE}║${RESET} ${BOLD}${MAGENTA} LLM INFERENCE & CONCURRENCY QUEUE (STRICT 6GB VRAM LIMITER)${RESET}${CLEAR_LINE}\n"
 
   if [ "$term_cols" -ge 140 ]; then
-    frame+="${BOLD}${BLUE}║${RESET}  ${DIM}Server:${RESET} ${WHITE}${lm_url}${RESET} -> ${st_lm}  ${DIM}│ Model:${RESET} ${CYAN}${active_model}${RESET}  ${DIM}│ Limit:${RESET} ${YELLOW}${max_concurrent} Query Concurrency (Strict 6GB VRAM)${RESET}  ${DIM}│ Provider:${RESET} ${WHITE}LM Studio / Local Engine${RESET}${CLEAR_LINE}\n"
+    frame+="${BOLD}${BLUE}║${RESET}  ${DIM}Server:${RESET} ${WHITE}${lm_url}${RESET} -> ${st_lm}  ${DIM}│ Model:${RESET} ${model_display}  ${DIM}│ Limit:${RESET} ${YELLOW}${max_concurrent} Query Concurrency (Strict 6GB VRAM)${RESET}  ${DIM}│ Provider:${RESET} ${WHITE}LM Studio / Local Engine${RESET}${CLEAR_LINE}\n"
   elif [ "$term_cols" -ge 105 ]; then
-    frame+="${BOLD}${BLUE}║${RESET}  ${DIM}Server:${RESET} ${WHITE}${lm_url}${RESET} -> ${st_lm}  ${DIM}│ Model:${RESET} ${CYAN}${active_model}${RESET}  ${DIM}│ Limit:${RESET} ${YELLOW}${max_concurrent} Query Concurrency (VRAM Safety)${RESET}${CLEAR_LINE}\n"
+    frame+="${BOLD}${BLUE}║${RESET}  ${DIM}Server:${RESET} ${WHITE}${lm_url}${RESET} -> ${st_lm}  ${DIM}│ Model:${RESET} ${model_display}  ${DIM}│ Limit:${RESET} ${YELLOW}${max_concurrent} Query Concurrency (VRAM Safety)${RESET}${CLEAR_LINE}\n"
   else
     frame+="${BOLD}${BLUE}║${RESET}  ${DIM}Server:${RESET} ${WHITE}${lm_url}${RESET} -> ${st_lm}${CLEAR_LINE}\n"
-    frame+="${BOLD}${BLUE}║${RESET}  ${DIM}Model :${RESET} ${CYAN}${active_model}${RESET}  ${DIM}│ Limit:${RESET} ${YELLOW}${max_concurrent} Query Concurrency (VRAM Safety)${RESET}${CLEAR_LINE}\n"
+    frame+="${BOLD}${BLUE}║${RESET}  ${DIM}Model :${RESET} ${model_display}  ${DIM}│ Limit:${RESET} ${YELLOW}${max_concurrent} Query Concurrency (VRAM Safety)${RESET}${CLEAR_LINE}\n"
   fi
 
   local query_util_pct=0
-  [ "$max_concurrent" -gt 0 ] && query_util_pct=$(awk -v a="$active_queries" -v m="$max_concurrent" 'BEGIN { printf "%.1f", (a / m) * 100 }')
+  if [ "$max_concurrent" -gt 0 ]; then
+    query_util_pct=$(( (active_queries * 100) / max_concurrent ))
+  fi
   local concurrency_badge="${GREEN}IDLE${RESET}"
-  if [ "$active_queries" -ge "$max_concurrent" ]; then
+  if [ "$lm_server_online" = false ]; then
+    concurrency_badge="${RED}OFFLINE${RESET}"
+  elif [ "$lm_model_loaded" = false ]; then
+    concurrency_badge="${YELLOW}${BOLD}PAUSED (NO MODEL)${RESET}"
+  elif [ "$active_queries" -ge "$max_concurrent" ]; then
     concurrency_badge="${RED}${BOLD}BUSY (FULL CAP)${RESET}"
   elif [ "$active_queries" -gt 0 ]; then
     concurrency_badge="${YELLOW}${BOLD}ACTIVE${RESET}"
@@ -659,7 +768,13 @@ generate_frame() {
       frame+="${BOLD}${BLUE}║${RESET}  ${MAGENTA}↳ Running Ticket #${as_ticket}:${RESET} ${as_id_str} ${DIM}(${as_sec}s running · Model: ${active_model})${RESET}${CLEAR_LINE}\n"
     done
   else
-    frame+="${BOLD}${BLUE}║${RESET}  ${MAGENTA}↳ Active Queue:${RESET} ${DIM}No active query running (GPU Idle & Available)${RESET}${CLEAR_LINE}\n"
+    if [ "$lm_server_online" = false ]; then
+      frame+="${BOLD}${BLUE}║${RESET}  ${MAGENTA}↳ Active Queue:${RESET} ${DIM}LM Studio server disconnected or unreachable${RESET}${CLEAR_LINE}\n"
+    elif [ "$lm_model_loaded" = false ]; then
+      frame+="${BOLD}${BLUE}║${RESET}  ${MAGENTA}↳ Active Queue:${RESET} ${YELLOW}LM Studio connected, but NO model is loaded into memory (Inference paused)${RESET}${CLEAR_LINE}\n"
+    else
+      frame+="${BOLD}${BLUE}║${RESET}  ${MAGENTA}↳ Active Queue:${RESET} ${DIM}No active query running (GPU Idle & Available)${RESET}${CLEAR_LINE}\n"
+    fi
   fi
 
   if [ ${#waiter_lines[@]} -gt 0 ]; then
@@ -674,39 +789,35 @@ generate_frame() {
       if [ "$term_cols" -ge 115 ] && [ -n "$w_mail" ] && [ "$w_mail" != "$w_display" ]; then
         w_id_str+=" ${DIM}<${w_mail}>${RESET}"
       fi
-      frame+="${BOLD}${BLUE}║${RESET}  ${YELLOW}↳ Waiting #${w_pos}:${RESET} ${YELLOW}⏳ Ticket #${w_ticket}${RESET} │ ${w_id_str} ${DIM}(${w_sec}s in line)${RESET}${CLEAR_LINE}\n"
+      frame+="${BOLD}${BLUE}║${RESET}  ${YELLOW}↳ Waiting #${w_pos}:${RESET} ${YELLOW}Ticket #${w_ticket}${RESET} │ ${w_id_str} ${DIM}(${w_sec}s in line)${RESET}${CLEAR_LINE}\n"
     done
   fi
 
   frame+="${BOX_MID}"
 
-  # ----------------------------------------------------------------------------
-  # Section 2: Online Platform Users (Full Screen Height Maximized & Scrollable)
-  # ----------------------------------------------------------------------------
-  # Dynamically count exact fixed lines so total frame rows EXACTLY equal term_lines!
+  # Section 2: Online Platform Users
   local fixed_lines=0
-  fixed_lines=$(( fixed_lines + 4 )) # Top border + 2 header lines + mid border
-  fixed_lines=$(( fixed_lines + 1 )) # LLM title
-  [ "$term_cols" -ge 105 ] && fixed_lines=$(( fixed_lines + 1 )) || fixed_lines=$(( fixed_lines + 2 )) # LLM server/model
-  [ "$term_cols" -ge 110 ] && fixed_lines=$(( fixed_lines + 1 )) || fixed_lines=$(( fixed_lines + 2 )) # LLM slots/queue
+  fixed_lines=$(( fixed_lines + 4 ))
+  fixed_lines=$(( fixed_lines + 1 ))
+  [ "$term_cols" -ge 105 ] && fixed_lines=$(( fixed_lines + 1 )) || fixed_lines=$(( fixed_lines + 2 ))
+  [ "$term_cols" -ge 110 ] && fixed_lines=$(( fixed_lines + 1 )) || fixed_lines=$(( fixed_lines + 2 ))
   local llm_slots_lines=${#active_slot_lines[@]}
   [ "$llm_slots_lines" -eq 0 ] && llm_slots_lines=1
   fixed_lines=$(( fixed_lines + llm_slots_lines ))
   [ ${#waiter_lines[@]} -gt 0 ] && fixed_lines=$(( fixed_lines + ${#waiter_lines[@]} ))
-  fixed_lines=$(( fixed_lines + 1 )) # LLM mid border
+  fixed_lines=$(( fixed_lines + 1 ))
 
-  fixed_lines=$(( fixed_lines + 1 )) # Users title
-  [ "$term_cols" -ge 115 ] && fixed_lines=$(( fixed_lines + 1 )) # Users table header
-  fixed_lines=$(( fixed_lines + 1 )) # Users mid border
+  fixed_lines=$(( fixed_lines + 1 ))
+  [ "$term_cols" -ge 115 ] && fixed_lines=$(( fixed_lines + 1 ))
+  fixed_lines=$(( fixed_lines + 1 ))
 
-  fixed_lines=$(( fixed_lines + 6 )) # Hardware (title + cpu + cores + ram + disk + mid border)
-  fixed_lines=$(( fixed_lines + 5 )) # Services (title + 3 rows + mid border)
-  fixed_lines=$(( fixed_lines + 2 )) # Footer (hotkeys + bot border)
+  fixed_lines=$(( fixed_lines + 6 ))
+  fixed_lines=$(( fixed_lines + 5 ))
+  fixed_lines=$(( fixed_lines + 2 ))
 
   local visible_user_rows=$(( term_lines - fixed_lines ))
   [ "$visible_user_rows" -lt 3 ] && visible_user_rows=3
 
-  # Clamp user scroll offset
   local total_users=${#online_users_lines[@]}
   local max_scroll_offset=$(( total_users > visible_user_rows ? total_users - visible_user_rows : 0 ))
   [ "$USER_SCROLL_OFFSET" -gt "$max_scroll_offset" ] && USER_SCROLL_OFFSET=$max_scroll_offset
@@ -721,11 +832,11 @@ generate_frame() {
     local view_end=$(( USER_SCROLL_OFFSET + visible_user_rows ))
     [ "$view_end" -gt "$total_users" ] && view_end=$total_users
 
-    local dir_indicator="▲ More · ▼ More"
+    local dir_indicator="Up/Down More"
     if [ "$USER_SCROLL_OFFSET" -eq 0 ]; then
-      dir_indicator="▲ Top · ▼ More"
+      dir_indicator="Top · Down More"
     elif [ "$USER_SCROLL_OFFSET" -ge "$max_scroll_offset" ]; then
-      dir_indicator="▲ More · Bottom ▼"
+      dir_indicator="Up More · Bottom"
     fi
     if [ "$term_cols" -ge 110 ]; then
       scroll_info="${DIM}│ Viewing ${WHITE}${view_start}-${view_end}${DIM} of ${WHITE}${total_users}${DIM} │ ${YELLOW}${dir_indicator}${DIM} (Scroll: ↑/↓, j/k, PgUp/PgDn, Mouse)${RESET}"
@@ -735,7 +846,7 @@ generate_frame() {
   else
     if [ "$total_users" -gt 0 ]; then
       if [ "$term_cols" -ge 100 ]; then
-        scroll_info="${DIM}│ All ${total_users} active session(s) visible on screen  │ Scrollable Viewport Capacity: ${visible_user_rows} slots${RESET}"
+        scroll_info="${DIM}│ All ${total_users} active session(s) visible on screen  │ Viewport: ${visible_user_rows} slots${RESET}"
       else
         scroll_info="${DIM}│ All ${total_users} session(s)${RESET}"
       fi
@@ -744,18 +855,10 @@ generate_frame() {
 
   frame+="${BOLD}${BLUE}║${RESET} ${BOLD}${CYAN} ONLINE PLATFORM USERS (${online_badge}${BOLD}${CYAN}) ${scroll_info}${RESET}${CLEAR_LINE}\n"
 
-  # Table column header for wide terminals
   if [ "$term_cols" -ge 160 ]; then
-    local th_user="USER / IDENTITY"
-    local th_mail="EMAIL ADDRESS"
-    local th_stat="ACTIVITY STATUS"
-    local th_seen="LAST SEEN"
-    local th_ip="IP ADDRESS"
-    local th_client="CLIENT / PLATFORM"
-    local th_info="SESSION DETAILS / HEARTBEAT"
     local table_hdr
     printf -v table_hdr "  ${DIM}%-2s  %-26.26s  %-30.30s  %-22.22s  %-12.12s  %-16.16s  %-24.24s  %s${RESET}" \
-      "#" "$th_user" "$th_mail" "$th_stat" "$th_seen" "$th_ip" "$th_client" "$th_info"
+      "#" "USER / IDENTITY" "EMAIL ADDRESS" "ACTIVITY STATUS" "LAST SEEN" "IP ADDRESS" "CLIENT / PLATFORM" "SESSION DETAILS"
     frame+="${BOLD}${BLUE}║${RESET}${table_hdr}${CLEAR_LINE}\n"
   elif [ "$term_cols" -ge 115 ]; then
     local table_hdr
@@ -764,7 +867,6 @@ generate_frame() {
     frame+="${BOLD}${BLUE}║${RESET}${table_hdr}${CLEAR_LINE}\n"
   fi
 
-  # Render users list up to visible_user_rows
   local rows_rendered=0
   if [ "$total_users" -gt 0 ]; then
     local slice_end=$(( USER_SCROLL_OFFSET + visible_user_rows ))
@@ -781,19 +883,19 @@ generate_frame() {
         dot="${CYAN}●${RESET}"
         st_color="${BOLD}${CYAN}"
         [ "$term_cols" -lt 95 ] && disp_status="Running Query"
-      elif [ "$u_last_seen" -gt 300 ]; then
+      elif [ "$u_last_seen" -gt 300 ] 2>/dev/null; then
         dot="${DIM}○${RESET}"
         st_color="${DIM}"
         [ "$term_cols" -lt 95 ] && disp_status="Idle"
-      elif [ "$u_last_seen" -gt 60 ]; then
+      elif [ "$u_last_seen" -gt 60 ] 2>/dev/null; then
         dot="${YELLOW}●${RESET}"
         st_color="${YELLOW}"
       fi
 
       local time_str="Active"
-      if [ "$u_last_seen" -gt 60 ]; then
+      if [ "$u_last_seen" -gt 60 ] 2>/dev/null; then
         time_str="$((u_last_seen / 60))m ago"
-      elif [ "$u_last_seen" -gt 5 ]; then
+      elif [ "$u_last_seen" -gt 5 ] 2>/dev/null; then
         time_str="${u_last_seen}s ago"
       fi
 
@@ -818,7 +920,7 @@ generate_frame() {
         local extra_detail="Live Heartbeat · Active Session"
         if [[ "$u_status" =~ (Running|Query) ]]; then
           extra_detail="Active Legal Intelligence Analysis"
-        elif [ "$u_last_seen" -gt 300 ]; then
+        elif [ "$u_last_seen" -gt 300 ] 2>/dev/null; then
           extra_detail="Session Idle (> 5 minutes inactive)"
         fi
         local name_field email_field status_field tail_fields
@@ -846,7 +948,6 @@ generate_frame() {
     rows_rendered=$(( rows_rendered + 1 ))
   fi
 
-  # Pad remaining rows to visible_user_rows so monitor ALWAYS fills the full screen length!
   while [ "$rows_rendered" -lt "$visible_user_rows" ]; do
     rows_rendered=$(( rows_rendered + 1 ))
     local slot_num=$rows_rendered
@@ -869,9 +970,7 @@ generate_frame() {
 
   frame+="${BOX_MID}"
 
-  # ----------------------------------------------------------------------------
   # Section 3: Host Hardware & Real-time Resource Telemetry
-  # ----------------------------------------------------------------------------
   local cpu_bar ram_bar swap_bar disk_bar
   cpu_bar=$(draw_bar "$CPU_PCT" "$main_bar_width" "$CYAN")
   ram_bar=$(draw_bar "$mem_pct" "$main_bar_width" "$GREEN")
@@ -887,12 +986,11 @@ generate_frame() {
   frame+="${BOLD}${BLUE}║${RESET} ${BOLD}${CYAN}${hw_title}${RESET}${CLEAR_LINE}\n"
 
   if [ "$term_cols" -ge 140 ]; then
-    frame+="${BOLD}${BLUE}║${RESET}  ${BOLD}CPU Total  :${RESET} [${cpu_bar}]  ${DIM}Clock:${RESET} ${WHITE}${cpu_freq_ghz} Boost${RESET}  ${DIM}│ Load Avg:${RESET} ${WHITE}${load_avg} (1m, 5m, 15m)${RESET}  ${DIM}│ Cores:${RESET} ${CYAN}${CPU_CORES} Threads (${CPU_MODEL})${RESET}${CLEAR_LINE}\n"
+    frame+="${BOLD}${BLUE}║${RESET}  ${BOLD}CPU Total  :${RESET} [${cpu_bar}]  ${DIM}Clock:${RESET} ${WHITE}${cpu_freq_ghz}${RESET}  ${DIM}│ Load Avg:${RESET} ${WHITE}${load_avg} (1m, 5m, 15m)${RESET}  ${DIM}│ Cores:${RESET} ${CYAN}${CPU_CORES} Threads (${CPU_MODEL})${RESET}${CLEAR_LINE}\n"
   else
     frame+="${BOLD}${BLUE}║${RESET}  ${BOLD}CPU Load :${RESET} [${cpu_bar}]  ${DIM}Clock:${RESET} ${WHITE}${cpu_freq_ghz}${RESET}  ${DIM}│ Load Avg:${RESET} ${WHITE}${load_avg}${RESET}${CLEAR_LINE}\n"
   fi
 
-  # Real-time Per-Core CPU utilization display
   if [ ${#CORE_PCTS[@]} -gt 0 ]; then
     local core_str=""
     if [ "$term_cols" -ge 150 ]; then
@@ -900,7 +998,7 @@ generate_frame() {
         local cp="${CORE_PCTS[$ci]:-0}"
         core_str+="C${ci}:[$(draw_mini_bar "$cp")]    "
       done
-      core_str+="${DIM}│ Mode:${RESET} ${GREEN}Performance Boost (AMD P-State)${RESET}"
+      core_str+="${DIM}│ Mode:${RESET} ${GREEN}Performance Telemetry${RESET}"
     elif [ "$term_cols" -ge 118 ]; then
       for ((ci=0; ci<${#CORE_PCTS[@]} && ci<8; ci++)); do
         local cp="${CORE_PCTS[$ci]:-0}"
@@ -934,14 +1032,16 @@ generate_frame() {
     frame+="${BOLD}${BLUE}║${RESET}  ${BOLD}RAM :${RESET} [${ram_bar}] ${WHITE}${mem_used_gb}G/${mem_total_gb}G${RESET}  ${DIM}│ Swap:${RESET} [${swap_bar}] ${WHITE}${swap_used_gb}G/${swap_total_gb}G${RESET}${CLEAR_LINE}\n"
   fi
 
-  # Real-time Network bandwidth color-coded indicator
   local rx_disp="${CYAN}${RX_RATE_STR}${RESET}"
   local tx_disp="${MAGENTA}${TX_RATE_STR}${RESET}"
   [[ "$RX_RATE_STR" =~ MB/s ]] && rx_disp="${YELLOW}${BOLD}${RX_RATE_STR}${RESET}"
   [[ "$TX_RATE_STR" =~ MB/s ]] && tx_disp="${YELLOW}${BOLD}${TX_RATE_STR}${RESET}"
 
+  local iface_tag="Host Network Total"
+  [ -n "$DEFAULT_IFACE" ] && iface_tag="Host Net (${DEFAULT_IFACE})"
+
   if [ "$term_cols" -ge 140 ]; then
-    frame+="${BOLD}${BLUE}║${RESET}  ${BOLD}Disk Space :${RESET} [${disk_bar}]  ${WHITE}${disk_info} Used on root filesystem (/)${RESET}  ${DIM}│ Realtime Net I/O:${RESET} ↓ ${rx_disp}   ↑ ${tx_disp} ${DIM}(Active Interface: wlp2s0 WiFi)${RESET}${CLEAR_LINE}\n"
+    frame+="${BOLD}${BLUE}║${RESET}  ${BOLD}Disk Space :${RESET} [${disk_bar}]  ${WHITE}${disk_info} Used on root filesystem (/)${RESET}  ${DIM}│ Realtime Net I/O:${RESET} ↓ ${rx_disp}   ↑ ${tx_disp} ${DIM}(${iface_tag})${RESET}${CLEAR_LINE}\n"
   elif [ "$term_cols" -ge 105 ]; then
     frame+="${BOLD}${BLUE}║${RESET}  ${BOLD}Disk (/):${RESET} [${disk_bar}]  ${WHITE}${disk_info}${RESET}  ${DIM}│ Realtime Net:${RESET} ↓ ${rx_disp}  ↑ ${tx_disp}${CLEAR_LINE}\n"
   else
@@ -950,9 +1050,7 @@ generate_frame() {
 
   frame+="${BOX_MID}"
 
-  # ----------------------------------------------------------------------------
   # Section 4: Service Infrastructure Status & Live Process Resources
-  # ----------------------------------------------------------------------------
   frame+="${BOLD}${BLUE}║${RESET} ${BOLD}${GREEN} SERVICE INFRASTRUCTURE & PROCESS STATUS${RESET}${CLEAR_LINE}\n"
 
   local fe_detail="" be_detail="" py_detail="" tu_detail=""
@@ -974,14 +1072,12 @@ generate_frame() {
     frame+="${BOLD}${BLUE}║${RESET}  PY (8000): ${st_py}${py_detail} │ DB (54322): ${st_db}${CLEAR_LINE}\n"
     frame+="${BOLD}${BLUE}║${RESET}  API(54321): ${st_sb} │ Tunnel: ${st_tu}${CLEAR_LINE}\n"
   else
-    frame+="${BOLD}${BLUE}║${RESET}  FE(3000): ${st_fe} ${DIM}${FE_STATS:0:14}${RESET} │ BE(4000): ${st_be} ${DIM}${BE_STATS:0:14}${RESET}${CLEAR_LINE}\n"
-    frame+="${BOLD}${BLUE}║${RESET}  PY(8000): ${st_py} ${DIM}${PY_STATS:0:14}${RESET} │ DB(54322): ${st_db}${CLEAR_LINE}\n"
+    frame+="${BOLD}${BLUE}║${RESET}  FE(3000): ${st_fe} ${DIM}${FE_STATS}${RESET} │ BE(4000): ${st_be} ${DIM}${BE_STATS}${RESET}${CLEAR_LINE}\n"
+    frame+="${BOLD}${BLUE}║${RESET}  PY(8000): ${st_py} ${DIM}${PY_STATS}${RESET} │ DB(54322): ${st_db}${CLEAR_LINE}\n"
     frame+="${BOLD}${BLUE}║${RESET}  API(54321): ${st_sb} │ Tunnel: ${st_tu}${CLEAR_LINE}\n"
   fi
 
-  # ----------------------------------------------------------------------------
-  # Footer Controls
-  # ----------------------------------------------------------------------------
+  # Section: Footer Controls
   frame+="${BOX_MID}"
   if [ "$term_cols" -ge 140 ]; then
     frame+="${BOLD}${BLUE}║${RESET} ${DIM}Hotkeys:${RESET} [${BOLD}↑/↓/j/k${RESET}] Scroll Users Directory  ${DIM}│${RESET} [${BOLD}PgUp/PgDn${RESET}] Fast Page Scroll  ${DIM}│${RESET} [${BOLD}Home/End/g/G${RESET}] Jump Top/Bottom  ${DIM}│${RESET} [${BOLD}r${RESET}] Instant Telemetry Refresh  ${DIM}│${RESET} [${BOLD}t${RESET}] Dedicated Tmux Window  ${DIM}│${RESET} [${BOLD}q${RESET}] Exit Monitor${CLEAR_LINE}\n"
@@ -1007,15 +1103,18 @@ read_interactive_input() {
       rest+="$c"
     done
     case "$rest" in
-      "[A") echo "UP" ;;
-      "[B") echo "DOWN" ;;
+      "[A"|"OA") echo "UP" ;;
+      "[B"|"OB") echo "DOWN" ;;
+      "[C"|"OC") echo "RIGHT" ;;
+      "[D"|"OD") echo "LEFT" ;;
       "[5~") echo "PAGE_UP" ;;
       "[6~") echo "PAGE_DOWN" ;;
-      "[H"|"[1~"|"[7~") echo "HOME" ;;
-      "[F"|"[4~"|"[8~") echo "END" ;;
+      "[H"|"[1~"|"[7~"|"OH") echo "HOME" ;;
+      "[F"|"[4~"|"[8~"|"OF") echo "END" ;;
       *"<64;"*) echo "WHEEL_UP" ;;
       *"<65;"*) echo "WHEEL_DOWN" ;;
       *"<"*) echo "MOUSE_IGNORE" ;;
+      "") echo "ESC" ;;
       *) echo "ESC_${rest}" ;;
     esac
     return
@@ -1039,6 +1138,7 @@ read_interactive_input() {
 # Main Interactive Render Loop
 render_dashboard() {
   in_alternate_screen=true
+  stty -echo 2>/dev/null || true
   # Switch to alternate screen buffer, clear, home cursor, hide cursor, enable SGR mouse tracking
   printf "\033[?1049h\033[H\033[?25l\033[?1000h\033[?1006h"
 
@@ -1051,10 +1151,16 @@ render_dashboard() {
       exec bash "${MONITOR_SCRIPT}" "$@"
     fi
 
+    # Handle window resize cleanly
+    if [ "$RESIZE_NEEDED" -eq 1 ]; then
+      RESIZE_NEEDED=0
+      printf "\033[2J\033[H"
+    fi
+
     local term_lines term_cols
     read -r term_lines term_cols < <(get_terminal_dimensions)
 
-    # Trigger asynchronous background poll for freshest data without UI latency
+    # Trigger asynchronous background poll (rate-limited in memory to every 3s)
     trigger_background_poll false
 
     # Generate complete frame in-memory
@@ -1062,17 +1168,16 @@ render_dashboard() {
     frame_output=$(generate_frame "$term_lines" "$term_cols")
 
     # Atomic write to screen: cursor home (\033[H) + frame buffer + clear-to-end-of-display (\033[J)
-    # Zero scrolling, zero flicker, zero leftover artifact lines
     printf "\033[H%b\033[J" "$frame_output"
 
-    # Non-blocking input read (timeout 0.8s for true real-time metric updates)
+    # Non-blocking input read
     local event
     event=$(read_interactive_input 0.8)
 
     case "$event" in
-      QUIT)
+      QUIT|ESC)
         cleanup
-        echo -e "${GREEN}[✔] System Monitor closed cleanly.${RESET}"
+        echo -e "${GREEN}[OK] System Monitor closed cleanly.${RESET}"
         exit 0
         ;;
       UP)
@@ -1109,7 +1214,6 @@ render_dashboard() {
         launch_in_tmux
         ;;
       TIMEOUT|MOUSE_IGNORE)
-        # Normal real-time tick
         ;;
     esac
   done
@@ -1121,7 +1225,6 @@ case "${1:-}" in
     launch_in_tmux
     ;;
   --once|-1|-once|once)
-    # Print a single clean snapshot and exit without alternate buffer
     trigger_background_poll true
     sleep 0.1
     read -r t_lines t_cols < <(get_terminal_dimensions)

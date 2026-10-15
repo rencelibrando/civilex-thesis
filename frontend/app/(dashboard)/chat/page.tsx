@@ -378,6 +378,10 @@ function RagPipelineStepper({ status, isLive, isOutOfDomain }: { status: RagStat
     );
   }
 
+  if (currentStage === "error" || (currentStage !== "streaming" && currentStage !== "completed")) {
+    return null;
+  }
+
   // Once streaming or completed: show compact expandable badge
   return (
     <div className="mb-2">

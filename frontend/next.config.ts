@@ -1,4 +1,5 @@
 import type { NextConfig } from "next";
+import path from "path";
 
 const backendUrl =
   process.env.BACKEND_URL ||
@@ -7,6 +8,9 @@ const backendUrl =
   "http://localhost:4000";
 
 const nextConfig: NextConfig = {
+  turbopack: {
+    root: path.resolve(process.cwd(), ".."),
+  },
   // Output standalone build for containers when explicitly requested
   output: process.env.BUILD_STANDALONE === "true" ? "standalone" : undefined,
 

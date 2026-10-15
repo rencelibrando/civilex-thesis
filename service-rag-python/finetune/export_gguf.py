@@ -21,7 +21,7 @@ def sanitize_tokenizer_config(model_dir: Path) -> None:
         with open(tok_cfg_path, "r", encoding="utf-8") as f:
             tok_cfg = json.load(f)
         if "extra_special_tokens" in tok_cfg and isinstance(tok_cfg["extra_special_tokens"], list):
-            print(f"🔧 Sanitizing {tok_cfg_path.name}: removing 'extra_special_tokens' list...")
+            print(f"Sanitizing {tok_cfg_path.name}: removing 'extra_special_tokens' list...")
             tok_cfg.pop("extra_special_tokens", None)
             with open(tok_cfg_path, "w", encoding="utf-8") as f:
                 json.dump(tok_cfg, f, indent=2)

@@ -3,7 +3,7 @@ import { createClient } from '@supabase/supabase-js';
 import dotenv from 'dotenv';
 import { requireAuth } from '../middleware/auth.js';
 
-dotenv.config();
+dotenv.config({ quiet: true });
 
 const router = express.Router();
 

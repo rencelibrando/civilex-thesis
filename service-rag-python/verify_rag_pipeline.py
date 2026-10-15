@@ -86,45 +86,109 @@ def test_rank_and_stratify_citations():
     print("      PASSED: Monotonicity and stratification verified.")
 
 
-def test_search_endpoint():
-    print("[5/5] Testing /search endpoint with live PostgreSQL hybrid retrieval...")
-    payload = {
-        "query": "Article 1191 rescission breach of contract",
-        "top_k": 5
-    }
-    resp = client.post("/search", json=payload)
-    assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
-    events = []
-    citations = []
-    for line in resp.text.split("\n"):
-        line = line.strip()
-        if line.startswith("data: "):
-            try:
-                ev = json.loads(line[6:].strip())
-                events.append(ev)
-                if ev.get("type") == "citations" and ev.get("data"):
-                    citations = ev.get("data")
-            except Exception:
-                pass
-    assert any(ev.get("type") == "status" for ev in events), f"Expected status events in SSE stream, got types: {[e.get('type') for e in events]}"
-    assert any(ev.get("type") == "done" for ev in events), "Expected done event in SSE stream"
-    assert len(citations) > 0, f"Expected citations in SSE stream, events: {[e.get('type') for e in events]}"
-    top_hit = citations[0]
-    assert "parent_id" in top_hit
-    assert "suitability_percent" in top_hit
-    assert "rank" in top_hit
-    print(f"      PASSED: /search retrieved {len(citations)} citations via SSE stream. Top hit: {top_hit.get('parent_id')} ({top_hit.get('suitability_percent')}%)")
+def test_search_offline_guard():
+    print("[5/7] Testing /search offline model guard (no retrieval when offline)...")
+    from unittest.mock import patch
+
+    async def mock_offline():
+        return False, "Unable to connect to the language model. LM Studio is currently offline or unreachable. Please verify that LM Studio is running and try again."
+
+    with patch("main.check_model_readiness", side_effect=mock_offline):
+        payload = {
+            "query": "Article 1191 rescission breach of contract",
+            "top_k": 5
+        }
+        resp = client.post("/search", json=payload)
+        assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
+        events = []
+        for line in resp.text.split("\n"):
+            line = line.strip()
+            if line.startswith("data: "):
+                try:
+                    events.append(json.loads(line[6:].strip()))
+                except Exception:
+                    pass
+        assert any(ev.get("type") == "error" for ev in events), f"Expected error event when model is offline, got types: {[e.get('type') for e in events]}"
+        assert not any(ev.get("type") == "citations" for ev in events), "Expected zero citations when model is offline"
+        print("      PASSED: /search halted immediately on offline model with zero retrieval or citations.")
+
+
+def test_search_no_model_loaded_guard():
+    print("[6/7] Testing /search when LM Studio is online but no model is loaded...")
+    from unittest.mock import patch
+
+    async def mock_readiness():
+        return False, "LM Studio is running, but no model is loaded into memory. Please load your model in LM Studio and try again."
+
+    with patch("main.check_model_readiness", side_effect=mock_readiness):
+        payload = {
+            "query": "Article 1191 rescission breach of contract",
+            "top_k": 5
+        }
+        resp = client.post("/search", json=payload)
+        assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
+        events = []
+        for line in resp.text.split("\n"):
+            line = line.strip()
+            if line.startswith("data: "):
+                try:
+                    events.append(json.loads(line[6:].strip()))
+                except Exception:
+                    pass
+        err_event = next((ev for ev in events if ev.get("type") == "error"), None)
+        assert err_event is not None, f"Expected error event when no model loaded, got: {events}"
+        assert "no model is loaded" in err_event.get("message", "").lower(), f"Unexpected message: {err_event}"
+        assert not any(ev.get("type") == "citations" for ev in events), "Expected zero citations when no model loaded"
+        print("      PASSED: /search halted immediately on unloaded model with clear descriptive notice.")
+
+
+def test_search_endpoint_online():
+    print("[7/7] Testing /search hybrid retrieval when model is online...")
+    from unittest.mock import patch
+
+    async def mock_readiness():
+        return True, "ready"
+
+    async def mock_stream(*args, **kwargs):
+        yield "Legal analysis mock response."
+
+    with patch("main.check_model_readiness", side_effect=mock_readiness), \
+         patch("main.generate_response_stream", side_effect=mock_stream):
+        payload = {
+            "query": "Article 1191 rescission breach of contract",
+            "top_k": 5
+        }
+        resp = client.post("/search", json=payload)
+        assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
+        events = []
+        citations = []
+        for line in resp.text.split("\n"):
+            line = line.strip()
+            if line.startswith("data: "):
+                try:
+                    ev = json.loads(line[6:].strip())
+                    events.append(ev)
+                    if ev.get("type") == "citations" and ev.get("data"):
+                        citations = ev.get("data")
+                except Exception:
+                    pass
+        assert any(ev.get("type") == "status" for ev in events), f"Expected status events in SSE stream, got types: {[e.get('type') for e in events]}"
+        assert any(ev.get("type") == "done" for ev in events), "Expected done event in SSE stream"
+        assert len(citations) > 0, f"Expected citations in SSE stream, events: {[e.get('type') for e in events]}"
+        top_hit = citations[0]
+        assert "parent_id" in top_hit
+        assert "suitability_percent" in top_hit
+        assert "rank" in top_hit
+        print(f"      PASSED: /search retrieved {len(citations)} citations via SSE stream. Top hit: {top_hit.get('parent_id')} ({top_hit.get('suitability_percent')}%)")
 
 
 if __name__ == "__main__":
-    print("=" * 60)
     print("Starting Autonomous RAG Pipeline Verification Suite")
-    print("=" * 60)
     test_health()
     test_domain_router()
     test_calibrated_scoring()
     test_rank_and_stratify_citations()
-    test_search_endpoint()
-    print("=" * 60)
+    test_search_offline_guard()
+    test_search_no_model_loaded_guard()
+    test_search_endpoint_online()
     print("ALL VERIFICATION CHECKS PASSED WITH ZERO ERRORS!")
-    print("=" * 60)

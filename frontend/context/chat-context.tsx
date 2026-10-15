@@ -554,6 +554,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     assistantId: number;
     token: string;
     fullResponse: string;
+    turnStartTime: number;
   } | null>(null);
   const backgroundGraceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isReconcilingRef = useRef<boolean>(false);
@@ -688,7 +689,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     async (
       targetSessionId: string,
       targetAssistantId: number,
-      authToken: string
+      authToken: string,
+      turnStartTime?: number
     ): Promise<boolean> => {
       // Poll every 2s for up to 90s (45 attempts)
       for (let attempt = 0; attempt < 45; attempt++) {
@@ -705,40 +707,42 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           if (res.ok) {
             const dbMsgs = await res.json();
             if (Array.isArray(dbMsgs) && dbMsgs.length > 0) {
-              const lastAssistant = [...dbMsgs]
-                .reverse()
-                .find((m: any) => m.role === "assistant" && m.content && m.content.trim().length > 0);
-              if (lastAssistant) {
-                const currentAccumulator = activeStreamContextRef.current?.fullResponse || "";
-                if (lastAssistant.content.length >= currentAccumulator.length || currentAccumulator.length === 0) {
-                  const recoveredCitations = lastAssistant.citations || [];
-                  const recoveredAnalytics = lastAssistant.legal_analytics || null;
+              const lastMsg = dbMsgs[dbMsgs.length - 1];
+              // Only recover if the final message in the session is an assistant response created during or after this turn
+              if (lastMsg && lastMsg.role === "assistant" && lastMsg.content && lastMsg.content.trim().length > 0) {
+                const isAfterTurn = turnStartTime ? new Date(lastMsg.created_at || Date.now()).getTime() >= turnStartTime - 5000 : true;
+                if (isAfterTurn) {
+                  const currentAccumulator = activeStreamContextRef.current?.fullResponse || "";
+                  if (lastMsg.content.length >= currentAccumulator.length || currentAccumulator.length === 0) {
+                    const recoveredCitations = lastMsg.citations || [];
+                    const recoveredAnalytics = lastMsg.legal_analytics || null;
 
-                  stopCharStream();
-                  setMessages((prev) =>
-                    prev.map((m) =>
-                      m.id === targetAssistantId
-                        ? {
-                            ...m,
-                            content: lastAssistant.content,
-                            citations: recoveredCitations,
-                            legalAnalytics: settleNliAnalytics(recoveredAnalytics),
-                            ragStatus: { stage: "completed", message: "Analysis complete" },
-                          }
-                        : m
-                    )
-                  );
-                  setCurrentCitations(recoveredCitations);
-                  setRetainedCitations((prev) => mergeCitations(prev, recoveredCitations));
-                  if (recoveredAnalytics) {
-                    setLegalAnalytics(settleNliAnalytics(recoveredAnalytics));
+                    stopCharStream();
+                    setMessages((prev) =>
+                      prev.map((m) =>
+                        m.id === targetAssistantId
+                          ? {
+                              ...m,
+                              content: lastMsg.content,
+                              citations: recoveredCitations,
+                              legalAnalytics: settleNliAnalytics(recoveredAnalytics),
+                              ragStatus: { stage: "completed", message: "Analysis complete" },
+                            }
+                          : m
+                      )
+                    );
+                    setCurrentCitations(recoveredCitations);
+                    setRetainedCitations((prev) => mergeCitations(prev, recoveredCitations));
+                    if (recoveredAnalytics) {
+                      setLegalAnalytics(settleNliAnalytics(recoveredAnalytics));
+                    }
+                    const followUps = generateFollowUpPrompts(lastMsg.content, recoveredCitations);
+                    setFollowUpPrompts(followUps);
+                    setRagStatus({ stage: "completed", message: "Analysis complete" });
+                    setIsTyping(false);
+                    activeStreamContextRef.current = null;
+                    return true;
                   }
-                  const followUps = generateFollowUpPrompts(lastAssistant.content, recoveredCitations);
-                  setFollowUpPrompts(followUps);
-                  setRagStatus({ stage: "completed", message: "Analysis complete" });
-                  setIsTyping(false);
-                  activeStreamContextRef.current = null;
-                  return true;
                 }
               }
             }
@@ -772,10 +776,18 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         if (res.ok) {
           const dbMsgs = await res.json();
           if (Array.isArray(dbMsgs) && dbMsgs.length > 0) {
-            const lastAssistant = [...dbMsgs]
-              .reverse()
-              .find((m: any) => m.role === "assistant" && m.content && m.content.trim().length > 0);
-            if (lastAssistant) {
+            const lastAssistant = dbMsgs[dbMsgs.length - 1];
+            const streamContext = activeStreamContextRef.current;
+            const isAfterTurn = streamContext?.turnStartTime
+              ? new Date(lastAssistant?.created_at || Date.now()).getTime() >= streamContext.turnStartTime - 5000
+              : true;
+            if (
+              lastAssistant &&
+              lastAssistant.role === "assistant" &&
+              lastAssistant.content &&
+              lastAssistant.content.trim().length > 0 &&
+              isAfterTurn
+            ) {
               const currentAccumulator = activeStreamContextRef.current?.fullResponse || "";
               if (lastAssistant.content.length >= currentAccumulator.length || currentAccumulator.length === 0) {
                 const recoveredCitations = lastAssistant.citations || [];
@@ -1020,7 +1032,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     const userText = (overrideText ?? inputValue).trim();
     if (!userText || isTyping) return;
 
-    const newUserMsg: Message = { id: Date.now(), role: "user", content: userText };
+    const turnStartTime = Date.now();
+    const newUserMsg: Message = { id: turnStartTime, role: "user", content: userText };
     const currentHistory = [...messages, newUserMsg];
 
     setMessages(currentHistory);
@@ -1037,7 +1050,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     };
     setRagStatus(initialStatus);
 
-    const assistantId = Date.now() + 1;
+    const assistantId = turnStartTime + 1;
     setMessages((prev) => [
       ...prev,
       {
@@ -1094,6 +1107,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         assistantId,
         token,
         fullResponse: "",
+        turnStartTime,
       };
 
       if (activeSessionId) {
@@ -1267,14 +1281,26 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                   setIsTyping(false);
                 } else if (data.type === "error") {
                   const errorMsg = data.message || "An error occurred while generating the legal response.";
-                  fullResponseAccumulator = `> ⚠️ **Service Notice**\n>\n> ${errorMsg}`;
-                  enqueueText(fullResponseAccumulator);
+                  fullResponseAccumulator = `> **Service Notice**\n>\n> ${errorMsg}`;
+                  stopCharStream();
+                  setIsTyping(false);
                   setRagStatus({
                     stage: "error",
                     message: errorMsg,
                   });
-                  stopCharStream();
-                  setIsTyping(false);
+                  setCurrentCitations([]);
+                  setMessages((prev) =>
+                    prev.map((msg) =>
+                      msg.id === assistantId
+                        ? {
+                            ...msg,
+                            content: fullResponseAccumulator,
+                            citations: [],
+                            ragStatus: { stage: "error", message: errorMsg },
+                          }
+                        : msg
+                    )
+                  );
                 } else if (data.type === "done") {
                   setRagStatus({
                     stage: "completed",
@@ -1387,9 +1413,13 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         const recovered = await pollForRecoveredAssistantMessage(
           activeSessionId,
           assistantId,
-          token
+          token,
+          turnStartTime
         );
         if (!recovered && !isExplicitlyStoppedRef.current) {
+          stopCharStream();
+          setIsTyping(false);
+          setCurrentCitations([]);
           setRagStatus({
             stage: "error",
             message: "Service connection error",
@@ -1399,15 +1429,20 @@ export function ChatProvider({ children }: { children: ReactNode }) {
               msg.id === assistantId
                 ? {
                   ...msg,
+                  citations: [],
+                  ragStatus: { stage: "error", message: "Service connection error" },
                   content:
                     msg.content ||
-                    "> ⚠️ **Connection Notice**\n>\n> Unable to connect to the legal service. The model service (LM Studio) may be offline. Please verify that LM Studio is running and try again.",
+                    "> **Connection Notice**\n>\n> Unable to connect to the legal service. The model service (LM Studio) may be offline. Please verify that LM Studio is running and try again.",
                 }
                 : msg
             )
           );
         }
       } else {
+        stopCharStream();
+        setIsTyping(false);
+        setCurrentCitations([]);
         setRagStatus({
           stage: "error",
           message: "Service connection error",
@@ -1417,9 +1452,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
             msg.id === assistantId
               ? {
                 ...msg,
+                citations: [],
+                ragStatus: { stage: "error", message: "Service connection error" },
                 content:
                   msg.content ||
-                  "> ⚠️ **Connection Notice**\n>\n> Unable to connect to the legal service. The model service (LM Studio) may be offline. Please verify that LM Studio is running and try again.",
+                  "> **Connection Notice**\n>\n> Unable to connect to the legal service. The model service (LM Studio) may be offline. Please verify that LM Studio is running and try again.",
               }
               : msg
           )
@@ -1460,7 +1497,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     };
     setRagStatus(initialStatus);
 
-    const assistantId = Date.now() + 1;
+    const turnStartTime = Date.now();
+    const assistantId = turnStartTime + 1;
     setMessages((prev) => [
       ...prev,
       {
@@ -1496,6 +1534,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         assistantId,
         token,
         fullResponse: "",
+        turnStartTime,
       };
 
       // Save clarification answer as user message
@@ -1649,14 +1688,26 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                   enqueueText(data.text);
                 } else if (data.type === "error") {
                   const errorMsg = data.message || "An error occurred while generating the legal response.";
-                  fullResponseAccumulator = `> ⚠️ **Service Notice**\n>\n> ${errorMsg}`;
-                  enqueueText(fullResponseAccumulator);
+                  fullResponseAccumulator = `> **Service Notice**\n>\n> ${errorMsg}`;
+                  stopCharStream();
+                  setIsTyping(false);
                   setRagStatus({
                     stage: "error",
                     message: errorMsg,
                   });
-                  stopCharStream();
-                  setIsTyping(false);
+                  setCurrentCitations([]);
+                  setMessages((prev) =>
+                    prev.map((msg) =>
+                      msg.id === assistantId
+                        ? {
+                            ...msg,
+                            content: fullResponseAccumulator,
+                            citations: [],
+                            ragStatus: { stage: "error", message: errorMsg },
+                          }
+                        : msg
+                    )
+                  );
                 } else if (data.type === "done") {
                   setRagStatus({
                     stage: "completed",
@@ -1766,9 +1817,13 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         const recovered = await pollForRecoveredAssistantMessage(
           sessionId,
           assistantId,
-          token
+          token,
+          turnStartTime
         );
         if (!recovered && !isExplicitlyStoppedRef.current) {
+          stopCharStream();
+          setIsTyping(false);
+          setCurrentCitations([]);
           setRagStatus({
             stage: "error",
             message: "Service connection error",
@@ -1778,15 +1833,20 @@ export function ChatProvider({ children }: { children: ReactNode }) {
               msg.id === assistantId
                 ? {
                   ...msg,
+                  citations: [],
+                  ragStatus: { stage: "error", message: "Service connection error" },
                   content:
                     msg.content ||
-                    "> ⚠️ **Connection Notice**\n>\n> Unable to connect to the legal service. The model service (LM Studio) may be offline. Please verify that LM Studio is running and try again.",
+                    "> **Connection Notice**\n>\n> Unable to connect to the legal service. The model service (LM Studio) may be offline. Please verify that LM Studio is running and try again.",
                 }
                 : msg
             )
           );
         }
       } else {
+        stopCharStream();
+        setIsTyping(false);
+        setCurrentCitations([]);
         setRagStatus({
           stage: "error",
           message: "Service connection error",
@@ -1796,9 +1856,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
             msg.id === assistantId
               ? {
                 ...msg,
+                citations: [],
+                ragStatus: { stage: "error", message: "Service connection error" },
                 content:
                   msg.content ||
-                  "> ⚠️ **Connection Notice**\n>\n> Unable to connect to the legal service. The model service (LM Studio) may be offline. Please verify that LM Studio is running and try again.",
+                  "> **Connection Notice**\n>\n> Unable to connect to the legal service. The model service (LM Studio) may be offline. Please verify that LM Studio is running and try again.",
               }
               : msg
           )

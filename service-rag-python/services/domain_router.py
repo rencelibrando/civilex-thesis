@@ -133,23 +133,27 @@ class DomainRouter:
     def _init_centroids(self):
         """Precomputes normalized semantic centroid vectors."""
         # 1. Civil centroid
-        civil_vecs = self.embedder.encode(CIVIL_ANCHORS, normalize_embeddings=True)
+        civil_vecs = self.embedder.encode(CIVIL_ANCHORS, normalize_embeddings=True, show_progress_bar=False)
         self.civil_centroid = np.mean(civil_vecs, axis=0)
         self.civil_centroid /= np.linalg.norm(self.civil_centroid)
 
         # 2. Non-legal centroid
-        non_vecs = self.embedder.encode(NON_LEGAL_ANCHORS, normalize_embeddings=True)
+        non_vecs = self.embedder.encode(NON_LEGAL_ANCHORS, normalize_embeddings=True, show_progress_bar=False)
         self.non_legal_centroid = np.mean(non_vecs, axis=0)
         self.non_legal_centroid /= np.linalg.norm(self.non_legal_centroid)
 
         # 3. Domain-specific centroids
         all_other_vecs = []
         for domain_name, anchors in OTHER_LEGAL_DOMAINS_ANCHORS.items():
-            vecs = self.embedder.encode(anchors, normalize_embeddings=True)
+            vecs = self.embedder.encode(anchors, normalize_embeddings=True, show_progress_bar=False)
             domain_centroid = np.mean(vecs, axis=0)
             domain_centroid /= np.linalg.norm(domain_centroid)
             self.domain_centroids[domain_name] = domain_centroid
             all_other_vecs.append(domain_centroid)
+
+        # Precompute stacked domain matrix for vectorized similarity scoring
+        self.domain_names: List[str] = list(self.domain_centroids.keys())
+        self.domain_matrix = np.stack([self.domain_centroids[d] for d in self.domain_names])
 
         # Combined other-legal centroid
         self.other_legal_centroid = np.mean(all_other_vecs, axis=0)
@@ -213,16 +217,15 @@ class DomainRouter:
 
         model_name = os.getenv("EMBEDDING_MODEL_NAME", "intfloat/multilingual-e5-base").lower()
         q_text = f"query: {q_strip}" if "e5" in model_name else q_strip
-        q_vec = self.embedder.encode(q_text, normalize_embeddings=True)
+        q_vec = self.embedder.encode(q_text, normalize_embeddings=True, show_progress_bar=False)
 
         sim_civil = float(np.dot(q_vec, self.civil_centroid))
         sim_non = float(np.dot(q_vec, self.non_legal_centroid))
 
-        best_domain = max(
-            self.domain_centroids.keys(),
-            key=lambda d: float(np.dot(q_vec, self.domain_centroids[d]))
-        )
-        best_legal_sim = float(np.dot(q_vec, self.domain_centroids[best_domain]))
+        domain_sims = np.dot(self.domain_matrix, q_vec)
+        best_idx = int(np.argmax(domain_sims))
+        best_legal_sim = float(domain_sims[best_idx])
+        best_domain = self.domain_names[best_idx]
 
         # Specialized other Philippine legal branches (Labor, Tax, Crime, Corporate, Privacy)
         if best_legal_sim > max(sim_civil, sim_non):

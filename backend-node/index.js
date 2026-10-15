@@ -14,11 +14,42 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const rootEnvPath = path.resolve(__dirname, '..', '.env');
-dotenv.config({ path: rootEnvPath });
-dotenv.config();
+dotenv.config({ path: rootEnvPath, quiet: true });
+dotenv.config({ quiet: true });
 
 const app = express();
 const port = process.env.PORT || 4000;
+
+// Lightweight high-signal HTTP request logger
+app.use((req, res, next) => {
+  const start = Date.now();
+  const dateStr = new Date().toISOString().replace('T', ' ').substring(0, 19);
+  res.on('finish', () => {
+    const duration = Date.now() - start;
+    const url = req.originalUrl || req.url;
+    const pathname = url.split('?')[0];
+    const status = res.statusCode;
+
+    // Filter out high-frequency polling, CORS preflights, and static assets
+    if (
+      req.method === 'OPTIONS' ||
+      pathname.startsWith('/uploads') ||
+      ((pathname === '/api/system/online-users' ||
+        pathname === '/api/system/heartbeat' ||
+        pathname === '/api/system/offline' ||
+        pathname === '/api/system/queue' ||
+        pathname === '/health' ||
+        pathname === '/') && status < 400)
+    ) {
+      return;
+    }
+
+    const method = req.method;
+    const userTag = req.user ? ` [${req.user.email || req.user.id}]` : '';
+    console.log(`${dateStr} [HTTP] ${method} ${url} ${status} in ${duration}ms${userTag}`);
+  });
+  next();
+});
 
 const allowedOrigins = process.env.ALLOWED_ORIGINS
   ? process.env.ALLOWED_ORIGINS.split(',').map((o) => o.trim())

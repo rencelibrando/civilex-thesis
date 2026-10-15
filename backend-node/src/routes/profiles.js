@@ -5,7 +5,7 @@ import dotenv from 'dotenv';
 import crypto from 'crypto';
 import { requireAuth } from '../middleware/auth.js';
 
-dotenv.config();
+dotenv.config({ quiet: true });
 
 const router = express.Router();
 

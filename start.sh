@@ -55,47 +55,47 @@ validate_environment() {
   echo -e "${CYAN}[i] Checking environment requirements...${RESET}"
 
   if ! command -v node >/dev/null 2>&1; then
-    echo -e "${RED}[✘] Error: Node.js is not installed or not in PATH.${RESET}"
+    echo -e "${RED}[FAIL] Error: Node.js is not installed or not in PATH.${RESET}"
     errors=$((errors + 1))
   fi
 
   if ! command -v npm >/dev/null 2>&1; then
-    echo -e "${RED}[✘] Error: npm is not installed or not in PATH.${RESET}"
+    echo -e "${RED}[FAIL] Error: npm is not installed or not in PATH.${RESET}"
     errors=$((errors + 1))
   fi
 
   if [ ! -d "${ROOT_DIR}/frontend" ]; then
-    echo -e "${RED}[✘] Error: Directory 'frontend' not found in ${ROOT_DIR}.${RESET}"
+    echo -e "${RED}[FAIL] Error: Directory 'frontend' not found in ${ROOT_DIR}.${RESET}"
     errors=$((errors + 1))
   elif [ ! -f "${ROOT_DIR}/frontend/package.json" ]; then
-    echo -e "${RED}[✘] Error: 'frontend/package.json' missing.${RESET}"
+    echo -e "${RED}[FAIL] Error: 'frontend/package.json' missing.${RESET}"
     errors=$((errors + 1))
   fi
 
   if [ ! -d "${ROOT_DIR}/backend-node" ]; then
-    echo -e "${RED}[✘] Error: Directory 'backend-node' not found in ${ROOT_DIR}.${RESET}"
+    echo -e "${RED}[FAIL] Error: Directory 'backend-node' not found in ${ROOT_DIR}.${RESET}"
     errors=$((errors + 1))
   elif [ ! -f "${ROOT_DIR}/backend-node/package.json" ]; then
-    echo -e "${RED}[✘] Error: 'backend-node/package.json' missing.${RESET}"
+    echo -e "${RED}[FAIL] Error: 'backend-node/package.json' missing.${RESET}"
     errors=$((errors + 1))
   fi
 
   if [ ! -d "${ROOT_DIR}/service-rag-python" ]; then
-    echo -e "${RED}[✘] Error: Directory 'service-rag-python' not found in ${ROOT_DIR}.${RESET}"
+    echo -e "${RED}[FAIL] Error: Directory 'service-rag-python' not found in ${ROOT_DIR}.${RESET}"
     errors=$((errors + 1))
   else
     if [ ! -d "${ROOT_DIR}/service-rag-python/.venv" ] && [ ! -d "${ROOT_DIR}/service-rag-python/venv" ]; then
-      echo -e "${YELLOW}[!] Warning: Virtualenv (.venv or venv) missing in 'service-rag-python'.${RESET}"
+      echo -e "${YELLOW}[WARN] Warning: Virtualenv (.venv or venv) missing in 'service-rag-python'.${RESET}"
       echo -e "${YELLOW}    Please run: cd service-rag-python && python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt${RESET}"
     fi
   fi
 
   if [ $errors -gt 0 ]; then
-    echo -e "${RED}[✘] Pre-flight checks failed with ${errors} error(s). Aborting.${RESET}"
+    echo -e "${RED}[FAIL] Pre-flight checks failed with ${errors} error(s). Aborting.${RESET}"
     exit 1
   fi
 
-  echo -e "${GREEN}[✔] Pre-flight checks passed.${RESET}"
+  echo -e "${GREEN}[OK] Pre-flight checks passed.${RESET}"
 }
 
 # PID Helper Functions (Persistent across subshells and tmux panes)
@@ -205,45 +205,60 @@ kill_existing_processes() {
   free_port_if_needed 8000 "Python RAG"
 }
 
+# Log Rotation Safeguard (Prune oldest lines if log exceeds 25MB)
+rotate_log_if_large() {
+  local log_file=$1
+  if [ -f "$log_file" ]; then
+    local size_kb
+    size_kb=$(du -k "$log_file" 2>/dev/null | cut -f1 || echo 0)
+    if [ "$size_kb" -gt 25600 ]; then
+      tail -n 10000 "$log_file" > "${log_file}.tmp" 2>/dev/null && mv "${log_file}.tmp" "$log_file"
+      echo "[$(date '+%Y-%m-%d %H:%M:%S')] [SYSTEM] Log exceeded 25MB, pruned to last 10,000 lines" >> "$log_file"
+    fi
+  fi
+}
+
 # Service Launchers
 start_frontend() {
   free_port_if_needed 3000 "Frontend"
+  rotate_log_if_large "${FRONTEND_LOG}"
   echo -e "${CYAN}[+] Starting Frontend (Next.js)...${RESET}"
-  echo -e "\n=== [STARTED: $(date '+%Y-%m-%d %H:%M:%S')] ===" >> "${FRONTEND_LOG}"
-  (
-    cd "${ROOT_DIR}/frontend" || exit 1
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] [SYSTEM] Starting Frontend (Next.js)" >> "${FRONTEND_LOG}"
+  setsid bash -c "
+    echo \$\$ > '${FRONTEND_PID_FILE}'
+    cd '${ROOT_DIR}/frontend' || exit 1
     export FORCE_COLOR=1
     export COLORTERM=truecolor
     export NEXT_TELEMETRY_DISABLED=1
-    exec npm run dev >> "${FRONTEND_LOG}" 2>&1
-  ) &
-  local pid=$!
-  echo "$pid" > "${FRONTEND_PID_FILE}"
+    exec npm run dev
+  " </dev/null >> "${FRONTEND_LOG}" 2>&1 &
 }
 
 start_backend() {
   free_port_if_needed 4000 "Backend"
+  rotate_log_if_large "${BACKEND_LOG}"
   echo -e "${GREEN}[+] Starting Backend (Node.js Express)...${RESET}"
-  echo -e "\n=== [STARTED: $(date '+%Y-%m-%d %H:%M:%S')] ===" >> "${BACKEND_LOG}"
-  (
-    cd "${ROOT_DIR}/backend-node" || exit 1
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] [SYSTEM] Starting Backend (Node.js Express)" >> "${BACKEND_LOG}"
+  setsid bash -c "
+    echo \$\$ > '${BACKEND_PID_FILE}'
+    cd '${ROOT_DIR}/backend-node' || exit 1
     export FORCE_COLOR=1
     export COLORTERM=truecolor
-    exec npm run dev >> "${BACKEND_LOG}" 2>&1
-  ) &
-  local pid=$!
-  echo "$pid" > "${BACKEND_PID_FILE}"
+    exec npm run dev
+  " </dev/null >> "${BACKEND_LOG}" 2>&1 &
 }
 
 start_python() {
   free_port_if_needed 8000 "Python RAG"
+  rotate_log_if_large "${PYTHON_LOG}"
   echo -e "${MAGENTA}[+] Starting RAG Service (Python FastAPI/Uvicorn)...${RESET}"
-  echo -e "\n=== [STARTED: $(date '+%Y-%m-%d %H:%M:%S')] ===" >> "${PYTHON_LOG}"
-  (
-    cd "${ROOT_DIR}/service-rag-python" || exit 1
-    if [ -d ".venv" ]; then
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] [SYSTEM] Starting Python RAG (FastAPI/Uvicorn)" >> "${PYTHON_LOG}"
+  setsid bash -c "
+    echo \$\$ > '${PYTHON_PID_FILE}'
+    cd '${ROOT_DIR}/service-rag-python' || exit 1
+    if [ -d '.venv' ]; then
       source .venv/bin/activate
-    elif [ -d "venv" ]; then
+    elif [ -d 'venv' ]; then
       source venv/bin/activate
     fi
 
@@ -251,30 +266,30 @@ start_python() {
     export FORCE_COLOR=1
     export CLICOLOR_FORCE=1
     export PYTHONIOENCODING=utf-8
+    export TQDM_DISABLE=1
+    export HF_HUB_DISABLE_PROGRESS_BARS=1
 
-    if [ -f ".venv/bin/uvicorn" ]; then
-      exec .venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000 --reload --use-colors >> "${PYTHON_LOG}" 2>&1
-    elif [ -f "venv/bin/uvicorn" ]; then
-      exec venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000 --reload --use-colors >> "${PYTHON_LOG}" 2>&1
+    if [ -f '.venv/bin/uvicorn' ]; then
+      exec .venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000 --reload --use-colors
+    elif [ -f 'venv/bin/uvicorn' ]; then
+      exec venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000 --reload --use-colors
     elif command -v uvicorn >/dev/null 2>&1; then
-      exec uvicorn main:app --host 0.0.0.0 --port 8000 --reload --use-colors >> "${PYTHON_LOG}" 2>&1
+      exec uvicorn main:app --host 0.0.0.0 --port 8000 --reload --use-colors
     else
-      echo "Error: uvicorn executable not found in PATH or virtualenv!" >> "${PYTHON_LOG}" 2>&1
+      echo 'Error: uvicorn executable not found in PATH or virtualenv!'
       exit 1
     fi
-  ) &
-  local pid=$!
-  echo "$pid" > "${PYTHON_PID_FILE}"
+  " </dev/null >> "${PYTHON_LOG}" 2>&1 &
 }
 
 start_tunnel() {
+  rotate_log_if_large "${TUNNEL_LOG}"
   echo -e "${YELLOW}[+] Starting Azure Dev Tunnel (civilex-tunnel)...${RESET}"
-  echo -e "\n=== [STARTED: $(date '+%Y-%m-%d %H:%M:%S')] ===" >> "${TUNNEL_LOG}"
-  (
-    exec "${ROOT_DIR}/scripts/start-azure-tunnel.sh" >> "${TUNNEL_LOG}" 2>&1
-  ) &
-  local pid=$!
-  echo "$pid" > "${TUNNEL_PID_FILE}"
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] [SYSTEM] Starting Azure Dev Tunnel (civilex-tunnel)" >> "${TUNNEL_LOG}"
+  setsid bash -c "
+    echo \$\$ > '${TUNNEL_PID_FILE}'
+    exec '${ROOT_DIR}/scripts/start-azure-tunnel.sh'
+  " </dev/null >> "${TUNNEL_LOG}" 2>&1 &
 }
 
 start_all_services() {
@@ -362,16 +377,16 @@ get_status_badge() {
 
   if [ "$status" == "ONLINE" ]; then
     if [ -n "$recorded_pid" ] && is_pid_alive "$recorded_pid"; then
-      echo -e "${GREEN}● ONLINE ${DIM}(PID ${recorded_pid})${RESET}"
+      echo -e "${GREEN}[ONLINE] ${DIM}(PID ${recorded_pid})${RESET}"
     else
-      echo -e "${GREEN}● ONLINE${RESET}"
+      echo -e "${GREEN}[ONLINE]${RESET}"
     fi
   elif [ -n "$recorded_pid" ] && ! is_pid_alive "$recorded_pid"; then
-    echo -e "${RED}● CRASHED (check ${log_file})${RESET}"
+    echo -e "${RED}[CRASHED] (check ${log_file})${RESET}"
   elif [ -n "$recorded_pid" ]; then
-    echo -e "${YELLOW}○ STARTING / CONNECTING ${DIM}(PID ${recorded_pid})${RESET}"
+    echo -e "${YELLOW}[STARTING] ${DIM}(PID ${recorded_pid})${RESET}"
   else
-    echo -e "${DIM}○ STOPPED${RESET}"
+    echo -e "${DIM}[STOPPED]${RESET}"
   fi
 }
 
@@ -383,9 +398,9 @@ get_tunnel_badge() {
   fi
 
   if [ -n "$pid" ] && is_pid_alive "$pid"; then
-    echo -e "${GREEN}● ONLINE ${DIM}(civilex-tunnel, PID ${pid})${RESET}"
+    echo -e "${GREEN}[ONLINE] ${DIM}(civilex-tunnel, PID ${pid})${RESET}"
   else
-    echo -e "${DIM}○ STOPPED${RESET}"
+    echo -e "${DIM}[STOPPED]${RESET}"
   fi
 }
 
@@ -395,7 +410,7 @@ clear_logs() {
   > "${BACKEND_LOG}"
   > "${PYTHON_LOG}"
   > "${TUNNEL_LOG}"
-  last_action_msg="${GREEN}[✔] All log files truncated successfully.${RESET}"
+  last_action_msg="${GREEN}[OK] All log files truncated successfully.${RESET}"
 }
 
 copy_active_log_to_clipboard() {
@@ -411,15 +426,15 @@ copy_active_log_to_clipboard() {
   if [ -f "$target_log" ]; then
     if command -v wl-copy >/dev/null 2>&1; then
       tail -n 100 "$target_log" | wl-copy 2>/dev/null || true
-      last_action_msg="${GREEN}[✔] Copied last 100 log lines to system clipboard (Wayland)!${RESET}"
+      last_action_msg="${GREEN}[OK] Copied last 100 log lines to system clipboard (Wayland)!${RESET}"
     elif command -v xclip >/dev/null 2>&1; then
       tail -n 100 "$target_log" | xclip -selection clipboard -i 2>/dev/null || true
-      last_action_msg="${GREEN}[✔] Copied last 100 log lines to system clipboard (X11)!${RESET}"
+      last_action_msg="${GREEN}[OK] Copied last 100 log lines to system clipboard (X11)!${RESET}"
     elif command -v xsel >/dev/null 2>&1; then
       tail -n 100 "$target_log" | xsel -i -b 2>/dev/null || true
-      last_action_msg="${GREEN}[✔] Copied last 100 log lines to system clipboard!${RESET}"
+      last_action_msg="${GREEN}[OK] Copied last 100 log lines to system clipboard!${RESET}"
     else
-      last_action_msg="${YELLOW}[!] No clipboard utility (wl-copy/xclip/xsel) found on system.${RESET}"
+      last_action_msg="${YELLOW}[WARN] No clipboard utility (wl-copy/xclip/xsel) found on system.${RESET}"
     fi
   fi
 }
@@ -427,7 +442,7 @@ copy_active_log_to_clipboard() {
 open_url() {
   local url=$1
   local name=$2
-  last_action_msg="${CYAN}[🌐] Opening ${name} (${url}) in browser...${RESET}"
+  last_action_msg="${CYAN}[WEB] Opening ${name} (${url}) in browser...${RESET}"
   if command -v xdg-open >/dev/null 2>&1; then
     xdg-open "$url" >/dev/null 2>&1 &
   elif command -v python3 >/dev/null 2>&1; then
@@ -472,14 +487,21 @@ show_usage() {
   echo -e ""
   echo -e "Options:"
   echo -e "  ${BOLD}(no args)${RESET}         Start all services in background and exit"
+  echo -e "  ${BOLD}-t, --tmux${RESET}        Launch or attach to balanced 2x2 tmux service dashboard"
   echo -e "  ${BOLD}-c, --controller${RESET}  Open interactive service controller & log streamer"
-  echo -e "  ${BOLD}-t, --tmux${RESET}        Launch or attach to 4-pane tmux dashboard"
   echo -e "  ${BOLD}-s, --status${RESET}      Print current service statuses and exit"
+  echo -e "  ${BOLD}-r, --restart <svc>${RESET} Restart a service: frontend|backend|python|tunnel|all"
   echo -e "  ${BOLD}-k, --stop${RESET}        Stop all running services and free ports"
+  echo -e "  ${BOLD}--stream-log <svc>${RESET} Stream formatted color logs for: frontend|backend|python|tunnel"
   echo -e "  ${BOLD}-h, --help${RESET}        Show this help message"
   echo -e ""
-  echo -e "Interactive Controller Keybindings (with -c):"
-  echo -e "  [1-4] Stream Service Logs   [5] Stream Combined Logs   [s] Status Screen"
+  echo -e "Tmux Mode Shortcuts:"
+  echo -e "  [Alt + Arrows]  Seamlessly navigate between panes without tmux prefix"
+  echo -e "  [Alt + z]       Zoom/maximize active pane (press again to restore)"
+  echo -e "  [Ctrl + b d]    Detach from tmux session (leaves all services running)"
+  echo -e "  [Ctrl + b z]    Native tmux pane zoom toggle"
+  echo -e ""
+  echo -e "Interactive Controller Keybindings (in bottom pane or with -c):"
   echo -e "  [f] Restart Frontend        [b] Restart Backend        [p] Restart Python RAG"
   echo -e "  [u] Restart Azure Tunnel    [a] Restart All Services   [k] Stop All Services"
   echo -e "  [c] Clear Logs              [t] Open Tmux Dashboard    [y] Copy Log to Clipboard"
@@ -487,10 +509,10 @@ show_usage() {
   echo -e "  [q] Quit & Shutdown"
 }
 
-# Tmux Mode (4-Pane Split with Live Interactive Controller)
+# Tmux Mode (Balanced 2x2 Service Grid + Bottom Process Controller)
 launch_tmux() {
   if ! command -v tmux >/dev/null 2>&1; then
-    echo -e "${RED}[!] tmux is not installed on this system. Falling back to standard interactive menu.${RESET}"
+    echo -e "${RED}[WARN] tmux is not installed on this system. Falling back to standard interactive menu.${RESET}"
     local fe_pid be_pid py_pid
     fe_pid=$(read_service_pid "${FRONTEND_PID_FILE}")
     be_pid=$(read_service_pid "${BACKEND_PID_FILE}")
@@ -506,10 +528,7 @@ launch_tmux() {
 
   # Start background services if any are stopped
   touch "${FRONTEND_LOG}" "${BACKEND_LOG}" "${PYTHON_LOG}" "${TUNNEL_LOG}"
-  local fe_pid
-  local be_pid
-  local py_pid
-  local tu_pid
+  local fe_pid be_pid py_pid tu_pid
   fe_pid=$(read_service_pid "${FRONTEND_PID_FILE}")
   be_pid=$(read_service_pid "${BACKEND_PID_FILE}")
   py_pid=$(read_service_pid "${PYTHON_PID_FILE}")
@@ -523,29 +542,46 @@ launch_tmux() {
   # Check if tmux session already exists
   if tmux has-session -t "$SESSION" 2>/dev/null; then
     if [ -n "${TMUX:-}" ]; then
-      echo -e "${GREEN}[✔] Already inside tmux. Switching to session '${SESSION}'...${RESET}"
+      echo -e "${GREEN}[OK] Already inside tmux. Switching to session '${SESSION}'...${RESET}"
       tmux switch-client -t "$SESSION" 2>/dev/null || true
       return
     else
-      echo -e "${GREEN}[✔] Existing tmux session '${SESSION}' found. Attaching...${RESET}"
+      echo -e "${GREEN}[OK] Existing tmux session '${SESSION}' found. Attaching...${RESET}"
       echo -e "${DIM}(Press Ctrl+b d to detach without stopping services)${RESET}"
       tmux attach-session -t "$SESSION"
-      echo -e "${GREEN}[✔] Detached from tmux session '${SESSION}'. Services remain running.${RESET}"
+      echo -e "${GREEN}[OK] Detached from tmux session '${SESSION}'. Services remain running.${RESET}"
       return
     fi
   fi
 
-  # Create a brand new tmux session and split into 4 balanced panes (0, 1, 2, 3)
-  # Pane 0: Frontend Log stream (Top-Left)
+  # 1. Create session with Frontend in initial pane (Top-Left)
   local P_FE
-  P_FE=$(tmux new-session -d -P -F "#{pane_id}" -s "$SESSION" -n "CIVIL-LEX" "tail -F '${FRONTEND_LOG}'")
+  P_FE=$(tmux new-session -d -P -F "#{pane_id}" -s "$SESSION" -n "CIVIL-LEX" "bash '${ROOT_DIR}/start.sh' --stream-log frontend")
 
   # Tmux Ergonomics & Visual Configuration
   tmux set-option -t "$SESSION" -g mouse on
-  tmux set-option -t "$SESSION" -g history-limit 20000
+  tmux set-option -t "$SESSION" -g history-limit 50000
   tmux set-option -t "$SESSION" -g set-clipboard on
   tmux set-option -t "$SESSION" pane-border-status top
-  tmux set-option -t "$SESSION" pane-border-format " #[bold]#{pane_index}: #{pane_title}#[default] "
+  tmux set-option -t "$SESSION" pane-border-style "fg=colour238"
+  tmux set-option -t "$SESSION" pane-active-border-style "fg=colour51,bold"
+  tmux set-option -t "$SESSION" pane-border-format " #[bold]#{pane_title}#[default] "
+
+  # Status Bar Configuration
+  tmux set-option -t "$SESSION" status on
+  tmux set-option -t "$SESSION" status-interval 2
+  tmux set-option -t "$SESSION" status-style "bg=colour235,fg=colour252"
+  tmux set-option -t "$SESSION" status-left "#[bold]#[fg=colour51] CIVIL-LEX #[default]│ "
+  tmux set-option -t "$SESSION" status-left-length 20
+  tmux set-option -t "$SESSION" status-right "#[fg=colour244]%Y-%m-%d %H:%M:%S #[bold]#[fg=colour84]│ Alt+Arrows: Move Pane │ Alt+z: Zoom #[default]"
+  tmux set-option -t "$SESSION" status-right-length 75
+
+  # Quick Navigation Bindings (no prefix required)
+  tmux bind-key -n M-Left select-pane -L
+  tmux bind-key -n M-Right select-pane -R
+  tmux bind-key -n M-Up select-pane -U
+  tmux bind-key -n M-Down select-pane -D
+  tmux bind-key -n M-z resize-pane -Z
 
   # Clipboard bindings (Wayland & X11)
   if command -v wl-copy >/dev/null 2>&1; then
@@ -562,44 +598,74 @@ launch_tmux() {
     tmux bind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-pipe "xsel -i -b"
   fi
 
-  # Split session vertically to create the bottom Controller pane (takes 10 lines at bottom)
+  # 2. Split vertically to create the bottom Controller pane (takes exactly 7 lines at bottom)
   local P_CTRL
-  P_CTRL=$(tmux split-window -v -l 10 -P -F "#{pane_id}" -t "$P_FE" "bash '${ROOT_DIR}/start.sh' --controller")
+  P_CTRL=$(tmux split-window -v -l 7 -P -F "#{pane_id}" -t "$P_FE" "bash '${ROOT_DIR}/start.sh' --tmux-controller")
 
-  # Split top area horizontally: Left side stays Frontend (P_FE), Right side is Backend (P_BE)
+  # 3. Split top area horizontally: Left side stays Frontend (P_FE), Right side is Backend (P_BE)
   local P_BE
-  P_BE=$(tmux split-window -h -P -F "#{pane_id}" -t "$P_FE" "tail -F '${BACKEND_LOG}'")
+  P_BE=$(tmux split-window -h -P -F "#{pane_id}" -t "$P_FE" "bash '${ROOT_DIR}/start.sh' --stream-log backend")
 
-  # Split P_FE vertically: Top-Left is Frontend (P_FE), Bottom-Left is Python RAG (P_PY)
+  # 4. Split P_FE vertically: Top-Left is Frontend (P_FE), Bottom-Left is Python RAG (P_PY)
   local P_PY
-  P_PY=$(tmux split-window -v -P -F "#{pane_id}" -t "$P_FE" "tail -F '${PYTHON_LOG}'")
+  P_PY=$(tmux split-window -v -P -F "#{pane_id}" -t "$P_FE" "bash '${ROOT_DIR}/start.sh' --stream-log python")
 
-  # Split P_BE vertically: Top-Right is Backend (P_BE), Bottom-Right is Azure Tunnel (P_TU)
+  # 5. Split P_BE vertically: Top-Right is Backend (P_BE), Bottom-Right is Azure Tunnel (P_TU)
   local P_TU
-  P_TU=$(tmux split-window -v -P -F "#{pane_id}" -t "$P_BE" "tail -F '${TUNNEL_LOG}'")
+  P_TU=$(tmux split-window -v -P -F "#{pane_id}" -t "$P_BE" "bash '${ROOT_DIR}/start.sh' --stream-log tunnel")
 
   # Tag each pane accurately by its immutable pane ID
-  [ -n "$P_FE" ] && tmux select-pane -t "$P_FE" -T "Frontend Logs (Port 3000)"
-  [ -n "$P_BE" ] && tmux select-pane -t "$P_BE" -T "Backend Logs (Port 4000)"
-  [ -n "$P_PY" ] && tmux select-pane -t "$P_PY" -T "Python RAG Logs (Port 8000)"
-  [ -n "$P_TU" ] && tmux select-pane -t "$P_TU" -T "Azure Dev Tunnel Logs (w21xbn22)"
-  [ -n "$P_CTRL" ] && tmux select-pane -t "$P_CTRL" -T "CIVIL-LEX Controller (Active Menu)"
+  [ -n "$P_FE" ] && tmux select-pane -t "$P_FE" -T "[1] Frontend (Next.js :3000)"
+  [ -n "$P_BE" ] && tmux select-pane -t "$P_BE" -T "[2] Backend Gateway (Node :4000)"
+  [ -n "$P_PY" ] && tmux select-pane -t "$P_PY" -T "[3] Python RAG Engine (:8000)"
+  [ -n "$P_TU" ] && tmux select-pane -t "$P_TU" -T "[4] Azure Dev Tunnel (w21xbn22)"
+  [ -n "$P_CTRL" ] && tmux select-pane -t "$P_CTRL" -T "[5] CIVIL-LEX Process Controller"
 
   # Focus the interactive controller pane
   [ -n "$P_CTRL" ] && tmux select-pane -t "$P_CTRL"
 
+  # Handle non-interactive environments (scripts / headless runner / dumb terminal)
+  if { [ ! -t 0 ] || [ "$TERM" = "dumb" ] || [ -z "$TERM" ]; } && [ -z "${TMUX:-}" ]; then
+    echo -e "${GREEN}[OK] Created tmux session '${SESSION}' in background.${RESET}"
+    echo -e "${DIM}Attach anytime in your terminal with: tmux attach-session -t ${SESSION}${RESET}"
+    return
+  fi
+
   # Handle nesting vs standalone attach
   if [ -n "${TMUX:-}" ]; then
-    echo -e "${GREEN}[✔] Created tmux session '${SESSION}'.${RESET}"
+    echo -e "${GREEN}[OK] Created tmux session '${SESSION}'.${RESET}"
     tmux switch-client -t "$SESSION" 2>/dev/null || {
-      echo -e "${YELLOW}[!] Nested inside tmux. Switch to session '${SESSION}' with: tmux switch-client -t ${SESSION}${RESET}"
+      echo -e "${YELLOW}[WARN] Nested inside tmux. Switch to session '${SESSION}' with: tmux switch-client -t ${SESSION}${RESET}"
     }
   else
-    echo -e "${GREEN}[✔] Attaching to tmux session '${SESSION}'...${RESET}"
+    echo -e "${GREEN}[OK] Attaching to tmux session '${SESSION}'...${RESET}"
     echo -e "${DIM}(Press Ctrl+b d to detach without stopping services)${RESET}"
     tmux attach-session -t "$SESSION"
-    echo -e "${GREEN}[✔] Detached from tmux session '${SESSION}'. Services remain running.${RESET}"
+    echo -e "${GREEN}[OK] Detached from tmux session '${SESSION}'. Services remain running.${RESET}"
   fi
+}
+
+# Stream individual service log in pane with colorization
+stream_log() {
+  local service=$1
+  local target_log=""
+  local title=""
+  case "$service" in
+    "frontend") target_log="${FRONTEND_LOG}"; title="Next.js Frontend (Port 3000)" ;;
+    "backend") target_log="${BACKEND_LOG}"; title="Node.js Gateway (Port 4000)" ;;
+    "python") target_log="${PYTHON_LOG}"; title="Python RAG Service (Port 8000)" ;;
+    "tunnel") target_log="${TUNNEL_LOG}"; title="Azure Dev Tunnel (w21xbn22)" ;;
+    *) echo "Unknown service: $service"; exit 1 ;;
+  esac
+
+  touch "$target_log"
+  echo -e "${BOLD}${CYAN}[LOG] Streaming ${title}...${RESET}"
+  echo -e "${DIM}[File: ${target_log} │ Alt+z: Zoom │ Alt+Arrows: Navigate]${RESET}\n"
+
+  while true; do
+    tail -n 60 -F "$target_log" 2>/dev/null | colorize_logs
+    sleep 0.5
+  done
 }
 
 # Log Tail & Colorizer
@@ -614,33 +680,136 @@ stop_tail() {
 
 colorize_logs() {
   sed -u \
-    -e "s/\(▲ Next.js[^\x1b]*\)/\x1b[36m\x1b[1m\1\x1b[0m/g" \
-    -e "s/\(✓ Compiled[^\x1b]*\)/\x1b[32m\x1b[1m\1\x1b[0m/g" \
-    -e "s/\(✓[[:space:]]\+\)/\x1b[32m\x1b[1m\1\x1b[0m/g" \
-    -e "s/\(○ Compiling[^\x1b]*\)/\x1b[33m\x1b[1m\1\x1b[0m/g" \
-    -e "s/\(○[[:space:]]\+\)/\x1b[33m\x1b[1m\1\x1b[0m/g" \
-    -e "s/\(⨯[[:space:]]\+\)/\x1b[31m\x1b[1m\1\x1b[0m/g" \
-    -e "s/\(Failed to compile[^\x1b]*\)/\x1b[31m\x1b[1m\1\x1b[0m/g" \
-    -e "s/\(⚠[[:space:]]\+\)/\x1b[33m\x1b[1m\1\x1b[0m/g" \
-    -e "s/\(Fast Refresh[^\x1b]*\)/\x1b[35m\x1b[1m\1\x1b[0m/g" \
-    -e "s/\(INFO:\?[[:space:]]\+\)/\x1b[32m\x1b[1m\1\x1b[0m/g" \
-    -e "s/\(\[INFO\]\)/\x1b[32m\x1b[1m\1\x1b[0m/g" \
-    -e "s/\(WARNING:\?[[:space:]]\+\)/\x1b[33m\x1b[1m\1\x1b[0m/g" \
-    -e "s/\(\[WARNING\]\)/\x1b[33m\x1b[1m\1\x1b[0m/g" \
-    -e "s/\(WARN:\?[[:space:]]\+\)/\x1b[33m\x1b[1m\1\x1b[0m/g" \
-    -e "s/\(ERROR:\?[[:space:]]\+\)/\x1b[31m\x1b[1m\1\x1b[0m/g" \
-    -e "s/\(\[ERROR\]\)/\x1b[31m\x1b[1m\1\x1b[0m/g" \
-    -e "s/\(CRITICAL:\?[[:space:]]\+\)/\x1b[35m\x1b[1m\1\x1b[0m/g" \
-    -e "s/\(DEBUG:\?[[:space:]]\+\)/\x1b[34m\1\x1b[0m/g" \
-    -e "s/\([[:space:]]GET[[:space:]]\)/ \x1b[36m\x1b[1mGET\x1b[0m /g" \
-    -e "s/\([[:space:]]POST[[:space:]]\)/ \x1b[35m\x1b[1mPOST\x1b[0m /g" \
-    -e "s/\([[:space:]]PUT[[:space:]]\)/ \x1b[34m\x1b[1mPUT\x1b[0m /g" \
-    -e "s/\([[:space:]]DELETE[[:space:]]\)/ \x1b[31m\x1b[1mDELETE\x1b[0m /g" \
-    -e "s/\(\\"GET[^\\"]*\\"\)/\x1b[36m\1\x1b[0m/g" \
-    -e "s/\(\\"POST[^\\"]*\\"\)/\x1b[35m\1\x1b[0m/g" \
-    -e "s/\( 200 OK\| 200 \| 201 \| 304 \)/\x1b[32m\1\x1b[0m/g" \
-    -e "s/\( 404 \| 400 \| 422 \)/\x1b[33m\1\x1b[0m/g" \
-    -e "s/\( 500 \| 502 \| 503 \)/\x1b[31m\x1b[1m\1\x1b[0m/g"
+    -e 's/\(\[[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\} [0-9]\{2\}:[0-9]\{2\}:[0-9]\{2\}\]\)/\x1b[36m\x1b[2m\1\x1b[0m/g' \
+    -e 's/\([0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\} [0-9]\{2\}:[0-9]\{2\}:[0-9]\{2\}\)/\x1b[36m\x1b[2m\1\x1b[0m/g' \
+    -e 's/\(▲ Next.js[^\x1b]*\)/\x1b[36m\x1b[1m\1\x1b[0m/g' \
+    -e 's/\(✓ Compiled[^\x1b]*\)/\x1b[32m\x1b[1m\1\x1b[0m/g' \
+    -e 's/\(✓[[:space:]]\+\)/\x1b[32m\x1b[1m\1\x1b[0m/g' \
+    -e 's/\(○ Compiling[^\x1b]*\)/\x1b[33m\x1b[1m\1\x1b[0m/g' \
+    -e 's/\(○[[:space:]]\+\)/\x1b[33m\x1b[1m\1\x1b[0m/g' \
+    -e 's/\(⨯[[:space:]]\+\)/\x1b[31m\x1b[1m\1\x1b[0m/g' \
+    -e 's/\(Failed to compile[^\x1b]*\)/\x1b[31m\x1b[1m\1\x1b[0m/g' \
+    -e 's/\(Ready in [0-9]\+ms\)/\x1b[32m\x1b[1m\1\x1b[0m/g' \
+    -e 's/\(⚠[[:space:]]\+\)/\x1b[33m\x1b[1m\1\x1b[0m/g' \
+    -e 's/\(Fast Refresh[^\x1b]*\)/\x1b[35m\x1b[1m\1\x1b[0m/g' \
+    -e 's/\(INFO:\?[[:space:]]\+\)/\x1b[32m\x1b[1m\1\x1b[0m/g' \
+    -e 's/\(\[INFO\]\)/\x1b[32m\x1b[1m[INFO]\x1b[0m/g' \
+    -e 's/\(WARNING:\?[[:space:]]\+\)/\x1b[33m\x1b[1m\1\x1b[0m/g' \
+    -e 's/\(\[WARNING\]\)/\x1b[33m\x1b[1m[WARNING]\x1b[0m/g' \
+    -e 's/\(WARN:\?[[:space:]]\+\)/\x1b[33m\x1b[1m\1\x1b[0m/g' \
+    -e 's/\(\[WARN\]\)/\x1b[33m\x1b[1m[WARN]\x1b[0m/g' \
+    -e 's/\(ERROR:\?[[:space:]]\+\)/\x1b[31m\x1b[1m\1\x1b[0m/g' \
+    -e 's/\(\[ERROR\]\)/\x1b[31m\x1b[1m[ERROR]\x1b[0m/g' \
+    -e 's/\(CRITICAL:\?[[:space:]]\+\)/\x1b[35m\x1b[1m\1\x1b[0m/g' \
+    -e 's/\(DEBUG:\?[[:space:]]\+\)/\x1b[34m\1\x1b[0m/g' \
+    -e 's/\(\[HTTP\]\)/\x1b[34m\x1b[1m[HTTP]\x1b[0m/g' \
+    -e 's/\(\[SYSTEM\]\)/\x1b[35m\x1b[1m[SYSTEM]\x1b[0m/g' \
+    -e 's/\([[:space:]]GET[[:space:]]\)/ \x1b[36m\x1b[1mGET\x1b[0m /g' \
+    -e 's/\([[:space:]]POST[[:space:]]\)/ \x1b[35m\x1b[1mPOST\x1b[0m /g' \
+    -e 's/\([[:space:]]PUT[[:space:]]\)/ \x1b[34m\x1b[1mPUT\x1b[0m /g' \
+    -e 's/\([[:space:]]DELETE[[:space:]]\)/ \x1b[31m\x1b[1mDELETE\x1b[0m /g' \
+    -e 's/\("GET[^"]*"\)/\x1b[36m\1\x1b[0m/g' \
+    -e 's/\("POST[^"]*"\)/\x1b[35m\1\x1b[0m/g' \
+    -e 's/\( 200 OK\| 200 \| 201 \| 304 \)/\x1b[32m\1\x1b[0m/g' \
+    -e 's/\( 404 \| 400 \| 422 \)/\x1b[33m\1\x1b[0m/g' \
+    -e 's/\( 500 \| 502 \| 503 \)/\x1b[31m\x1b[1m\1\x1b[0m/g' \
+    -e 's/\(in [0-9]\+ms\)/\x1b[36m\1\x1b[0m/g'
+}
+
+# Dedicated Tmux Compact Controller (Fixed 5-line non-scrolling process dashboard)
+run_tmux_controller() {
+  trap cleanup_and_exit SIGINT SIGTERM
+  trap restore_terminal EXIT
+
+  local last_msg=""
+
+  while true; do
+    local fe_st be_st py_st tu_st
+    fe_st=$(check_port 3000)
+    be_st=$(check_port 4000)
+    py_st=$(check_port 8000)
+    tu_st=$(get_tunnel_badge)
+
+    local fe_badge="${RED}[3000 OFF]${RESET}"
+    local be_badge="${RED}[4000 OFF]${RESET}"
+    local py_badge="${RED}[8000 OFF]${RESET}"
+    local tu_badge="${RED}[TUNNEL OFF]${RESET}"
+
+    [ "$fe_st" == "ONLINE" ] && fe_badge="${GREEN}[3000 OK]${RESET}"
+    [ "$be_st" == "ONLINE" ] && be_badge="${GREEN}[4000 OK]${RESET}"
+    [ "$py_st" == "ONLINE" ] && py_badge="${GREEN}[8000 OK]${RESET}"
+    [[ "$tu_st" == *"ONLINE"* ]] && tu_badge="${GREEN}[TUNNEL OK]${RESET}"
+
+    printf "\033[H\033[J"
+    echo -e "${BOLD}${CYAN}CIVIL-LEX CONTROLLER${RESET} │ FE: ${fe_badge} │ BE: ${be_badge} │ PY: ${py_badge} │ ${tu_badge} │ ${DIM}Alt+Arrows: Move │ Alt+z: Zoom${RESET}"
+    echo -e " ${BOLD}Hotkeys:${RESET} [${BOLD}f${RESET}] Restart FE   [${BOLD}b${RESET}] Restart BE   [${BOLD}p${RESET}] Restart Python   [${BOLD}u${RESET}] Restart Tunnel   [${BOLD}a${RESET}] Restart All"
+    echo -e "          [${BOLD}c${RESET}] Clear Logs    [${BOLD}o${RESET}] Open App UI  [${BOLD}d${RESET}] Open API Docs    [${BOLD}k${RESET}] Stop All         [${BOLD}q${RESET}] Shutdown & Exit"
+    if [ -n "$last_msg" ]; then
+      echo -e " ${last_msg}"
+    else
+      echo -e " ${DIM}Ready. Press a hotkey above to manage services.${RESET}"
+    fi
+
+    local cmd=""
+    read -s -n 1 -t 2 cmd 2>/dev/null || cmd=""
+
+    if [ "$cmd" == $'\x1b' ]; then
+      read -s -n 2 -t 0.05 extra 2>/dev/null || true
+      cmd=""
+    fi
+
+    if [ -n "$cmd" ]; then
+      case "$cmd" in
+        "f"|"F")
+          stop_service "frontend"
+          start_frontend
+          last_msg="${GREEN}[OK] Restarted Frontend (Next.js)${RESET}"
+          ;;
+        "b"|"B")
+          stop_service "backend"
+          start_backend
+          last_msg="${GREEN}[OK] Restarted Backend Node.js${RESET}"
+          ;;
+        "p"|"P")
+          stop_service "python"
+          start_python
+          last_msg="${GREEN}[OK] Restarted Python RAG Service${RESET}"
+          ;;
+        "u"|"U")
+          stop_service "tunnel"
+          start_tunnel
+          last_msg="${GREEN}[OK] Restarted Azure Dev Tunnel${RESET}"
+          ;;
+        "a"|"A")
+          stop_service "all"
+          start_frontend
+          start_backend
+          start_python
+          start_tunnel
+          last_msg="${GREEN}[OK] Restarted All Services${RESET}"
+          ;;
+        "c"|"C")
+          clear_logs
+          last_msg="${GREEN}[OK] All log files truncated successfully.${RESET}"
+          ;;
+        "o"|"O")
+          open_url "http://localhost:3000" "Frontend App"
+          last_msg="${CYAN}[WEB] Opening Frontend in browser...${RESET}"
+          ;;
+        "d"|"D")
+          open_url "http://localhost:8000/docs" "FastAPI Docs"
+          last_msg="${CYAN}[WEB] Opening API Docs in browser...${RESET}"
+          ;;
+        "k"|"K")
+          stop_service "all"
+          last_msg="${YELLOW}[WARN] Stopped all background services${RESET}"
+          ;;
+        "q"|"Q")
+          cleanup_and_exit
+          ;;
+      esac
+    fi
+  done
 }
 
 # TUI Views & Rendering
@@ -801,28 +970,28 @@ run_controller() {
         "f"|"F")
           stop_service "frontend"
           start_frontend
-          last_action_msg="${GREEN}[✔] Restarted Frontend (Next.js)${RESET}"
+          last_action_msg="${GREEN}[OK] Restarted Frontend (Next.js)${RESET}"
           sleep 1
           render_view
           ;;
         "b"|"B")
           stop_service "backend"
           start_backend
-          last_action_msg="${GREEN}[✔] Restarted Backend Node.js${RESET}"
+          last_action_msg="${GREEN}[OK] Restarted Backend Node.js${RESET}"
           sleep 1
           render_view
           ;;
         "p"|"P")
           stop_service "python"
           start_python
-          last_action_msg="${GREEN}[✔] Restarted Python RAG Service${RESET}"
+          last_action_msg="${GREEN}[OK] Restarted Python RAG Service${RESET}"
           sleep 1
           render_view
           ;;
         "u"|"U")
           stop_service "tunnel"
           start_tunnel
-          last_action_msg="${GREEN}[✔] Restarted Azure Dev Tunnel${RESET}"
+          last_action_msg="${GREEN}[OK] Restarted Azure Dev Tunnel${RESET}"
           sleep 1
           render_view
           ;;
@@ -832,7 +1001,7 @@ run_controller() {
           start_backend
           start_python
           start_tunnel
-          last_action_msg="${GREEN}[✔] Restarted All Services${RESET}"
+          last_action_msg="${GREEN}[OK] Restarted All Services${RESET}"
           sleep 1
           render_view
           ;;
@@ -854,7 +1023,7 @@ run_controller() {
 cleanup_and_exit() {
   stop_tail
   restore_terminal
-  echo -e "\n${YELLOW}[!] Stopping all services...${RESET}"
+  echo -e "\n${YELLOW}[WARN] Stopping all services...${RESET}"
   stop_all_services
 
   # If running inside the CIVIL-LEX tmux session, close the session too
@@ -862,19 +1031,16 @@ cleanup_and_exit() {
     local current_session
     current_session=$(tmux display-message -p '#S' 2>/dev/null || true)
     if [ "$current_session" == "$SESSION" ]; then
-      echo -e "${GREEN}[✔] Closing tmux session '${SESSION}'...${RESET}"
+      echo -e "${GREEN}[OK] Closing tmux session '${SESSION}'...${RESET}"
       tmux kill-session -t "$SESSION" 2>/dev/null || true
     fi
   fi
 
-  echo -e "${GREEN}[✔] All services stopped cleanly.${RESET}"
+  echo -e "${GREEN}[OK] All services stopped cleanly.${RESET}"
   exit 0
 }
 
-
 # Top-Level Command-Line Argument Dispatcher
-
-
 case "${1:-}" in
   -h|--help|-help|help)
     show_usage
@@ -885,14 +1051,52 @@ case "${1:-}" in
     exit 0
     ;;
   -k|--stop|-stop|stop|kill)
-    echo -e "${YELLOW}[!] Stopping all running services...${RESET}"
+    echo -e "${YELLOW}[WARN] Stopping all running services...${RESET}"
     stop_all_services
-    echo -e "${GREEN}[✔] All services stopped cleanly.${RESET}"
+    echo -e "${GREEN}[OK] All services stopped cleanly.${RESET}"
+    exit 0
+    ;;
+  -r|--restart|-restart|restart)
+    case "${2:-all}" in
+      frontend|fe)
+        stop_service "frontend"
+        start_frontend
+        echo -e "${GREEN}[OK] Restarted Frontend (Next.js)${RESET}"
+        ;;
+      backend|be)
+        stop_service "backend"
+        start_backend
+        echo -e "${GREEN}[OK] Restarted Backend Node.js${RESET}"
+        ;;
+      python|py|rag)
+        stop_service "python"
+        start_python
+        echo -e "${GREEN}[OK] Restarted Python RAG Service${RESET}"
+        ;;
+      tunnel|tun)
+        stop_service "tunnel"
+        start_tunnel
+        echo -e "${GREEN}[OK] Restarted Azure Dev Tunnel${RESET}"
+        ;;
+      all|*)
+        kill_existing_processes
+        start_all_services
+        echo -e "${GREEN}[OK] Restarted All Services${RESET}"
+        ;;
+    esac
     exit 0
     ;;
   -t|--tmux|-tmux|tmux)
     validate_environment
     launch_tmux
+    exit 0
+    ;;
+  --tmux-controller)
+    run_tmux_controller
+    exit 0
+    ;;
+  --stream-log)
+    stream_log "${2:-frontend}"
     exit 0
     ;;
   -c|--controller|-controller|controller|-i|--interactive|-interactive|interactive)
@@ -916,10 +1120,11 @@ case "${1:-}" in
     sleep 1
     echo -e ""
     print_cli_status
-    echo -e "\n${GREEN}[✔] All CIVIL-LEX services started successfully in background.${RESET}"
+    echo -e "\n${GREEN}[OK] All CIVIL-LEX services started successfully in background.${RESET}"
     echo -e "${DIM}  • View live status  : ./start.sh --status${RESET}"
     echo -e "${DIM}  • Stream logs       : tail -f ${LOG_DIR}/*.log${RESET}"
     echo -e "${DIM}  • Service manager   : ./start.sh --controller${RESET}"
+    echo -e "${DIM}  • Tmux dashboard    : ./start.sh --tmux${RESET}"
     echo -e "${DIM}  • System monitor    : ./scripts/system_monitor.sh${RESET}"
     echo -e "${DIM}  • Stop all services : ./start.sh --stop${RESET}\n"
     exit 0

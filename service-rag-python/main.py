@@ -14,6 +14,7 @@ from psycopg2 import pool
 from psycopg2.extras import RealDictCursor
 from pydantic import BaseModel
 from typing import List, Dict, Optional, Any
+from contextlib import asynccontextmanager
 import sys
 import logging
 import time
@@ -39,12 +40,13 @@ active_generation_tasks: Dict[str, asyncio.Task] = {}
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
+    format="%(asctime)s [%(levelname)s] [%(name)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 
 from services.document import extract_and_process_document
-from services.llm_client import generate_response_stream
+from services.llm_client import generate_response_stream, close_llm_clients, set_model_offline, check_model_readiness
 from services.nli import score_faithfulness_async as nli_score_faithfulness_async, score_faithfulness as nli_score_faithfulness_sync, _compute_lexical_coverage
 from services.ambiguity import detect_ambiguity, enrich_query_with_clarification
 from services.domain_router import DomainRouter
@@ -85,12 +87,29 @@ def dumps(obj) -> str:
     """Convenience wrapper for json.dumps that always uses LegalJSONEncoder."""
     return json.dumps(obj, cls=LegalJSONEncoder)
 
-app = FastAPI(title="CIVIL-LEX RAG Service API")
+_db_pool: Optional[pool.ThreadedConnectionPool] = None
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    yield
+    logging.info("Shutting down RAG service: releasing connection pools and HTTP clients...")
+    global _db_pool
+    if _db_pool is not None:
+        try:
+            _db_pool.closeall()
+        except Exception as e:
+            logging.warning(f"Error closing DB pool: {e}")
+    try:
+        await close_llm_clients()
+    except Exception as e:
+        logging.warning(f"Error closing LLM clients: {e}")
+
+app = FastAPI(title="CIVIL-LEX RAG Service API", lifespan=lifespan)
 
 # Initialize embedding model (global so it doesn't reload per request)
-print("Loading embedding model...")
+logging.info("Loading SentenceTransformer embedding model...")
 embedder = SentenceTransformer(os.getenv("EMBEDDING_MODEL_NAME", "intfloat/multilingual-e5-base"))
-print("Initializing semantic domain router...")
+logging.info("Initializing semantic domain router centroids...")
 domain_router = DomainRouter(embedder)
 
 # Setup CORS
@@ -106,8 +125,6 @@ DEFAULT_DB_URL = os.getenv(
     "POSTGRES_DB_URL",
     "postgresql://postgres:postgres@localhost:54322/postgres"
 )
-
-_db_pool: Optional[pool.ThreadedConnectionPool] = None
 
 class PooledConnWrapper:
     """Wraps pooled connection to return it to pool on close()."""
@@ -170,27 +187,58 @@ async def get_system_queue_status():
     import httpx
     status_data = queue_manager.get_status()
 
-    # Query LM Studio health and loaded models
-    lm_online = False
-    loaded_models = []
-    latency_ms = None
+    lm_server_online = False
+    lm_model_loaded = False
+    loaded_models: List[str] = []
+    active_model_name: Optional[str] = None
+    loaded_context_len: Optional[int] = None
+    latency_ms: Optional[float] = None
+
     try:
         t0 = time.time()
+        base_url = re.sub(r"/v1/?$", "", LM_STUDIO_URL.rstrip("/"))
+        v0_url = f"{base_url}/api/v0/models"
         async with httpx.AsyncClient(timeout=1.5) as client:
-            resp = await client.get(f"{LM_STUDIO_URL.rstrip('/')}/models")
+            resp = await client.get(v0_url)
             latency_ms = round((time.time() - t0) * 1000, 1)
             if resp.status_code == 200:
-                lm_online = True
+                lm_server_online = True
                 data = resp.json()
-                loaded_models = [m.get("id") for m in data.get("data", [])]
+                for m in data.get("data", []):
+                    if m.get("state") == "loaded":
+                        m_id = m.get("id")
+                        if m_id:
+                            loaded_models.append(m_id)
+                            if not active_model_name:
+                                active_model_name = m_id
+                                loaded_context_len = m.get("loaded_context_length") or m.get("max_context_length")
+                lm_model_loaded = len(loaded_models) > 0
+            else:
+                # Fallback to standard OpenAI models endpoint
+                v1_url = f"{LM_STUDIO_URL.rstrip('/')}/models"
+                resp = await client.get(v1_url)
+                latency_ms = round((time.time() - t0) * 1000, 1)
+                if resp.status_code == 200:
+                    lm_server_online = True
+                    data = resp.json()
+                    loaded_models = [m.get("id") for m in data.get("data", []) if m.get("id")]
+                    lm_model_loaded = len(loaded_models) > 0
+                    if loaded_models:
+                        active_model_name = loaded_models[0]
     except Exception:
-        lm_online = False
+        lm_server_online = False
+        lm_model_loaded = False
+        set_model_offline()
 
     status_data["llm_provider"] = "lmstudio"
     status_data["lm_studio"] = {
         "configured": bool(LM_STUDIO_URL),
-        "online": lm_online,
+        "online": lm_server_online and lm_model_loaded,
+        "server_online": lm_server_online,
+        "model_loaded": lm_model_loaded,
         "latency_ms": latency_ms,
+        "active_model": active_model_name,
+        "context_length": loaded_context_len,
         "models": loaded_models,
         "provider": "lmstudio",
         "vram_profile": "6.0 GB VRAM Strict Concurrency Enforced",
@@ -1853,23 +1901,33 @@ def search_with_embedding(q_emb: list, query: str, document_id: Optional[str] = 
                     params_t = (parent_type, or_query)
 
                 cur.execute(f"""
-                    WITH vector_search AS (
+                    WITH vector_ranked AS (
                         SELECT chunk_id, parent_type, parent_id, content,
-                                1 - (embedding <=> %s::vector) AS similarity,
-                                ROW_NUMBER() OVER (ORDER BY embedding <=> %s::vector) AS rrf_vector_rank
+                               (embedding <=> %s::vector) AS dist
                         FROM document_chunks
                         WHERE {where_clause_v}
-                        ORDER BY embedding <=> %s::vector
+                        ORDER BY dist
+                        LIMIT 50
+                    ),
+                    vector_search AS (
+                        SELECT chunk_id, parent_type, parent_id, content,
+                               1 - dist AS similarity,
+                               ROW_NUMBER() OVER (ORDER BY dist ASC) AS rrf_vector_rank
+                        FROM vector_ranked
+                    ),
+                    text_ranked AS (
+                        SELECT chunk_id, parent_type, parent_id, content,
+                               ts_rank(fts, websearch_to_tsquery('simple', %s)) AS text_sim
+                        FROM document_chunks
+                        WHERE {where_clause_t}
+                        ORDER BY text_sim DESC
                         LIMIT 50
                     ),
                     text_search AS (
                         SELECT chunk_id, parent_type, parent_id, content,
-                                ts_rank_cd(fts, websearch_to_tsquery('simple', %s)) AS text_sim,
-                                ROW_NUMBER() OVER (ORDER BY ts_rank_cd(fts, websearch_to_tsquery('simple', %s)) DESC) AS rrf_text_rank
-                        FROM document_chunks
-                        WHERE {where_clause_t}
-                        ORDER BY rrf_text_rank
-                        LIMIT 50
+                               text_sim,
+                               ROW_NUMBER() OVER (ORDER BY text_sim DESC) AS rrf_text_rank
+                        FROM text_ranked
                     ),
                     rrf AS (
                         SELECT 
@@ -1882,10 +1940,10 @@ def search_with_embedding(q_emb: list, query: str, document_id: Optional[str] = 
                         FROM vector_search v
                         FULL OUTER JOIN text_search t ON v.chunk_id = t.chunk_id
                     )
-                    SELECT * FROM rrf
+                    SELECT chunk_id, parent_type, parent_id, content, similarity, rrf_score FROM rrf
                     ORDER BY rrf_score DESC
                     LIMIT %s;
-                """, (q_emb, q_emb, *params_v, q_emb, or_query, or_query, *params_t, limit))
+                """, (q_emb, *params_v, or_query, *params_t, limit))
                 return cur.fetchall()
 
             if document_id:
@@ -2424,20 +2482,116 @@ async def search_documents(request: SearchRequest, raw_req: Request = None):
 
 
         async def sse_generator():
-            acquired_immediately, ticket, err = await queue_manager.enter_queue(
-                user_id=user_identifier,
-                session_id=request.session_id or "",
-                user_name=user_name,
-                user_email=user_email,
-            )
-
-            if err == "QUEUE_FULL":
-                yield f"data: {dumps({'type': 'error', 'message': 'The system is experiencing peak volume and the queue is currently full. Please try again shortly.'})}\n\n"
-                yield f"data: {dumps({'type': 'done'})}\n\n"
-                return
-
+            ticket = None
             try:
-                # If not acquired immediately, user is placed in queue
+                # Per-chat server-authoritative memory (PostgreSQL I/O, non-GPU)
+                _db_history, session_summary, server_citations = await asyncio.gather(
+                    asyncio.to_thread(
+                        session_memory.load_session_history,
+                        request.session_id,
+                        session_memory.HISTORY_LIMIT,
+                        user_identifier if user_identifier != "anon" else None,
+                        get_db_connection,
+                    ),
+                    asyncio.to_thread(
+                        session_memory.load_session_summary, request.session_id, get_db_connection
+                    ),
+                    asyncio.to_thread(
+                        session_memory.load_recent_citations,
+                        request.session_id,
+                        session_memory.PRIOR_CITATIONS_LIMIT,
+                        get_db_connection,
+                    ),
+                )
+                _client_dicts = [{"role": m.role, "content": m.content} for m in (request.history or [])]
+                canonical_history = session_memory.resolve_history(_client_dicts, _db_history)
+                canonical_msgs = session_memory.to_chat_messages(canonical_history)
+                # Snapshot before the current turn is persisted for history-recall queries
+                _recall_base = list(canonical_history)
+                merged_prior_citations = session_memory.merge_prior_citations(
+                    server_citations, request.prior_citations
+                )
+                # Persist the incoming user turn
+                await asyncio.to_thread(
+                    session_memory.save_user_message,
+                    request.session_id,
+                    request.query,
+                    get_db_connection,
+                )
+                if _db_history is not None:
+                    _db_history2 = await asyncio.to_thread(
+                        session_memory.load_session_history,
+                        request.session_id,
+                        session_memory.HISTORY_LIMIT,
+                        user_identifier if user_identifier != "anon" else None,
+                        get_db_connection,
+                    )
+                    if _db_history2:
+                        canonical_history = session_memory.resolve_history(_client_dicts, _db_history2)
+                        canonical_msgs = session_memory.to_chat_messages(canonical_history)
+
+                # History-recall shortcut: deterministic response without GPU queue
+                if session_memory.is_history_recall_query(request.query):
+                    recall_text = session_memory.build_recall_response(request.query, _recall_base)
+                    recall_analytics = {
+                        'nli_score': None,
+                        'nli_status': 'N/A',
+                        'top_article_score': 0.0,
+                        'is_document_legal': None,
+                        'is_out_of_domain': False,
+                        'domain_category': 'conversation',
+                        'target_domain': None,
+                    }
+                    yield f"data: {dumps({'type': 'status', 'stage': 'streaming', 'message': 'Recalling conversation history...'})}\n\n"
+                    yield f"data: {dumps({'type': 'citations', 'data': []})}\n\n"
+                    yield f"data: {dumps({'type': 'accumulated_citations', 'data': merged_prior_citations})}\n\n"
+                    yield f"data: {dumps({'type': 'legal_analytics', 'data': recall_analytics})}\n\n"
+                    yield f"data: {dumps({'type': 'text', 'text': recall_text})}\n\n"
+                    yield f"data: {dumps({'type': 'done'})}\n\n"
+                    save_assistant_message_to_db(request.session_id, recall_text, [], recall_analytics)
+                    return
+
+                # Summary-request shortcut: deterministic response without GPU queue
+                if session_memory.is_summary_request(request.query):
+                    short_text = session_memory.build_summary_response(request.query, _recall_base)
+                    short_analytics = {
+                        'nli_score': None,
+                        'nli_status': 'N/A',
+                        'top_article_score': 0.0,
+                        'is_document_legal': None,
+                        'is_out_of_domain': False,
+                        'domain_category': 'conversation',
+                        'target_domain': None,
+                    }
+                    yield f"data: {dumps({'type': 'status', 'stage': 'streaming', 'message': 'Summarizing the previous answer...'})}\n\n"
+                    yield f"data: {dumps({'type': 'citations', 'data': []})}\n\n"
+                    yield f"data: {dumps({'type': 'accumulated_citations', 'data': merged_prior_citations})}\n\n"
+                    yield f"data: {dumps({'type': 'legal_analytics', 'data': short_analytics})}\n\n"
+                    yield f"data: {dumps({'type': 'text', 'text': short_text})}\n\n"
+                    yield f"data: {dumps({'type': 'done'})}\n\n"
+                    save_assistant_message_to_db(request.session_id, short_text, [], short_analytics)
+                    return
+
+                # Guard against offline or unloaded model service before queue entry and retrieval
+                is_ready, readiness_msg = await check_model_readiness()
+                if not is_ready:
+                    logging.warning(f"Model service is not ready ({readiness_msg}). Halting search pipeline before retrieval.")
+                    yield f"data: {dumps({'type': 'error', 'message': readiness_msg})}\n\n"
+                    return
+
+                # Acquire GPU slot for full RAG inference pipeline
+                acquired_immediately, ticket, err = await queue_manager.enter_queue(
+                    user_id=user_identifier,
+                    session_id=request.session_id or "",
+                    user_name=user_name,
+                    user_email=user_email,
+                )
+
+                if err == "QUEUE_FULL":
+                    yield f"data: {dumps({'type': 'error', 'message': 'The system is experiencing peak volume and the queue is currently full. Please try again shortly.'})}\n\n"
+                    yield f"data: {dumps({'type': 'done'})}\n\n"
+                    return
+
                 if not acquired_immediately:
                     queue_pos = await queue_manager.get_queue_position(ticket)
                     yield f"data: {dumps({'type': 'status', 'stage': 'queued', 'message': f'Resource queue: You are #{queue_pos} in line. Another query is currently utilizing the legal model ({queue_manager.active_queries}/{queue_manager.max_concurrent} active)...', 'queue_position': queue_pos, 'active_queries': queue_manager.active_queries, 'max_concurrent': queue_manager.max_concurrent})}\n\n"
@@ -2454,7 +2608,6 @@ async def search_documents(request: SearchRequest, raw_req: Request = None):
                                     break
 
                         if not waiter:
-                            # Promoted or removed
                             if ticket in queue_manager._active_slots:
                                 break
                             else:
@@ -2480,106 +2633,6 @@ async def search_documents(request: SearchRequest, raw_req: Request = None):
                     yield f"data: {dumps({'type': 'status', 'stage': 'embedding', 'message': 'Resource slot acquired. Initializing legal search...', 'queue_position': 0})}\n\n"
 
                 logging.info("Starting SSE stream with granular RAG stages and context memory...")
-
-                # ── Per-chat server-authoritative memory ──
-                # Load session history, summary, and recent citations concurrently
-                _db_history, session_summary, server_citations = await asyncio.gather(
-                    asyncio.to_thread(
-                        session_memory.load_session_history,
-                        request.session_id,
-                        session_memory.HISTORY_LIMIT,
-                        user_identifier if user_identifier != "anon" else None,
-                        get_db_connection,
-                    ),
-                    asyncio.to_thread(
-                        session_memory.load_session_summary, request.session_id, get_db_connection
-                    ),
-                    asyncio.to_thread(
-                        session_memory.load_recent_citations,
-                        request.session_id,
-                        session_memory.PRIOR_CITATIONS_LIMIT,
-                        get_db_connection,
-                    ),
-                )
-                _client_dicts = [{"role": m.role, "content": m.content} for m in (request.history or [])]
-                canonical_history = session_memory.resolve_history(_client_dicts, _db_history)
-                canonical_msgs = session_memory.to_chat_messages(canonical_history)
-                # Snapshot before the current turn is persisted — history-recall
-                # answers must quote *prior* queries, not the recall question itself.
-                _recall_base = list(canonical_history)
-                merged_prior_citations = session_memory.merge_prior_citations(
-                    server_citations, request.prior_citations
-                )
-                # Persist the incoming user turn (deduped vs the frontend's
-                # fire-and-forget POST to /api/sessions/:id/messages).
-                await asyncio.to_thread(
-                    session_memory.save_user_message,
-                    request.session_id,
-                    request.query,
-                    get_db_connection,
-                )
-                # Refresh canonical history to include the just-saved user turn.
-                if _db_history is not None:
-                    _db_history2 = await asyncio.to_thread(
-                        session_memory.load_session_history,
-                        request.session_id,
-                        session_memory.HISTORY_LIMIT,
-                        user_identifier if user_identifier != "anon" else None,
-                        get_db_connection,
-                    )
-                    if _db_history2:
-                        canonical_history = session_memory.resolve_history(_client_dicts, _db_history2)
-                        canonical_msgs = session_memory.to_chat_messages(canonical_history)
-
-                # ── History-recall shortcut ──
-                # Meta-questions about the conversation itself ("whats my first query
-                # all about") are answered deterministically from the stored
-                # transcript. They bypass domain gating, ambiguity detection,
-                # retrieval, and NLI — none of which apply to conversation recall.
-                if session_memory.is_history_recall_query(request.query):
-                    recall_text = session_memory.build_recall_response(request.query, _recall_base)
-                    recall_analytics = {
-                        'nli_score': None,
-                        'nli_status': 'N/A',
-                        'top_article_score': 0.0,
-                        'is_document_legal': None,
-                        'is_out_of_domain': False,
-                        'domain_category': 'conversation',
-                        'target_domain': None,
-                    }
-                    yield f"data: {dumps({'type': 'status', 'stage': 'streaming', 'message': 'Recalling conversation history...'})}\n\n"
-                    yield f"data: {dumps({'type': 'citations', 'data': []})}\n\n"
-                    yield f"data: {dumps({'type': 'accumulated_citations', 'data': merged_prior_citations})}\n\n"
-                    yield f"data: {dumps({'type': 'legal_analytics', 'data': recall_analytics})}\n\n"
-                    yield f"data: {dumps({'type': 'text', 'text': recall_text})}\n\n"
-                    yield f"data: {dumps({'type': 'done'})}\n\n"
-                    save_assistant_message_to_db(request.session_id, recall_text, [], recall_analytics)
-                    return
-
-                # ── Summary-request shortcut ──
-                # "In short...", "buod", "paikliin" and similar ask to shorten the
-                # answer just given. They are answered deterministically from the
-                # stored transcript and bypass ambiguity detection (which would
-                # otherwise re-interrogate already-resolved facts), retrieval, and NLI.
-                if session_memory.is_summary_request(request.query):
-                    short_text = session_memory.build_summary_response(request.query, _recall_base)
-                    short_analytics = {
-                        'nli_score': None,
-                        'nli_status': 'N/A',
-                        'top_article_score': 0.0,
-                        'is_document_legal': None,
-                        'is_out_of_domain': False,
-                        'domain_category': 'conversation',
-                        'target_domain': None,
-                    }
-                    yield f"data: {dumps({'type': 'status', 'stage': 'streaming', 'message': 'Summarizing the previous answer...'})}\n\n"
-                    yield f"data: {dumps({'type': 'citations', 'data': []})}\n\n"
-                    yield f"data: {dumps({'type': 'accumulated_citations', 'data': merged_prior_citations})}\n\n"
-                    yield f"data: {dumps({'type': 'legal_analytics', 'data': short_analytics})}\n\n"
-                    yield f"data: {dumps({'type': 'text', 'text': short_text})}\n\n"
-                    yield f"data: {dumps({'type': 'done'})}\n\n"
-                    save_assistant_message_to_db(request.session_id, short_text, [], short_analytics)
-                    return
 
                 # Resolve document filename and sample content if analyzing an uploaded document
                 doc_filename = request.document_name
@@ -3808,8 +3861,10 @@ CONTEXT:
             except Exception as stream_err:
                 logging.error(f"Error in SSE stream generation: {stream_err}", exc_info=True)
                 err_lower = str(stream_err).lower()
-                if any(k in err_lower for k in ["connect", "refused", "timeout", "1234", "lm_studio", "lmstudio"]):
-                    clean_msg = "Unable to connect to the language model. LM Studio is currently offline or unreachable."
+                if "no model" in err_lower:
+                    clean_msg = "LM Studio is running, but no model is loaded into memory. Please load your model in LM Studio and try again."
+                elif any(k in err_lower for k in ["connect", "refused", "timeout", "1234", "lm_studio", "lmstudio", "offline"]):
+                    clean_msg = "Unable to connect to the language model. LM Studio is currently offline or unreachable. Please verify that LM Studio is running and try again."
                 else:
                     clean_msg = "An error occurred while generating the legal analysis. Please try again."
                 yield f"data: {dumps({'type': 'error', 'message': clean_msg})}\n\n"

@@ -288,7 +288,8 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
       targetSessionId: string,
       targetAssistantId: number,
       authToken: string,
-      filename?: string
+      filename?: string,
+      turnStartTime?: number
     ): Promise<boolean> => {
       for (let attempt = 0; attempt < 45; attempt++) {
         if (explicitlyStoppedDocsRef.current[docId]) return false;
@@ -304,10 +305,9 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
           if (res.ok) {
             const dbMsgs = await res.json();
             if (Array.isArray(dbMsgs) && dbMsgs.length > 0) {
-              const lastAssistant = [...dbMsgs]
-                .reverse()
-                .find((m: any) => m.role === "assistant" && m.content && m.content.trim().length > 0);
-              if (lastAssistant) {
+              const lastAssistant = dbMsgs[dbMsgs.length - 1];
+              const isAfterTurn = turnStartTime ? new Date(lastAssistant.created_at || Date.now()).getTime() >= turnStartTime - 5000 : true;
+              if (lastAssistant && lastAssistant.role === "assistant" && lastAssistant.content && lastAssistant.content.trim().length > 0 && isAfterTurn) {
                 const currentAccumulator = activeDocStreamContextRef.current[docId]?.fullResponse || "";
                 if (lastAssistant.content.length >= currentAccumulator.length || currentAccumulator.length === 0) {
                   let recoveredCitations: any[] = [];
@@ -855,9 +855,10 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
       const userText = (overrideText ?? currentState.inputValue).trim();
       if (!userText || currentState.isTyping) return;
 
-      const userMsg: DocChatMessage = { id: Date.now(), role: "user", content: userText };
+      const turnStartTime = Date.now();
+      const userMsg: DocChatMessage = { id: turnStartTime, role: "user", content: userText };
       const currentHistory = [...currentState.messages, userMsg];
-      const assistantId = Date.now() + 1;
+      const assistantId = turnStartTime + 1;
 
       const initialStatus: RagStatus = {
         stage: "embedding",
@@ -1165,20 +1166,26 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
                     enqueueText(data.text);
                   } else if (data.type === "error") {
                     const errorMsg = data.message || "An error occurred while generating the legal analysis.";
+                    pendingCitations = null;
+                    pendingAccumulatedCitations = null;
+                    stopCharStream();
                     setDocChats((prev) => {
                       const cur = prev[docId] || INITIAL_STATE;
                       return {
                         ...prev,
                         [docId]: {
                           ...cur,
+                          isTyping: false,
+                          currentCitations: [],
                           ragStatus: { stage: "error", message: errorMsg },
                           messages: cur.messages.map((m) =>
                             m.id === assistantId
                               ? {
                                   ...m,
+                                  citations: [],
                                   content: m.content
-                                    ? `${m.content}\n\n> ⚠️ **Service Notice**\n>\n> ${errorMsg}`
-                                    : `> ⚠️ **Service Notice**\n>\n> ${errorMsg}`,
+                                    ? `${m.content}\n\n> **Service Notice**\n>\n> ${errorMsg}`
+                                    : `> **Service Notice**\n>\n> ${errorMsg}`,
                                   ragStatus: { stage: "error", message: errorMsg },
                                 }
                               : m
@@ -1299,7 +1306,8 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
             activeSessionId,
             assistantId,
             token,
-            filename
+            filename,
+            turnStartTime
           );
 
           if (!recovered && !explicitlyStoppedDocsRef.current[docId]) {
@@ -1309,14 +1317,16 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
                 ...prev,
                 [docId]: {
                   ...cur,
+                  currentCitations: [],
                   ragStatus: { stage: "error", message: "Service connection error" },
                   messages: cur.messages.map((m) =>
                     m.id === assistantId
                       ? {
                           ...m,
+                          citations: [],
                           content:
                             m.content ||
-                            "> ⚠️ **Analysis Notice**\n>\n> Unable to connect to the legal analysis service. The model service (LM Studio) may be offline. Please verify that the service is running and try again.",
+                            "> **Analysis Notice**\n>\n> Unable to connect to the legal analysis service. The model service (LM Studio) may be offline. Please verify that the service is running and try again.",
                         }
                       : m
                   ),
@@ -1332,14 +1342,16 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
               ...prev,
               [docId]: {
                 ...cur,
+                currentCitations: [],
                 ragStatus: { stage: "error", message: "Service connection error" },
                 messages: cur.messages.map((m) =>
                   m.id === assistantId
                     ? {
                       ...m,
+                      citations: [],
                       content:
                         m.content ||
-                        "> ⚠️ **Analysis Notice**\n>\n> Unable to connect to the legal analysis service. The model service (LM Studio) may be offline. Please verify that the service is running and try again.",
+                        "> **Analysis Notice**\n>\n> Unable to connect to the legal analysis service. The model service (LM Studio) may be offline. Please verify that the service is running and try again.",
                     }
                     : m
                 ),

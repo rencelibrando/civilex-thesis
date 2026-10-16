@@ -256,10 +256,6 @@ function RagPipelineStepper({ status, isLive, isOutOfDomain }: { status: RagStat
   const getStepState = (stepId: string) => {
     if (currentStage === "completed") return "completed";
     if (currentStage === "error") return "error";
-    if (currentStage === "reconnecting") {
-      if (stepId === "streaming") return "active";
-      return "completed";
-    }
 
     // When retrieval is finished, both Vectorize and Retrieve are completed
     if (currentStage === "retrieving_done") {
@@ -276,7 +272,7 @@ function RagPipelineStepper({ status, isLive, isOutOfDomain }: { status: RagStat
     return "pending";
   };
 
-  // If live and still before text streaming or reconnecting: show active prominent stepper
+  // If live and still before text streaming: show active prominent stepper
   const isPreStreamingStage =
     currentStage === "queued" ||
     currentStage === "embedding" ||
@@ -284,7 +280,6 @@ function RagPipelineStepper({ status, isLive, isOutOfDomain }: { status: RagStat
     currentStage === "retrieving_done" ||
     currentStage === "prompting" ||
     currentStage === "thinking" ||
-    currentStage === "reconnecting" ||
     currentStage === "clarification_needed";
 
   if (isLive && isPreStreamingStage) {
@@ -294,26 +289,22 @@ function RagPipelineStepper({ status, isLive, isOutOfDomain }: { status: RagStat
           <span className="flex items-center gap-1.5">
             {currentStage === "queued" ? (
               <Clock className="w-3 h-3 animate-spin text-amber-500" />
-            ) : currentStage === "reconnecting" ? (
-              <Loader2 className="w-3 h-3 animate-spin text-amber-500" />
             ) : (
               <Sparkles className="w-3 h-3 animate-pulse text-emerald-600 dark:text-emerald-400" />
             )}
             CIVIL-LEX Legal Processing
           </span>
-          <span className={`text-[9px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded-full border ${currentStage === "queued" || currentStage === "reconnecting"
+          <span className={`text-[9px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded-full border ${currentStage === "queued"
             ? "bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/30 font-bold animate-pulse"
             : "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-500/20 font-medium"
             }`}>
             {currentStage === "queued"
               ? `Queue #${status?.queue_position || 1}`
-              : currentStage === "reconnecting"
-                ? "reconnecting"
-                : currentStage === "retrieving_done"
-                  ? "retrieved"
-                  : currentStage === "thinking"
-                    ? "reasoning"
-                    : currentStage}
+              : currentStage === "retrieving_done"
+                ? "retrieved"
+                : currentStage === "thinking"
+                  ? "reasoning"
+                  : currentStage}
           </span>
         </div>
 
@@ -363,15 +354,9 @@ function RagPipelineStepper({ status, isLive, isOutOfDomain }: { status: RagStat
 
         {/* Active Stage Message (when not queued) */}
         {currentStage !== "queued" && (
-          <div className={`flex items-center gap-1.5 pt-0.5 text-[11px] px-2 py-1 rounded-lg border ${
-            currentStage === "reconnecting"
-              ? "text-amber-700 dark:text-amber-300 bg-amber-500/15 border-amber-500/30"
-              : "text-foreground bg-accent/30 dark:bg-accent/15 border-border/40"
-          }`}>
-            <Loader2 className={`w-3 h-3 animate-spin shrink-0 ${
-              currentStage === "reconnecting" ? "text-amber-600 dark:text-amber-400" : "text-emerald-600 dark:text-emerald-400"
-            }`} />
-            <span className="line-clamp-1 truncate">{status?.message || (currentStage === "reconnecting" ? "Reconnecting to legal analysis..." : "Analyzing query...")}</span>
+          <div className="flex items-center gap-1.5 pt-0.5 text-[11px] px-2 py-1 rounded-lg border text-foreground bg-accent/30 dark:bg-accent/15 border-border/40">
+            <Loader2 className="w-3 h-3 animate-spin shrink-0 text-emerald-600 dark:text-emerald-400" />
+            <span className="line-clamp-1 truncate">{status?.message || "Analyzing query..."}</span>
           </div>
         )}
       </div>
@@ -629,9 +614,10 @@ export default function ChatPage() {
     handleStop,
     handleNewChat,
     handleClarificationSubmit,
+    resumeActiveJob,
   } = useChat();
 
-  const isGenerating = isTyping || ragStatus?.stage === "reconnecting";
+  const isGenerating = isTyping;
 
   const [isAutoScrollEnabled, setIsAutoScrollEnabled] = useState(true);
   const [copiedCitation, setCopiedCitation] = useState(false);
@@ -742,6 +728,9 @@ export default function ChatPage() {
                 ...formattedMessages,
               ]);
             }
+          }
+          if (sessionParam) {
+            await resumeActiveJob(sessionParam);
           }
         } catch (err) {
           console.error("Failed to load past session messages", err);

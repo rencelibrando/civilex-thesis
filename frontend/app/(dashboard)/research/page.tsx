@@ -335,12 +335,6 @@ function RagPipelineStepper({ status, isLive }: { status: RagStatus | null; isLi
     if (currentStage === "completed") return "completed";
     if (currentStage === "error") return "error";
 
-    // Reconnecting stage: previous steps are completed, streaming is reconnecting
-    if (currentStage === "reconnecting") {
-      if (stepId === "streaming") return "active";
-      return "completed";
-    }
-
     // When retrieval is finished, both Vectorize and Retrieve are completed
     if (currentStage === "retrieving_done") {
       if (stepId === "embedding" || stepId === "retrieving") return "completed";
@@ -356,15 +350,14 @@ function RagPipelineStepper({ status, isLive }: { status: RagStatus | null; isLi
     return "pending";
   };
 
-  // If live and still before text streaming or reconnecting: show active prominent stepper
+  // If live and still before text streaming: show active prominent stepper
   const isPreStreamingStage =
     currentStage === "queued" ||
     currentStage === "embedding" ||
     currentStage === "retrieving" ||
     currentStage === "retrieving_done" ||
     currentStage === "prompting" ||
-    currentStage === "thinking" ||
-    currentStage === "reconnecting";
+    currentStage === "thinking";
 
   if (isLive && isPreStreamingStage) {
     return (
@@ -373,26 +366,22 @@ function RagPipelineStepper({ status, isLive }: { status: RagStatus | null; isLi
           <span className="flex items-center gap-1.5">
             {currentStage === "queued" ? (
               <Clock className="w-3 h-3 animate-spin text-amber-500" />
-            ) : currentStage === "reconnecting" ? (
-              <Loader2 className="w-3 h-3 animate-spin text-amber-500" />
             ) : (
               <Sparkles className="w-3 h-3 animate-pulse text-emerald-600 dark:text-emerald-400" />
             )}
             Legal Processing
           </span>
-          <span className={`text-[9px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded-full border ${currentStage === "queued" || currentStage === "reconnecting"
+          <span className={`text-[9px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded-full border ${currentStage === "queued"
             ? "bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/30 font-bold animate-pulse"
             : "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-500/20 font-medium"
             }`}>
             {currentStage === "queued"
               ? `Queue #${status?.queue_position || 1}`
-              : currentStage === "reconnecting"
-                ? "reconnecting"
-                : currentStage === "retrieving_done"
-                  ? "retrieved"
-                  : currentStage === "thinking"
-                    ? "reasoning"
-                    : currentStage}
+              : currentStage === "retrieving_done"
+                ? "retrieved"
+                : currentStage === "thinking"
+                  ? "reasoning"
+                  : currentStage}
           </span>
         </div>
 
@@ -442,15 +431,9 @@ function RagPipelineStepper({ status, isLive }: { status: RagStatus | null; isLi
 
         {/* Active Stage Message (when not queued) */}
         {currentStage !== "queued" && (
-          <div className={`flex items-center gap-1.5 pt-0.5 text-[11px] px-2 py-1 rounded-lg border ${
-            currentStage === "reconnecting"
-              ? "text-amber-700 dark:text-amber-300 bg-amber-500/15 border-amber-500/30"
-              : "text-foreground bg-accent/30 dark:bg-accent/15 border-border/40"
-          }`}>
-            <Loader2 className={`w-3 h-3 animate-spin shrink-0 ${
-              currentStage === "reconnecting" ? "text-amber-600 dark:text-amber-400" : "text-emerald-600 dark:text-emerald-400"
-            }`} />
-            <span className="line-clamp-1 truncate">{status?.message || (currentStage === "reconnecting" ? "Reconnecting to document analysis..." : "Analyzing query...")}</span>
+          <div className="flex items-center gap-1.5 pt-0.5 text-[11px] px-2 py-1 rounded-lg border text-foreground bg-accent/30 dark:bg-accent/15 border-border/40">
+            <Loader2 className="w-3 h-3 animate-spin shrink-0 text-emerald-600 dark:text-emerald-400" />
+            <span className="line-clamp-1 truncate">{status?.message || "Analyzing query..."}</span>
           </div>
         )}
       </div>
@@ -675,7 +658,7 @@ export default function ResearchPage() {
   const inputValue = currentChat.inputValue;
   const isTyping = currentChat.isTyping;
   const ragStatus = currentChat.ragStatus;
-  const isGenerating = isTyping || ragStatus?.stage === "reconnecting";
+  const isGenerating = isTyping;
   const retainedCitations = currentChat.retainedCitations;
   const legalAnalytics = currentChat.legalAnalytics;
   const followUpPrompts = currentChat.followUpPrompts || [];
@@ -2505,7 +2488,7 @@ export default function ResearchPage() {
                           ) : isGenerating && isLatestAssistant ? (
                             <div className="flex items-center gap-2 text-xs text-muted-foreground py-1">
                               <Loader2 className="w-3.5 h-3.5 animate-spin text-primary" />
-                              <span>{ragStatus?.stage === "reconnecting" ? "Reconnecting to document analysis..." : "Formulating legal analysis..."}</span>
+                              <span>Formulating legal analysis...</span>
                             </div>
                           ) : null
                         ) : (

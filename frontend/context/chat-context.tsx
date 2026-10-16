@@ -15,6 +15,7 @@ import { getCachedProfile, getInitialCachedProfile } from "@/lib/auth-storage";
 import {
   getPersonalizedGreeting,
 } from "@/lib/user-persona";
+import { runResumableStream, StreamEvent } from "@/lib/resumable-stream";
 import { useAuth } from "./auth-context";
 
 
@@ -30,7 +31,6 @@ export type RagStage =
   | "thinking"
   | "streaming"
   | "evaluating_nli"
-  | "reconnecting"
   | "clarification_needed"
   | "completed"
   | "error";
@@ -450,6 +450,7 @@ interface ChatContextType {
   handleStop: () => void;
   handleNewChat: () => void;
   handleClarificationSubmit: (originalQuery: string, answers: Record<string, string>) => Promise<void>;
+  resumeActiveJob: (sessionId: string) => Promise<boolean>;
 }
 
 export function getCitationKey(item: any): string {
@@ -556,9 +557,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     fullResponse: string;
     turnStartTime: number;
   } | null>(null);
-  const backgroundGraceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isReconcilingRef = useRef<boolean>(false);
-  const lastChunkTimeRef = useRef<number>(Date.now());
 
   // ── Load profile + personalize greeting on mount ──────────────────────────
   useEffect(() => {
@@ -681,82 +680,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   }, []);
 
 
-  // Tab-switch / mobile iOS disconnection recovery:
-  // When a mobile tab is backgrounded, iOS terminates the SSE stream. The server detached
-  // background task continues and commits the message to the DB. This polling loop
-  // detects and displays the completed answer upon returning to the app.
-  const pollForRecoveredAssistantMessage = useCallback(
-    async (
-      targetSessionId: string,
-      targetAssistantId: number,
-      authToken: string,
-      turnStartTime?: number
-    ): Promise<boolean> => {
-      // Poll every 2s for up to 90s (45 attempts)
-      for (let attempt = 0; attempt < 45; attempt++) {
-        if (isExplicitlyStoppedRef.current) return false;
-        await new Promise((resolve) => setTimeout(resolve, 2000));
-        if (isExplicitlyStoppedRef.current) return false;
-
-        try {
-          const res = await fetch(`${BACKEND_URL}/api/sessions/${targetSessionId}/messages`, {
-            headers: {
-              ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
-            },
-          });
-          if (res.ok) {
-            const dbMsgs = await res.json();
-            if (Array.isArray(dbMsgs) && dbMsgs.length > 0) {
-              const lastMsg = dbMsgs[dbMsgs.length - 1];
-              // Only recover if the final message in the session is an assistant response created during or after this turn
-              if (lastMsg && lastMsg.role === "assistant" && lastMsg.content && lastMsg.content.trim().length > 0) {
-                const isAfterTurn = turnStartTime ? new Date(lastMsg.created_at || Date.now()).getTime() >= turnStartTime - 5000 : true;
-                if (isAfterTurn) {
-                  const currentAccumulator = activeStreamContextRef.current?.fullResponse || "";
-                  if (lastMsg.content.length >= currentAccumulator.length || currentAccumulator.length === 0) {
-                    const recoveredCitations = lastMsg.citations || [];
-                    const recoveredAnalytics = lastMsg.legal_analytics || null;
-
-                    stopCharStream();
-                    setMessages((prev) =>
-                      prev.map((m) =>
-                        m.id === targetAssistantId
-                          ? {
-                              ...m,
-                              content: lastMsg.content,
-                              citations: recoveredCitations,
-                              legalAnalytics: settleNliAnalytics(recoveredAnalytics),
-                              ragStatus: { stage: "completed", message: "Analysis complete" },
-                            }
-                          : m
-                      )
-                    );
-                    setCurrentCitations(recoveredCitations);
-                    setRetainedCitations((prev) => mergeCitations(prev, recoveredCitations));
-                    if (recoveredAnalytics) {
-                      setLegalAnalytics(settleNliAnalytics(recoveredAnalytics));
-                    }
-                    const followUps = generateFollowUpPrompts(lastMsg.content, recoveredCitations);
-                    setFollowUpPrompts(followUps);
-                    setRagStatus({ stage: "completed", message: "Analysis complete" });
-                    setIsTyping(false);
-                    activeStreamContextRef.current = null;
-                    return true;
-                  }
-                }
-              }
-            }
-          }
-        } catch (pollErr) {
-          console.warn("Polling recovery attempt failed:", pollErr);
-        }
-      }
-      return false;
-    },
-    [stopCharStream]
-  );
-
-  // Immediate single-shot server reconciliation when app is foregrounded
+  // Immediate single-shot server reconciliation when app is foregrounded or stream expires
   const reconcileWithServer = useCallback(
     async (
       targetSessionId: string,
@@ -842,99 +766,32 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     [stopCharStream]
   );
 
-  // Background Tab Switching & Lifecycle Handlers (visibilitychange, pagehide, pageshow, freeze, resume)
+  // Background Tab Switching: flush character queue so typewriter does not lag when hidden
   useEffect(() => {
     if (typeof window === "undefined" || typeof document === "undefined") return;
 
-    const handleVisibilityChange = async () => {
-      if (document.visibilityState === "hidden") {
-        // Tab moved to background: immediately flush any queued characters
-        flushCharQueueInstantly();
-
-        // If an active stream is running and user did not explicitly stop it:
-        if (activeStreamContextRef.current && !isExplicitlyStoppedRef.current) {
-          if (backgroundGraceTimerRef.current) {
-            clearTimeout(backgroundGraceTimerRef.current);
-          }
-          // After 3.5s grace period in background, mobile iOS suspends/stalls TCP sockets.
-          // Explicitly abort client reader so recovery path can take over.
-          backgroundGraceTimerRef.current = setTimeout(() => {
-            if (
-              typeof document !== "undefined" &&
-              document.visibilityState === "hidden" &&
-              abortControllerRef.current &&
-              !abortControllerRef.current.signal.aborted &&
-              !isExplicitlyStoppedRef.current
-            ) {
-              console.log("[ChatContext] Background grace elapsed; aborting reader for recovery path.");
-              try {
-                abortControllerRef.current.abort("Background grace elapsed");
-              } catch {
-                // Ignore already aborted
-              }
-            }
-          }, 3500);
-        }
-      } else if (document.visibilityState === "visible") {
-        // Tab restored to foreground
-        if (backgroundGraceTimerRef.current) {
-          clearTimeout(backgroundGraceTimerRef.current);
-          backgroundGraceTimerRef.current = null;
-        }
-        flushCharQueueInstantly();
-
-        const streamContext = activeStreamContextRef.current;
-        if (streamContext && !isExplicitlyStoppedRef.current) {
-          await reconcileWithServer(
-            streamContext.sessionId,
-            streamContext.assistantId,
-            streamContext.token
-          );
-        }
-      }
-    };
-
-    const handlePageHide = () => {
+    const handleLifecycle = () => {
       flushCharQueueInstantly();
     };
 
-    const handlePageShow = async () => {
-      flushCharQueueInstantly();
-      const streamContext = activeStreamContextRef.current;
-      if (streamContext && !isExplicitlyStoppedRef.current) {
-        await reconcileWithServer(
-          streamContext.sessionId,
-          streamContext.assistantId,
-          streamContext.token
-        );
-      }
-    };
-
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    window.addEventListener("pagehide", handlePageHide);
-    window.addEventListener("pageshow", handlePageShow);
-    window.addEventListener("freeze", handlePageHide);
-    window.addEventListener("resume", handlePageShow);
+    document.addEventListener("visibilitychange", handleLifecycle);
+    window.addEventListener("pagehide", handleLifecycle);
+    window.addEventListener("pageshow", handleLifecycle);
+    window.addEventListener("freeze", handleLifecycle);
+    window.addEventListener("resume", handleLifecycle);
 
     return () => {
-      if (backgroundGraceTimerRef.current) {
-        clearTimeout(backgroundGraceTimerRef.current);
-      }
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-      window.removeEventListener("pagehide", handlePageHide);
-      window.removeEventListener("pageshow", handlePageShow);
-      window.removeEventListener("freeze", handlePageHide);
-      window.removeEventListener("resume", handlePageShow);
+      document.removeEventListener("visibilitychange", handleLifecycle);
+      window.removeEventListener("pagehide", handleLifecycle);
+      window.removeEventListener("pageshow", handleLifecycle);
+      window.removeEventListener("freeze", handleLifecycle);
+      window.removeEventListener("resume", handleLifecycle);
     };
-  }, [flushCharQueueInstantly, reconcileWithServer]);
+  }, [flushCharQueueInstantly]);
 
   // Stop Generating
   const handleStop = useCallback(async () => {
     isExplicitlyStoppedRef.current = true;
-    if (backgroundGraceTimerRef.current) {
-      clearTimeout(backgroundGraceTimerRef.current);
-      backgroundGraceTimerRef.current = null;
-    }
     activeStreamContextRef.current = null;
     if (abortControllerRef.current && !abortControllerRef.current.signal.aborted) {
       try {
@@ -1064,14 +921,12 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     startCharStream(assistantId);
     isExplicitlyStoppedRef.current = false;
     isReconcilingRef.current = false;
-    lastChunkTimeRef.current = Date.now();
 
     let fullResponseAccumulator = "";
     let receivedCitations: any[] = [];
     let receivedFollowUps = false;
     let activeSessionId: string | null = sessionId;
     let token = "";
-    let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
     try {
       const controller = new AbortController();
@@ -1121,216 +976,167 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         }).catch((err) => console.error("Failed to save user message:", err));
       }
 
-      const res = await fetch(`${BACKEND_URL}/api/chat`, {
-        method: "POST",
-        signal: controller.signal,
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-          "X-Tunnel-Skip-AntiPhishing-Page": "true",
-        },
-        body: JSON.stringify({
-          query: userText,
-          session_id: activeSessionId,
-          history: currentHistory
-            .slice(0, -1)
-            .map((m) => ({ role: m.role, content: m.content })),
-          prior_citations: retainedCitations,
-        }),
-      });
-
-      if (!res.ok) {
-        const errText = await res.text();
-        throw new Error(`Failed to fetch: ${res.status} ${res.statusText} - ${errText}`);
-      }
-      if (!res.body) throw new Error("No response body");
-
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let done = false;
-      let buffer = "";
-
-      // Client-side heartbeat watchdog: detects hung/suspended TCP streams
-      lastChunkTimeRef.current = Date.now();
-      heartbeatTimer = setInterval(() => {
-        if (Date.now() - lastChunkTimeRef.current > 30000) {
-          if (abortControllerRef.current && !abortControllerRef.current.signal.aborted && !isExplicitlyStoppedRef.current) {
-            console.warn("[ChatContext] SSE stream heartbeat timeout (30s) — aborting for DB recovery");
-            try {
-              abortControllerRef.current.abort("Stream heartbeat timeout");
-            } catch {
-              // Ignore already aborted
-            }
-          }
-        }
-      }, 5000);
-
-      while (!done) {
-        const { value, done: readerDone } = await reader.read();
-        done = readerDone;
-        if (value) {
-          lastChunkTimeRef.current = Date.now();
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split("\n\n");
-          buffer = lines.pop() || "";
-
-          for (const line of lines) {
-            // Ignore SSE comment ping lines (: ping)
-            if (line.startsWith(":")) {
-              lastChunkTimeRef.current = Date.now();
-              continue;
-            }
-            if (line.startsWith("data: ")) {
-              const dataStr = line.slice(6);
-              try {
-                const data = JSON.parse(dataStr);
-
-                // Handle ping heartbeat
-                if (data.type === "ping") {
-                  lastChunkTimeRef.current = Date.now();
-                  continue;
-                }
-
-                // Handle Granular RAG Status Events
-                if (data.type === "status") {
-                  const statusObj: RagStatus = {
-                    stage: data.stage as RagStage,
-                    message: data.message,
-                    count: data.count,
-                    queue_position: data.queue_position,
-                  };
-                  setRagStatus(statusObj);
-                  setMessages((prev) =>
-                    prev.map((msg) =>
-                      msg.id === assistantId ? { ...msg, ragStatus: statusObj } : msg
-                    )
-                  );
-                } else if (data.type === "citations") {
-                  receivedCitations = (data.data || []).sort((a: any, b: any) => {
-                    const aOut = a.is_in_context === false || a.rank_status === "out_of_rank" ? 1 : 0;
-                    const bOut = b.is_in_context === false || b.rank_status === "out_of_rank" ? 1 : 0;
-                    if (aOut !== bOut) return aOut - bOut;
-                    const rankDiff = (a?.rank || 999) - (b?.rank || 999);
-                    if (rankDiff !== 0) return rankDiff;
-                    return (Number(b?.suitability_percent) || 0) - (Number(a?.suitability_percent) || 0);
-                  });
-                  setCurrentCitations(receivedCitations);
-                  setRetainedCitations((prev) => mergeCitations(prev, receivedCitations));
-                  setMessages((prev) =>
-                    prev.map((msg) =>
-                      msg.id === assistantId ? { ...msg, citations: receivedCitations } : msg
-                    )
-                  );
-                } else if (data.type === "legal_analytics") {
-                  const analytics = data.data as LegalAnalytics;
-                  setLegalAnalytics(analytics);
-                  if (analytics?.is_out_of_domain && receivedCitations.length === 0) {
-                    receivedCitations = [];
-                    setCurrentCitations([]);
-                  }
-                  setMessages((prev) =>
-                    prev.map((msg) =>
-                      msg.id === assistantId
-                        ? {
-                          ...msg,
-                          legalAnalytics: analytics,
-                          ...(analytics?.is_out_of_domain && receivedCitations.length === 0 ? { citations: [] } : {}),
-                        }
-                        : msg
-                    )
-                  );
-                } else if (data.type === "accumulated_citations") {
-                  const incoming = data.data || [];
-                  const accumulated = sortCitations(incoming);
-                  setRetainedCitations(accumulated);
-                } else if (data.type === "follow_ups") {
-                  // LLM-generated follow-up suggestions (preferred over rule-based).
-                  const suggestions = Array.isArray(data.data)
-                    ? data.data.filter((s: any) => typeof s === "string" && s.trim()).slice(0, 3)
-                    : [];
-                  if (suggestions.length > 0) {
-                    receivedFollowUps = true;
-                    setFollowUpPrompts(suggestions);
-                  }
-                } else if (data.type === "text") {
-                  fullResponseAccumulator += data.text;
-                  if (activeStreamContextRef.current) {
-                    activeStreamContextRef.current.fullResponse = fullResponseAccumulator;
-                  }
-                  enqueueText(data.text);
-                } else if (data.type === "clarification_needed") {
-                  // Backend detected ambiguity: render clarification card
-                  const clarData = data.data as ClarificationData;
-                  const clarStatus: RagStatus = {
-                    stage: "clarification_needed",
-                    message: "Additional context needed for accurate analysis",
-                  };
-                  setRagStatus(clarStatus);
-                  const clarificationText = clarData.reasoning
-                    ? `${clarData.reasoning}\n\n${(clarData.questions || []).map((q: any) => q.question).join("\n")}`
-                    : "Additional context needed for accurate legal analysis.";
-                  setMessages((prev) =>
-                    prev.map((msg) =>
-                      msg.id === assistantId
-                        ? { ...msg, clarificationData: clarData, content: clarificationText, ragStatus: clarStatus }
-                        : msg
-                    )
-                  );
-                  // Stop typing state: user needs to interact
-                  stopCharStream();
-                  setIsTyping(false);
-                } else if (data.type === "error") {
-                  const errorMsg = data.message || "An error occurred while generating the legal response.";
-                  fullResponseAccumulator = `> **Service Notice**\n>\n> ${errorMsg}`;
-                  stopCharStream();
-                  setIsTyping(false);
-                  setRagStatus({
-                    stage: "error",
-                    message: errorMsg,
-                  });
-                  setCurrentCitations([]);
-                  setMessages((prev) =>
-                    prev.map((msg) =>
-                      msg.id === assistantId
-                        ? {
-                            ...msg,
-                            content: fullResponseAccumulator,
-                            citations: [],
-                            ragStatus: { stage: "error", message: errorMsg },
-                          }
-                        : msg
-                    )
-                  );
-                } else if (data.type === "done") {
-                  setRagStatus({
-                    stage: "completed",
-                    message: "Analysis complete",
-                  });
-                  // Guard: if the stream ended without a terminal NLI payload,
-                  // settle any stale 'Evaluating' state so the card resolves.
-                  setMessages((prev) =>
-                    prev.map((msg) =>
-                      msg.id === assistantId
-                        ? { ...msg, legalAnalytics: settleNliAnalytics(msg.legalAnalytics ?? null) }
-                        : msg
-                    )
-                  );
-                  setLegalAnalytics((prev) => settleNliAnalytics(prev));
-                }
-              } catch (e) {
-                console.error("Failed to parse SSE JSON", e, dataStr);
+      const streamExecution = async () => {
+        return await runResumableStream({
+          backendUrl: BACKEND_URL,
+          start: (signal) =>
+            fetch(`${BACKEND_URL}/api/chat`, {
+              method: "POST",
+              signal,
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${token}`,
+                "X-Tunnel-Skip-AntiPhishing-Page": "true",
+              },
+              body: JSON.stringify({
+                query: userText,
+                session_id: activeSessionId,
+                history: currentHistory
+                  .slice(0, -1)
+                  .map((m) => ({ role: m.role, content: m.content })),
+                prior_citations: retainedCitations,
+              }),
+            }),
+          getToken: async () => {
+            const { data: { session } } = await supabase.auth.getSession();
+            return session?.access_token || "";
+          },
+          onEvent: (data: StreamEvent) => {
+            if (data.type === "status") {
+              const statusObj: RagStatus = {
+                stage: data.stage as RagStage,
+                message: data.message || "",
+                count: data.count,
+                queue_position: data.queue_position,
+              };
+              setRagStatus(statusObj);
+              setMessages((prev) =>
+                prev.map((msg) =>
+                  msg.id === assistantId ? { ...msg, ragStatus: statusObj } : msg
+                )
+              );
+            } else if (data.type === "citations") {
+              receivedCitations = (data.data || []).sort((a: any, b: any) => {
+                const aOut = a.is_in_context === false || a.rank_status === "out_of_rank" ? 1 : 0;
+                const bOut = b.is_in_context === false || b.rank_status === "out_of_rank" ? 1 : 0;
+                if (aOut !== bOut) return aOut - bOut;
+                const rankDiff = (a?.rank || 999) - (b?.rank || 999);
+                if (rankDiff !== 0) return rankDiff;
+                return (Number(b?.suitability_percent) || 0) - (Number(a?.suitability_percent) || 0);
+              });
+              setCurrentCitations(receivedCitations);
+              setRetainedCitations((prev) => mergeCitations(prev, receivedCitations));
+              setMessages((prev) =>
+                prev.map((msg) =>
+                  msg.id === assistantId ? { ...msg, citations: receivedCitations } : msg
+                )
+              );
+            } else if (data.type === "legal_analytics") {
+              const analytics = data.data as LegalAnalytics;
+              setLegalAnalytics(analytics);
+              if (analytics?.is_out_of_domain && receivedCitations.length === 0) {
+                receivedCitations = [];
+                setCurrentCitations([]);
               }
+              setMessages((prev) =>
+                prev.map((msg) =>
+                  msg.id === assistantId
+                    ? {
+                      ...msg,
+                      legalAnalytics: analytics,
+                      ...(analytics?.is_out_of_domain && receivedCitations.length === 0 ? { citations: [] } : {}),
+                    }
+                    : msg
+                )
+              );
+            } else if (data.type === "accumulated_citations") {
+              const incoming = data.data || [];
+              const accumulated = sortCitations(incoming);
+              setRetainedCitations(accumulated);
+            } else if (data.type === "follow_ups") {
+              const suggestions = Array.isArray(data.data)
+                ? data.data.filter((s: any) => typeof s === "string" && s.trim()).slice(0, 3)
+                : [];
+              if (suggestions.length > 0) {
+                receivedFollowUps = true;
+                setFollowUpPrompts(suggestions);
+              }
+            } else if (data.type === "text" && data.text) {
+              fullResponseAccumulator += data.text;
+              if (activeStreamContextRef.current) {
+                activeStreamContextRef.current.fullResponse = fullResponseAccumulator;
+              }
+              enqueueText(data.text);
+            } else if (data.type === "clarification_needed") {
+              const clarData = data.data as ClarificationData;
+              const clarStatus: RagStatus = {
+                stage: "clarification_needed",
+                message: "Additional context needed for accurate analysis",
+              };
+              setRagStatus(clarStatus);
+              const clarificationText = clarData.reasoning
+                ? `${clarData.reasoning}\n\n${(clarData.questions || []).map((q: any) => q.question).join("\n")}`
+                : "Additional context needed for accurate legal analysis.";
+              setMessages((prev) =>
+                prev.map((msg) =>
+                  msg.id === assistantId
+                    ? { ...msg, clarificationData: clarData, content: clarificationText, ragStatus: clarStatus }
+                    : msg
+                )
+              );
+              stopCharStream();
+              setIsTyping(false);
+            } else if (data.type === "error") {
+              const errorMsg = data.message || "An error occurred while generating the legal response.";
+              fullResponseAccumulator = `> **Service Notice**\n>\n> ${errorMsg}`;
+              stopCharStream();
+              setIsTyping(false);
+              setRagStatus({
+                stage: "error",
+                message: errorMsg,
+              });
+              setCurrentCitations([]);
+              setMessages((prev) =>
+                prev.map((msg) =>
+                  msg.id === assistantId
+                    ? {
+                        ...msg,
+                        content: fullResponseAccumulator,
+                        citations: [],
+                        ragStatus: { stage: "error", message: errorMsg },
+                      }
+                    : msg
+                )
+              );
+            } else if (data.type === "done") {
+              setRagStatus({
+                stage: "completed",
+                message: "Analysis complete",
+              });
+              setMessages((prev) =>
+                prev.map((msg) =>
+                  msg.id === assistantId
+                    ? { ...msg, legalAnalytics: settleNliAnalytics(msg.legalAnalytics ?? null) }
+                    : msg
+                )
+              );
+              setLegalAnalytics((prev) => settleNliAnalytics(prev));
             }
-          }
-        }
+          },
+          signal: controller.signal,
+        });
+      };
+
+      // Web Locks desktop hardening: prevents Chromium Energy/Memory Saver from pausing the stream
+      const outcome = typeof navigator !== "undefined" && "locks" in navigator && (navigator as any).locks?.request
+        ? await (navigator as any).locks.request(`civilex-stream-${assistantId}`, streamExecution)
+        : await streamExecution();
+
+      if (outcome === "expired" && activeSessionId) {
+        await reconcileWithServer(activeSessionId, assistantId, token);
       }
 
-      if (heartbeatTimer) {
-        clearInterval(heartbeatTimer);
-        heartbeatTimer = null;
-      }
-
-      // Wait for character queue to drain smoothly (with tab background instant flush & fallback timeout)
+      // Wait for character queue to drain smoothly
       const waitForDrain = () =>
         new Promise<void>((resolve) => {
           if (typeof document !== "undefined" && document.visibilityState === "hidden") {
@@ -1354,14 +1160,12 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       await waitForDrain();
       stopCharStream();
 
-      // Generation complete
       setIsTyping(false);
       setRagStatus({
         stage: "completed",
         message: "Analysis complete",
       });
 
-      // Generate follow-ups
       if (!receivedFollowUps) {
         const followUps = generateFollowUpPrompts(fullResponseAccumulator, receivedCitations);
         setFollowUpPrompts(followUps);
@@ -1372,20 +1176,10 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         error?.message?.toLowerCase().includes("abort") ||
         (typeof DOMException !== "undefined" && error instanceof DOMException && error.name === "AbortError");
 
-      if (!isAbort) {
-        console.error("Chat streaming error:", error);
-      } else {
-        console.log("[ChatContext] Chat streaming was aborted:", error?.message || "aborted");
-      }
-      if (heartbeatTimer) {
-        clearInterval(heartbeatTimer);
-        heartbeatTimer = null;
-      }
       stopCharStream();
       setIsTyping(false);
 
       if (isAbort && isExplicitlyStoppedRef.current) {
-        // Legitimate user cancellation via Stop button
         setRagStatus(null);
         setMessages((prev) =>
           prev.map((msg) =>
@@ -1394,51 +1188,6 @@ export function ChatProvider({ children }: { children: ReactNode }) {
               : msg
           )
         );
-      } else if (activeSessionId && !isExplicitlyStoppedRef.current) {
-        // Tab-switch / mobile iOS disconnection recovery / timeout: poll session messages from DB
-        setRagStatus({
-          stage: "reconnecting",
-          message: "Reconnecting to legal analysis...",
-        });
-        setMessages((prev) =>
-          prev.map((msg) =>
-            msg.id === assistantId
-              ? {
-                  ...msg,
-                  ragStatus: { stage: "reconnecting", message: "Reconnecting to legal analysis..." },
-                }
-              : msg
-          )
-        );
-        const recovered = await pollForRecoveredAssistantMessage(
-          activeSessionId,
-          assistantId,
-          token,
-          turnStartTime
-        );
-        if (!recovered && !isExplicitlyStoppedRef.current) {
-          stopCharStream();
-          setIsTyping(false);
-          setCurrentCitations([]);
-          setRagStatus({
-            stage: "error",
-            message: "Service connection error",
-          });
-          setMessages((prev) =>
-            prev.map((msg) =>
-              msg.id === assistantId
-                ? {
-                  ...msg,
-                  citations: [],
-                  ragStatus: { stage: "error", message: "Service connection error" },
-                  content:
-                    msg.content ||
-                    "> **Connection Notice**\n>\n> Unable to connect to the legal service. The model service (LM Studio) may be offline. Please verify that LM Studio is running and try again.",
-                }
-                : msg
-            )
-          );
-        }
       } else {
         stopCharStream();
         setIsTyping(false);
@@ -1463,10 +1212,6 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         );
       }
     } finally {
-      if (heartbeatTimer) {
-        clearInterval(heartbeatTimer);
-        heartbeatTimer = null;
-      }
       abortControllerRef.current = null;
     }
   };
@@ -1478,7 +1223,6 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   ) => {
     if (isTyping) return;
 
-    // Add a user message showing the clarification answers
     const answerSummary = Object.values(answers).join(", ");
     const clarUserMsg: Message = {
       id: Date.now(),
@@ -1512,13 +1256,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     startCharStream(assistantId);
     isExplicitlyStoppedRef.current = false;
     isReconcilingRef.current = false;
-    lastChunkTimeRef.current = Date.now();
 
     let fullResponseAccumulator = "";
     let receivedCitations: any[] = [];
     let receivedFollowUps = false;
     let token = "";
-    let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
     try {
       const controller = new AbortController();
@@ -1537,7 +1279,6 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         turnStartTime,
       };
 
-      // Save clarification answer as user message
       if (sessionId) {
         fetch(`${BACKEND_URL}/api/sessions/${sessionId}/messages`, {
           method: "POST",
@@ -1549,192 +1290,144 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         }).catch((err) => console.error("Failed to save clarification message:", err));
       }
 
-      // Build conversation history from current messages (excluding the new user msg)
       const currentHistory = messages.map((m) => ({ role: m.role, content: m.content }));
 
-      const res = await fetch(`${BACKEND_URL}/api/chat`, {
-        method: "POST",
-        signal: controller.signal,
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-          "X-Tunnel-Skip-AntiPhishing-Page": "true",
-        },
-        body: JSON.stringify({
-          query: answerSummary,
-          original_query: originalQuery,
-          session_id: sessionId,
-          history: currentHistory,
-          prior_citations: retainedCitations,
-          clarification_context: { answers, original_query: originalQuery },
-        }),
-      });
-
-      if (!res.ok) {
-        const errText = await res.text();
-        throw new Error(`Failed to fetch: ${res.status} ${res.statusText} - ${errText}`);
-      }
-      if (!res.body) throw new Error("No response body");
-
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let done = false;
-      let buffer = "";
-
-      // Client-side heartbeat watchdog: detects hung/suspended TCP streams
-      lastChunkTimeRef.current = Date.now();
-      heartbeatTimer = setInterval(() => {
-        if (Date.now() - lastChunkTimeRef.current > 30000) {
-          if (abortControllerRef.current && !abortControllerRef.current.signal.aborted && !isExplicitlyStoppedRef.current) {
-            console.warn("[ChatContext] SSE clarification stream heartbeat timeout (30s) — aborting for DB recovery");
-            try {
-              abortControllerRef.current.abort("Stream heartbeat timeout");
-            } catch {
-              // Ignore already aborted
-            }
-          }
-        }
-      }, 5000);
-
-      while (!done) {
-        const { value, done: readerDone } = await reader.read();
-        done = readerDone;
-        if (value) {
-          lastChunkTimeRef.current = Date.now();
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split("\n\n");
-          buffer = lines.pop() || "";
-
-          for (const line of lines) {
-            // Ignore SSE comment ping lines (: ping)
-            if (line.startsWith(":")) {
-              lastChunkTimeRef.current = Date.now();
-              continue;
-            }
-            if (line.startsWith("data: ")) {
-              const dataStr = line.slice(6);
-              try {
-                const data = JSON.parse(dataStr);
-
-                // Handle ping heartbeat
-                if (data.type === "ping") {
-                  lastChunkTimeRef.current = Date.now();
-                  continue;
-                }
-
-                if (data.type === "status") {
-                  const statusObj: RagStatus = {
-                    stage: data.stage as RagStage,
-                    message: data.message,
-                    count: data.count,
-                    queue_position: data.queue_position,
-                  };
-                  setRagStatus(statusObj);
-                  setMessages((prev) =>
-                    prev.map((msg) =>
-                      msg.id === assistantId ? { ...msg, ragStatus: statusObj } : msg
-                    )
-                  );
-                } else if (data.type === "citations") {
-                  receivedCitations = (data.data || []).sort((a: any, b: any) => {
-                    const aOut = a.is_in_context === false || a.rank_status === "out_of_rank" ? 1 : 0;
-                    const bOut = b.is_in_context === false || b.rank_status === "out_of_rank" ? 1 : 0;
-                    if (aOut !== bOut) return aOut - bOut;
-                    return (a?.rank || 999) - (b?.rank || 999);
-                  });
-                  setCurrentCitations(receivedCitations);
-                  setRetainedCitations((prev) => mergeCitations(prev, receivedCitations));
-                  setMessages((prev) =>
-                    prev.map((msg) =>
-                      msg.id === assistantId ? { ...msg, citations: receivedCitations } : msg
-                    )
-                  );
-                } else if (data.type === "legal_analytics") {
-                  const analytics = data.data as LegalAnalytics;
-                  setLegalAnalytics(analytics);
-                  if (analytics?.is_out_of_domain && receivedCitations.length === 0) {
-                    receivedCitations = [];
-                    setCurrentCitations([]);
-                  }
-                  setMessages((prev) =>
-                    prev.map((msg) =>
-                      msg.id === assistantId
-                        ? {
-                          ...msg,
-                          legalAnalytics: analytics,
-                          ...(analytics?.is_out_of_domain && receivedCitations.length === 0 ? { citations: [] } : {}),
-                        }
-                        : msg
-                    )
-                  );
-                } else if (data.type === "accumulated_citations") {
-                  const incoming = data.data || [];
-                  const accumulated = sortCitations(incoming);
-                  setRetainedCitations(accumulated);
-                } else if (data.type === "follow_ups") {
-                  // LLM-generated follow-up suggestions (preferred over rule-based).
-                  const suggestions = Array.isArray(data.data)
-                    ? data.data.filter((s: any) => typeof s === "string" && s.trim()).slice(0, 3)
-                    : [];
-                  if (suggestions.length > 0) {
-                    receivedFollowUps = true;
-                    setFollowUpPrompts(suggestions);
-                  }
-                } else if (data.type === "text") {
-                  fullResponseAccumulator += data.text;
-                  if (activeStreamContextRef.current) {
-                    activeStreamContextRef.current.fullResponse = fullResponseAccumulator;
-                  }
-                  enqueueText(data.text);
-                } else if (data.type === "error") {
-                  const errorMsg = data.message || "An error occurred while generating the legal response.";
-                  fullResponseAccumulator = `> **Service Notice**\n>\n> ${errorMsg}`;
-                  stopCharStream();
-                  setIsTyping(false);
-                  setRagStatus({
-                    stage: "error",
-                    message: errorMsg,
-                  });
-                  setCurrentCitations([]);
-                  setMessages((prev) =>
-                    prev.map((msg) =>
-                      msg.id === assistantId
-                        ? {
-                            ...msg,
-                            content: fullResponseAccumulator,
-                            citations: [],
-                            ragStatus: { stage: "error", message: errorMsg },
-                          }
-                        : msg
-                    )
-                  );
-                } else if (data.type === "done") {
-                  setRagStatus({
-                    stage: "completed",
-                    message: "Analysis complete",
-                  });
-                  // Guard: if the stream ended without a terminal NLI payload,
-                  // settle any stale 'Evaluating' state so the card resolves.
-                  setMessages((prev) =>
-                    prev.map((msg) =>
-                      msg.id === assistantId
-                        ? { ...msg, legalAnalytics: settleNliAnalytics(msg.legalAnalytics ?? null) }
-                        : msg
-                    )
-                  );
-                  setLegalAnalytics((prev) => settleNliAnalytics(prev));
-                }
-              } catch (e) {
-                console.error("Failed to parse SSE JSON", e, dataStr);
+      const streamExecution = async () => {
+        return await runResumableStream({
+          backendUrl: BACKEND_URL,
+          start: (signal) =>
+            fetch(`${BACKEND_URL}/api/chat`, {
+              method: "POST",
+              signal,
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${token}`,
+                "X-Tunnel-Skip-AntiPhishing-Page": "true",
+              },
+              body: JSON.stringify({
+                query: answerSummary,
+                original_query: originalQuery,
+                session_id: sessionId,
+                history: currentHistory,
+                prior_citations: retainedCitations,
+                clarification_context: { answers, original_query: originalQuery },
+              }),
+            }),
+          getToken: async () => {
+            const { data: { session } } = await supabase.auth.getSession();
+            return session?.access_token || "";
+          },
+          onEvent: (data: StreamEvent) => {
+            if (data.type === "status") {
+              const statusObj: RagStatus = {
+                stage: data.stage as RagStage,
+                message: data.message || "",
+                count: data.count,
+                queue_position: data.queue_position,
+              };
+              setRagStatus(statusObj);
+              setMessages((prev) =>
+                prev.map((msg) =>
+                  msg.id === assistantId ? { ...msg, ragStatus: statusObj } : msg
+                )
+              );
+            } else if (data.type === "citations") {
+              receivedCitations = (data.data || []).sort((a: any, b: any) => {
+                const aOut = a.is_in_context === false || a.rank_status === "out_of_rank" ? 1 : 0;
+                const bOut = b.is_in_context === false || b.rank_status === "out_of_rank" ? 1 : 0;
+                if (aOut !== bOut) return aOut - bOut;
+                return (a?.rank || 999) - (b?.rank || 999);
+              });
+              setCurrentCitations(receivedCitations);
+              setRetainedCitations((prev) => mergeCitations(prev, receivedCitations));
+              setMessages((prev) =>
+                prev.map((msg) =>
+                  msg.id === assistantId ? { ...msg, citations: receivedCitations } : msg
+                )
+              );
+            } else if (data.type === "legal_analytics") {
+              const analytics = data.data as LegalAnalytics;
+              setLegalAnalytics(analytics);
+              if (analytics?.is_out_of_domain && receivedCitations.length === 0) {
+                receivedCitations = [];
+                setCurrentCitations([]);
               }
+              setMessages((prev) =>
+                prev.map((msg) =>
+                  msg.id === assistantId
+                    ? {
+                      ...msg,
+                      legalAnalytics: analytics,
+                      ...(analytics?.is_out_of_domain && receivedCitations.length === 0 ? { citations: [] } : {}),
+                    }
+                    : msg
+                )
+              );
+            } else if (data.type === "accumulated_citations") {
+              const incoming = data.data || [];
+              const accumulated = sortCitations(incoming);
+              setRetainedCitations(accumulated);
+            } else if (data.type === "follow_ups") {
+              const suggestions = Array.isArray(data.data)
+                ? data.data.filter((s: any) => typeof s === "string" && s.trim()).slice(0, 3)
+                : [];
+              if (suggestions.length > 0) {
+                receivedFollowUps = true;
+                setFollowUpPrompts(suggestions);
+              }
+            } else if (data.type === "text" && data.text) {
+              fullResponseAccumulator += data.text;
+              if (activeStreamContextRef.current) {
+                activeStreamContextRef.current.fullResponse = fullResponseAccumulator;
+              }
+              enqueueText(data.text);
+            } else if (data.type === "error") {
+              const errorMsg = data.message || "An error occurred while generating the legal response.";
+              fullResponseAccumulator = `> **Service Notice**\n>\n> ${errorMsg}`;
+              stopCharStream();
+              setIsTyping(false);
+              setRagStatus({
+                stage: "error",
+                message: errorMsg,
+              });
+              setCurrentCitations([]);
+              setMessages((prev) =>
+                prev.map((msg) =>
+                  msg.id === assistantId
+                    ? {
+                        ...msg,
+                        content: fullResponseAccumulator,
+                        citations: [],
+                        ragStatus: { stage: "error", message: errorMsg },
+                      }
+                    : msg
+                )
+              );
+            } else if (data.type === "done") {
+              setRagStatus({
+                stage: "completed",
+                message: "Analysis complete",
+              });
+              setMessages((prev) =>
+                prev.map((msg) =>
+                  msg.id === assistantId
+                    ? { ...msg, legalAnalytics: settleNliAnalytics(msg.legalAnalytics ?? null) }
+                    : msg
+                )
+              );
+              setLegalAnalytics((prev) => settleNliAnalytics(prev));
             }
-          }
-        }
-      }
+          },
+          signal: controller.signal,
+        });
+      };
 
-      if (heartbeatTimer) {
-        clearInterval(heartbeatTimer);
-        heartbeatTimer = null;
+      const outcome = typeof navigator !== "undefined" && "locks" in navigator && (navigator as any).locks?.request
+        ? await (navigator as any).locks.request(`civilex-stream-${assistantId}`, streamExecution)
+        : await streamExecution();
+
+      if (outcome === "expired" && sessionId) {
+        await reconcileWithServer(sessionId, assistantId, token);
       }
 
       const waitForDrain = () =>
@@ -1766,7 +1459,6 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         message: "Analysis complete",
       });
 
-      // Generation complete
       if (!receivedFollowUps) {
         const followUps = generateFollowUpPrompts(fullResponseAccumulator, receivedCitations);
         setFollowUpPrompts(followUps);
@@ -1777,15 +1469,6 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         error?.message?.toLowerCase().includes("abort") ||
         (typeof DOMException !== "undefined" && error instanceof DOMException && error.name === "AbortError");
 
-      if (!isAbort) {
-        console.error("Clarification re-submit error:", error);
-      } else {
-        console.log("[ChatContext] Clarification streaming was aborted:", error?.message || "aborted");
-      }
-      if (heartbeatTimer) {
-        clearInterval(heartbeatTimer);
-        heartbeatTimer = null;
-      }
       stopCharStream();
       setIsTyping(false);
 
@@ -1798,51 +1481,6 @@ export function ChatProvider({ children }: { children: ReactNode }) {
               : msg
           )
         );
-      } else if (sessionId && !isExplicitlyStoppedRef.current) {
-        // Tab-switch / mobile iOS disconnection recovery: poll session messages from DB
-        setRagStatus({
-          stage: "reconnecting",
-          message: "Reconnecting to legal analysis...",
-        });
-        setMessages((prev) =>
-          prev.map((msg) =>
-            msg.id === assistantId
-              ? {
-                  ...msg,
-                  ragStatus: { stage: "reconnecting", message: "Reconnecting to legal analysis..." },
-                }
-              : msg
-          )
-        );
-        const recovered = await pollForRecoveredAssistantMessage(
-          sessionId,
-          assistantId,
-          token,
-          turnStartTime
-        );
-        if (!recovered && !isExplicitlyStoppedRef.current) {
-          stopCharStream();
-          setIsTyping(false);
-          setCurrentCitations([]);
-          setRagStatus({
-            stage: "error",
-            message: "Service connection error",
-          });
-          setMessages((prev) =>
-            prev.map((msg) =>
-              msg.id === assistantId
-                ? {
-                  ...msg,
-                  citations: [],
-                  ragStatus: { stage: "error", message: "Service connection error" },
-                  content:
-                    msg.content ||
-                    "> **Connection Notice**\n>\n> Unable to connect to the legal service. The model service (LM Studio) may be offline. Please verify that LM Studio is running and try again.",
-                }
-                : msg
-            )
-          );
-        }
       } else {
         stopCharStream();
         setIsTyping(false);
@@ -1867,13 +1505,115 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         );
       }
     } finally {
-      if (heartbeatTimer) {
-        clearInterval(heartbeatTimer);
-        heartbeatTimer = null;
-      }
       abortControllerRef.current = null;
     }
   };
+
+  // Connects or re-attaches to a generation that was running when iOS discarded the page
+  const resumeActiveJob = useCallback(
+    async (targetSessionId: string): Promise<boolean> => {
+      if (!targetSessionId || isTyping) return false;
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const token = session?.access_token || "";
+        const activeRes = await fetch(
+          `${BACKEND_URL}/api/chat/stream/active?session_id=${encodeURIComponent(targetSessionId)}`,
+          {
+            headers: {
+              ...(token ? { Authorization: `Bearer ${token}` } : {}),
+            },
+          }
+        );
+        if (!activeRes.ok) return false;
+        const { job_id: activeJobId } = await activeRes.json();
+        if (!activeJobId) return false;
+
+        const assistantId = Date.now();
+        setIsTyping(true);
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: assistantId,
+            role: "assistant",
+            content: "",
+            ragStatus: { stage: "streaming", message: "Resuming legal analysis..." },
+          },
+        ]);
+        startCharStream(assistantId);
+        isExplicitlyStoppedRef.current = false;
+
+        const controller = new AbortController();
+        abortControllerRef.current = controller;
+
+        let fullAccumulator = "";
+        let receivedCits: Record<string, unknown>[] = [];
+
+        const outcome = await runResumableStream({
+          backendUrl: BACKEND_URL,
+          resume: { jobId: activeJobId, after: -1 },
+          getToken: async () => {
+            const { data: { session: s } } = await supabase.auth.getSession();
+            return s?.access_token || "";
+          },
+          onEvent: (data: StreamEvent) => {
+            if (data.type === "status") {
+              const sObj: RagStatus = {
+                stage: data.stage as RagStage,
+                message: data.message || "",
+                count: data.count,
+                queue_position: data.queue_position,
+              };
+              setRagStatus(sObj);
+              setMessages((prev) =>
+                prev.map((m) => (m.id === assistantId ? { ...m, ragStatus: sObj } : m))
+              );
+            } else if (data.type === "citations") {
+              receivedCits = (data.data as Record<string, unknown>[]) || [];
+              setCurrentCitations(receivedCits);
+              setRetainedCitations((prev) => mergeCitations(prev, receivedCits));
+              setMessages((prev) =>
+                prev.map((m) => (m.id === assistantId ? { ...m, citations: receivedCits } : m))
+              );
+            } else if (data.type === "legal_analytics") {
+              const analytics = data.data as LegalAnalytics;
+              setLegalAnalytics(analytics);
+              setMessages((prev) =>
+                prev.map((m) => (m.id === assistantId ? { ...m, legalAnalytics: analytics } : m))
+              );
+            } else if (data.type === "text" && data.text) {
+              fullAccumulator += data.text;
+              enqueueText(data.text);
+            } else if (data.type === "done") {
+              const followUps = generateFollowUpPrompts(fullAccumulator, receivedCits);
+              setFollowUpPrompts(followUps);
+              setRagStatus({ stage: "completed", message: "Analysis complete" });
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === assistantId
+                    ? { ...m, legalAnalytics: settleNliAnalytics(m.legalAnalytics ?? null) }
+                    : m
+                )
+              );
+            }
+          },
+          signal: controller.signal,
+        });
+
+        stopCharStream();
+        setIsTyping(false);
+        if (outcome === "expired") {
+          await reconcileWithServer(targetSessionId, assistantId, token);
+        }
+        return true;
+      } catch (err) {
+        console.warn("resumeActiveJob failed:", err);
+        stopCharStream();
+        setIsTyping(false);
+        return false;
+      }
+    },
+    [isTyping, startCharStream, stopCharStream, enqueueText, reconcileWithServer]
+  );
 
   return (
     <ChatContext.Provider
@@ -1902,6 +1642,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         handleStop,
         handleNewChat,
         handleClarificationSubmit,
+        resumeActiveJob,
       }}
     >
       {children}

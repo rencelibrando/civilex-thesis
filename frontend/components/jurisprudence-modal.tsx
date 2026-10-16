@@ -648,17 +648,21 @@ export function JurisprudenceModal({
               {parsedJurisprudence.fallo && (
                 <div
                   id="fallo-section"
-                  className="p-4 sm:p-6 rounded-2xl bg-amber-500/10 dark:bg-amber-500/15 border-l-4 border-l-amber-500 border border-amber-500/25 space-y-2.5 shadow-xs min-w-0"
+                  className="p-4 sm:p-6 rounded-2xl bg-amber-500/10 dark:bg-amber-500/15 border border-amber-500/30 dark:border-amber-500/30 space-y-3 shadow-xs min-w-0"
                 >
-                  <div className="flex items-center justify-between gap-2 flex-wrap">
-                    <span className="inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-amber-700 dark:text-amber-300">
+                  <div className="flex items-center justify-between gap-2 flex-wrap min-w-0">
+                    <span className="inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-amber-900 dark:text-amber-200">
                       <Scale className="w-4 h-4 shrink-0" />
                       Ruling / Dispositive Portion (Fallo)
                     </span>
-                    <Badge variant="secondary" className="text-[10px] bg-amber-500/20 text-amber-700 dark:text-amber-300 border-none font-semibold shrink-0">
+                    <Badge
+                      variant="outline"
+                      className="text-[10px] font-semibold bg-amber-500/15 text-amber-900 dark:text-amber-200 border-amber-500/30 dark:border-amber-500/40 shrink-0"
+                    >
                       Final Judgment
                     </Badge>
                   </div>
+
                   <p
                     className={`font-semibold text-foreground leading-relaxed break-words [overflow-wrap:anywhere] hyphens-auto ${docFontSize === "sm"
                       ? "text-xs leading-5 sm:text-sm sm:leading-6"
@@ -669,6 +673,18 @@ export function JurisprudenceModal({
                   >
                     {highlightMatch(parsedJurisprudence.fallo, deferredSearchQuery)}
                   </p>
+
+                  {activeCase?.decision_date && (
+                    <div className="flex items-center justify-between text-[11px] text-amber-800/80 dark:text-amber-300/80 pt-1 border-t border-amber-500/20 dark:border-amber-500/25">
+                      <span className="flex items-center gap-1">
+                        <span className="w-1.5 h-1.5 rounded-full bg-amber-500 inline-block shrink-0" />
+                        Official Supreme Court Decretal Order
+                      </span>
+                      <span className="font-mono text-[10px]">
+                        Promulgated {activeCase.decision_date}
+                      </span>
+                    </div>
+                  )}
                 </div>
               )}
 

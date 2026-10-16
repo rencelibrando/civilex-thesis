@@ -15,6 +15,7 @@ import { getCachedProfile, getInitialCachedProfile } from "@/lib/auth-storage";
 import { getPersonalizedDocGreeting } from "@/lib/user-persona";
 import { useAuth } from "./auth-context";
 import { RagStatus, RagStage, mergeCitations, getCitationKey, LegalAnalytics, generateFollowUpPrompts } from "./chat-context";
+import { runResumableStream, StreamEvent } from "@/lib/resumable-stream";
 
 export function generateDocFollowUpPrompts(lastAnswer: string, citations: any[] = [], filename?: string): string[] {
   if (!lastAnswer || lastAnswer.trim().length < 20) return [];
@@ -148,6 +149,7 @@ interface DocChatContextType {
   ensureDocSession: (docId: string, filename: string) => Promise<string | null>;
   handleSendDocMessage: (docId: string, filename: string, overrideText?: string) => Promise<void>;
   handleStopDocMessage: (docId: string) => void;
+  resumeActiveDocJob: (docId: string, sessionId: string, filename?: string) => Promise<boolean>;
   userFirstName: string;
 }
 
@@ -164,9 +166,7 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
     fullResponse: string;
     filename?: string;
   } | null>>({});
-  const backgroundGraceTimersRef = useRef<Record<string, ReturnType<typeof setTimeout> | null>>({});
   const isReconcilingDocRef = useRef<Record<string, boolean>>({});
-  const lastDocChunkTimeRef = useRef<Record<string, number>>({});
 
   // User Profile state for document panel personalization (synchronously hydrated from local storage)
   const initialProfile = typeof window !== "undefined" ? getInitialCachedProfile() : { firstName: "", fullName: "" };
@@ -281,98 +281,6 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  // Polling loop to recover DB-committed answer when tab-switch or iOS suspends stream
-  const pollForRecoveredAssistantMessage = useCallback(
-    async (
-      docId: string,
-      targetSessionId: string,
-      targetAssistantId: number,
-      authToken: string,
-      filename?: string,
-      turnStartTime?: number
-    ): Promise<boolean> => {
-      for (let attempt = 0; attempt < 45; attempt++) {
-        if (explicitlyStoppedDocsRef.current[docId]) return false;
-        await new Promise((resolve) => setTimeout(resolve, 2000));
-        if (explicitlyStoppedDocsRef.current[docId]) return false;
-
-        try {
-          const res = await fetch(`${BACKEND_URL}/api/sessions/${targetSessionId}/messages`, {
-            headers: {
-              ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
-            },
-          });
-          if (res.ok) {
-            const dbMsgs = await res.json();
-            if (Array.isArray(dbMsgs) && dbMsgs.length > 0) {
-              const lastAssistant = dbMsgs[dbMsgs.length - 1];
-              const isAfterTurn = turnStartTime ? new Date(lastAssistant.created_at || Date.now()).getTime() >= turnStartTime - 5000 : true;
-              if (lastAssistant && lastAssistant.role === "assistant" && lastAssistant.content && lastAssistant.content.trim().length > 0 && isAfterTurn) {
-                const currentAccumulator = activeDocStreamContextRef.current[docId]?.fullResponse || "";
-                if (lastAssistant.content.length >= currentAccumulator.length || currentAccumulator.length === 0) {
-                  let recoveredCitations: any[] = [];
-                  if (lastAssistant.citations) {
-                    try {
-                      recoveredCitations = typeof lastAssistant.citations === "string"
-                        ? JSON.parse(lastAssistant.citations)
-                        : lastAssistant.citations;
-                    } catch (_) {}
-                  }
-                  let recoveredAnalytics: LegalAnalytics | null = null;
-                  if (lastAssistant.legal_analytics) {
-                    try {
-                      recoveredAnalytics = typeof lastAssistant.legal_analytics === "string"
-                        ? JSON.parse(lastAssistant.legal_analytics)
-                        : lastAssistant.legal_analytics;
-                    } catch (_) {}
-                  }
-
-                  const followUps = generateDocFollowUpPrompts(
-                    lastAssistant.content,
-                    recoveredCitations,
-                    filename
-                  );
-
-                  stopCharStream();
-                  setDocChats((prev) => {
-                    const cur = prev[docId] || INITIAL_STATE;
-                    return {
-                      ...prev,
-                      [docId]: {
-                        ...cur,
-                        isTyping: false,
-                        ragStatus: { stage: "completed", message: "Analysis complete" },
-                        followUpPrompts: followUps,
-                        legalAnalytics: recoveredAnalytics || cur.legalAnalytics,
-                        retainedCitations: mergeCitations(cur.retainedCitations || [], recoveredCitations),
-                        messages: cur.messages.map((m) =>
-                          m.id === targetAssistantId
-                            ? {
-                                ...m,
-                                content: lastAssistant.content,
-                                citations: recoveredCitations,
-                                legalAnalytics: recoveredAnalytics || m.legalAnalytics,
-                                ragStatus: { stage: "completed", message: "Analysis complete" },
-                              }
-                            : m
-                        ),
-                      },
-                    };
-                  });
-                  activeDocStreamContextRef.current[docId] = null;
-                  return true;
-                }
-              }
-            }
-          }
-        } catch (pollErr) {
-          console.warn(`[DocChatContext] Polling recovery attempt failed for doc ${docId}:`, pollErr);
-        }
-      }
-      return false;
-    },
-    [stopCharStream]
-  );
 
   // Immediate single-shot server reconciliation when app is foregrounded
   const reconcileDocWithServer = useCallback(
@@ -475,100 +383,215 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
     [stopCharStream]
   );
 
-  // Background Tab Switching & Lifecycle Handlers (visibilitychange, pagehide, pageshow, freeze, resume)
+  // Connects or re-attaches to a generation that was running when iOS/browser discarded the page
+  const resumeActiveDocJob = useCallback(
+    async (docId: string, targetSessionId: string, filename?: string): Promise<boolean> => {
+      const state = docChats[docId];
+      if (!targetSessionId || state?.isTyping) return false;
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const token = session?.access_token || "";
+        const activeRes = await fetch(
+          `${BACKEND_URL}/api/chat/stream/active?session_id=${encodeURIComponent(targetSessionId)}`,
+          {
+            headers: {
+              ...(token ? { Authorization: `Bearer ${token}` } : {}),
+            },
+          }
+        );
+        if (!activeRes.ok) return false;
+        const { job_id: activeJobId } = await activeRes.json();
+        if (!activeJobId) return false;
+
+        const assistantId = Date.now();
+        explicitlyStoppedDocsRef.current[docId] = false;
+
+        setDocChats((prev) => {
+          const cur = prev[docId] || buildInitialDocState(getPersonalizedDocGreeting(userFirstName, filename));
+          return {
+            ...prev,
+            [docId]: {
+              ...cur,
+              isTyping: true,
+              ragStatus: { stage: "streaming", message: "Resuming document analysis..." },
+              messages: [
+                ...cur.messages,
+                {
+                  id: assistantId,
+                  role: "assistant",
+                  content: "",
+                  ragStatus: { stage: "streaming", message: "Resuming document analysis..." },
+                },
+              ],
+            },
+          };
+        });
+
+        startCharStream(docId, assistantId);
+        const controller = new AbortController();
+        abortControllersRef.current[docId] = controller;
+
+        let fullAccumulator = "";
+        let receivedCits: Record<string, unknown>[] = [];
+        let receivedFollowUps = false;
+
+        const outcome = await runResumableStream({
+          backendUrl: BACKEND_URL,
+          lockName: `civilex-doc-stream-${assistantId}`,
+          resume: { jobId: activeJobId, after: -1 },
+          getToken: async () => {
+            const { data: { session: s } } = await supabase.auth.getSession();
+            return s?.access_token || "";
+          },
+          onEvent: (data: StreamEvent) => {
+            if (data.type === "status") {
+              const statusObj: RagStatus = {
+                stage: data.stage as RagStage,
+                message: data.message || "",
+                count: data.count,
+                queue_position: data.queue_position,
+              };
+              setDocChats((prev) => {
+                const cur = prev[docId] || INITIAL_STATE;
+                return {
+                  ...prev,
+                  [docId]: {
+                    ...cur,
+                    ragStatus: statusObj,
+                    messages: cur.messages.map((m) =>
+                      m.id === assistantId ? { ...m, ragStatus: statusObj } : m
+                    ),
+                  },
+                };
+              });
+            } else if (data.type === "citations") {
+              receivedCits = (data.data as Record<string, unknown>[]) || [];
+              setDocChats((prev) => {
+                const cur = prev[docId] || INITIAL_STATE;
+                return {
+                  ...prev,
+                  [docId]: {
+                    ...cur,
+                    currentCitations: receivedCits,
+                    retainedCitations: mergeCitations(cur.retainedCitations || [], receivedCits),
+                    messages: cur.messages.map((m) =>
+                      m.id === assistantId ? { ...m, citations: receivedCits } : m
+                    ),
+                  },
+                };
+              });
+            } else if (data.type === "legal_analytics") {
+              const analytics = data.data as LegalAnalytics;
+              setDocChats((prev) => {
+                const cur = prev[docId] || INITIAL_STATE;
+                return {
+                  ...prev,
+                  [docId]: {
+                    ...cur,
+                    legalAnalytics: analytics,
+                    messages: cur.messages.map((m) =>
+                      m.id === assistantId ? { ...m, legalAnalytics: analytics } : m
+                    ),
+                  },
+                };
+              });
+            } else if (data.type === "follow_ups") {
+              const suggestions = Array.isArray(data.data)
+                ? (data.data as unknown[]).filter((s: unknown): s is string => typeof s === "string" && s.trim().length > 0).slice(0, 3)
+                : [];
+              if (suggestions.length > 0) {
+                receivedFollowUps = true;
+                setDocChats((prev) => {
+                  const cur = prev[docId] || INITIAL_STATE;
+                  return {
+                    ...prev,
+                    [docId]: { ...cur, followUpPrompts: suggestions },
+                  };
+                });
+              }
+            } else if (data.type === "text" && data.text) {
+              fullAccumulator += data.text;
+              enqueueText(data.text);
+            } else if (data.type === "done") {
+              const fallbackFollowUps = receivedFollowUps
+                ? null
+                : generateDocFollowUpPrompts(fullAccumulator, receivedCits, filename);
+              setDocChats((prev) => {
+                const cur = prev[docId] || INITIAL_STATE;
+                return {
+                  ...prev,
+                  [docId]: {
+                    ...cur,
+                    ...(fallbackFollowUps ? { followUpPrompts: fallbackFollowUps } : {}),
+                    ragStatus: { stage: "completed", message: "Analysis complete" },
+                    messages: cur.messages.map((m) =>
+                      m.id === assistantId
+                        ? {
+                            ...m,
+                            ragStatus: { stage: "completed", message: "Analysis complete" },
+                          }
+                        : m
+                    ),
+                  },
+                };
+              });
+            }
+          },
+          signal: controller.signal,
+        });
+
+        flushCharQueueInstantly();
+        stopCharStream();
+        setDocChats((prev) => {
+          const cur = prev[docId] || INITIAL_STATE;
+          return {
+            ...prev,
+            [docId]: { ...cur, isTyping: false },
+          };
+        });
+        if (outcome === "expired") {
+          await reconcileDocWithServer(docId, targetSessionId, assistantId, token, filename);
+        }
+        return true;
+      } catch (err) {
+        console.warn("resumeActiveDocJob failed:", err);
+        flushCharQueueInstantly();
+        stopCharStream();
+        setDocChats((prev) => {
+          const cur = prev[docId] || INITIAL_STATE;
+          return {
+            ...prev,
+            [docId]: { ...cur, isTyping: false },
+          };
+        });
+        return false;
+      }
+    },
+    [docChats, userFirstName, startCharStream, stopCharStream, enqueueText, flushCharQueueInstantly, reconcileDocWithServer]
+  );
+
+  // Background Tab Switching: flush character queue so typewriter does not lag when hidden
   useEffect(() => {
     if (typeof window === "undefined" || typeof document === "undefined") return;
 
-    const handleVisibilityChange = async () => {
-      if (document.visibilityState === "hidden") {
-        flushCharQueueInstantly();
-
-        // Check running doc streams
-        Object.keys(activeDocStreamContextRef.current).forEach((docId) => {
-          const streamContext = activeDocStreamContextRef.current[docId];
-          if (streamContext && !explicitlyStoppedDocsRef.current[docId]) {
-            if (backgroundGraceTimersRef.current[docId]) {
-              clearTimeout(backgroundGraceTimersRef.current[docId]!);
-            }
-            backgroundGraceTimersRef.current[docId] = setTimeout(() => {
-              if (
-                typeof document !== "undefined" &&
-                document.visibilityState === "hidden" &&
-                abortControllersRef.current[docId] &&
-                !abortControllersRef.current[docId]?.signal.aborted &&
-                !explicitlyStoppedDocsRef.current[docId]
-              ) {
-                console.log(`[DocChatContext] Background grace elapsed for doc ${docId}; aborting reader for recovery path.`);
-                try {
-                  abortControllersRef.current[docId]?.abort("Background grace elapsed");
-                } catch {}
-              }
-            }, 3500);
-          }
-        });
-      } else if (document.visibilityState === "visible") {
-        Object.keys(backgroundGraceTimersRef.current).forEach((docId) => {
-          if (backgroundGraceTimersRef.current[docId]) {
-            clearTimeout(backgroundGraceTimersRef.current[docId]!);
-            backgroundGraceTimersRef.current[docId] = null;
-          }
-        });
-        flushCharQueueInstantly();
-
-        const activeEntries = Object.entries(activeDocStreamContextRef.current);
-        for (const [docId, streamContext] of activeEntries) {
-          if (streamContext && !explicitlyStoppedDocsRef.current[docId]) {
-            await reconcileDocWithServer(
-              docId,
-              streamContext.sessionId,
-              streamContext.assistantId,
-              streamContext.token,
-              streamContext.filename
-            );
-          }
-        }
-      }
-    };
-
-    const handlePageHide = () => {
+    const handleLifecycle = () => {
       flushCharQueueInstantly();
     };
 
-    const handlePageShow = async () => {
-      flushCharQueueInstantly();
-      const activeEntries = Object.entries(activeDocStreamContextRef.current);
-      for (const [docId, streamContext] of activeEntries) {
-        if (streamContext && !explicitlyStoppedDocsRef.current[docId]) {
-          await reconcileDocWithServer(
-            docId,
-            streamContext.sessionId,
-            streamContext.assistantId,
-            streamContext.token,
-            streamContext.filename
-          );
-        }
-      }
-    };
-
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    window.addEventListener("pagehide", handlePageHide);
-    window.addEventListener("pageshow", handlePageShow);
-    window.addEventListener("freeze", handlePageHide);
-    window.addEventListener("resume", handlePageShow);
+    document.addEventListener("visibilitychange", handleLifecycle);
+    window.addEventListener("pagehide", handleLifecycle);
+    window.addEventListener("pageshow", handleLifecycle);
+    window.addEventListener("freeze", handleLifecycle);
+    window.addEventListener("resume", handleLifecycle);
 
     return () => {
-      Object.keys(backgroundGraceTimersRef.current).forEach((docId) => {
-        if (backgroundGraceTimersRef.current[docId]) {
-          clearTimeout(backgroundGraceTimersRef.current[docId]!);
-        }
-      });
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-      window.removeEventListener("pagehide", handlePageHide);
-      window.removeEventListener("pageshow", handlePageShow);
-      window.removeEventListener("freeze", handlePageHide);
-      window.removeEventListener("resume", handlePageShow);
+      document.removeEventListener("visibilitychange", handleLifecycle);
+      window.removeEventListener("pagehide", handleLifecycle);
+      window.removeEventListener("pageshow", handleLifecycle);
+      window.removeEventListener("freeze", handleLifecycle);
+      window.removeEventListener("resume", handleLifecycle);
     };
-  }, [flushCharQueueInstantly, reconcileDocWithServer]);
+  }, [flushCharQueueInstantly]);
 
   // Load user profile on mount to personalize document greeting
   useEffect(() => {
@@ -750,10 +773,13 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
           });
         }
       }
+      if (sessionId) {
+        await resumeActiveDocJob(docId, sessionId);
+      }
     } catch (err) {
       console.error("Failed to load document session messages:", err);
     }
-  }, [userFirstName]);
+  }, [userFirstName, resumeActiveDocJob]);
 
   const ensureDocSession = useCallback(
     async (docId: string, filename: string): Promise<string | null> => {
@@ -820,10 +846,6 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
 
   const handleStopDocMessage = useCallback((docId: string) => {
     explicitlyStoppedDocsRef.current[docId] = true;
-    if (backgroundGraceTimersRef.current[docId]) {
-      clearTimeout(backgroundGraceTimersRef.current[docId]!);
-      backgroundGraceTimersRef.current[docId] = null;
-    }
     activeDocStreamContextRef.current[docId] = null;
     if (abortControllersRef.current[docId] && !abortControllersRef.current[docId]?.signal.aborted) {
       try {
@@ -891,8 +913,6 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
 
       explicitlyStoppedDocsRef.current[docId] = false;
       isReconcilingDocRef.current[docId] = false;
-      lastDocChunkTimeRef.current[docId] = Date.now();
-      let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
       let token = "";
       let activeSessionId: string | null = currentState.sessionId;
 
@@ -929,310 +949,148 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
           }).catch((err) => console.error("Failed to save user message:", err));
         }
 
-        const res = await fetch(`${BACKEND_URL}/api/chat`, {
-          method: "POST",
-          signal: controller.signal,
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${token}`,
-            "X-Tunnel-Skip-AntiPhishing-Page": "true",
-          },
-          body: JSON.stringify({
-            query: userText,
-            session_id: activeSessionId || undefined,
-            document_id: docId,
-            document_name: filename,
-            history: currentHistory.slice(0, -1).map((m) => ({ role: m.role, content: m.content })),
-            prior_citations: currentState.retainedCitations || [],
-          }),
-        });
-
-        if (!res.ok) {
-          const errText = await res.text();
-          throw new Error(`Failed to fetch: ${res.status} ${res.statusText} - ${errText}`);
-        }
-        if (!res.body) throw new Error("No response body");
-
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let done = false;
-        let buffer = "";
         let fullResponseAccumulator = "";
-        let receivedCitations: any[] = [];
+        let receivedCitations: Record<string, unknown>[] = [];
         let receivedFollowUps = false;
-        let pendingCitations: any[] | null = null;
-        let pendingAccumulatedCitations: any[] | null = null;
-        let pendingLegalAnalytics: LegalAnalytics | null = null;
-        let hasStartedStreaming = false;
 
-        const commitDocCitations = () => {
-          if (pendingCitations !== null || pendingAccumulatedCitations !== null || pendingLegalAnalytics !== null) {
-            const citsToCommit = pendingCitations || [];
-            const analyticsToCommit = pendingLegalAnalytics;
-            const accumulatedToCommit = pendingAccumulatedCitations;
-
-            setDocChats((prev) => {
-              const cur = prev[docId] || INITIAL_STATE;
-              const updatedRetained = (accumulatedToCommit && accumulatedToCommit.length > 0)
-                ? accumulatedToCommit
-                : mergeCitations(cur.retainedCitations, citsToCommit);
-              return {
-                ...prev,
-                [docId]: {
-                  ...cur,
-                  legalAnalytics: analyticsToCommit || cur.legalAnalytics,
-                  currentCitations: citsToCommit.length > 0 ? citsToCommit : cur.currentCitations,
-                  retainedCitations: updatedRetained,
-                  messages: cur.messages.map((m) =>
-                    m.id === assistantId
-                      ? {
-                        ...m,
-                        citations: citsToCommit.length > 0 ? citsToCommit : m.citations,
-                        legalAnalytics: analyticsToCommit || m.legalAnalytics,
-                      }
-                      : m
-                  ),
+        const streamExecution = async () => {
+          return await runResumableStream({
+            backendUrl: BACKEND_URL,
+            lockName: `civilex-doc-stream-${assistantId}`,
+            start: (signal) =>
+              fetch(`${BACKEND_URL}/api/chat`, {
+                method: "POST",
+                signal,
+                headers: {
+                  "Content-Type": "application/json",
+                  Authorization: `Bearer ${token}`,
+                  "X-Tunnel-Skip-AntiPhishing-Page": "true",
                 },
-              };
-            });
-
-            pendingCitations = null;
-            pendingAccumulatedCitations = null;
-            pendingLegalAnalytics = null;
-          }
+                body: JSON.stringify({
+                  query: userText,
+                  session_id: activeSessionId || undefined,
+                  document_id: docId,
+                  document_name: filename,
+                  history: currentHistory.slice(0, -1).map((m) => ({ role: m.role, content: m.content })),
+                  prior_citations: currentState.retainedCitations || [],
+                }),
+              }),
+            getToken: async () => {
+              const { data: { session: s } } = await supabase.auth.getSession();
+              return s?.access_token || "";
+            },
+            onEvent: (data: StreamEvent) => {
+              if (data.type === "status") {
+                const statusObj: RagStatus = {
+                  stage: data.stage as RagStage,
+                  message: data.message || "",
+                  count: data.count,
+                  queue_position: data.queue_position,
+                };
+                setDocChats((prev) => {
+                  const cur = prev[docId] || INITIAL_STATE;
+                  return {
+                    ...prev,
+                    [docId]: {
+                      ...cur,
+                      ragStatus: statusObj,
+                      messages: cur.messages.map((m) =>
+                        m.id === assistantId ? { ...m, ragStatus: statusObj } : m
+                      ),
+                    },
+                  };
+                });
+              } else if (data.type === "citations") {
+                receivedCitations = (data.data || []).sort((a: any, b: any) => {
+                  const aOut = a.is_in_context === false || a.rank_status === "out_of_rank" ? 1 : 0;
+                  const bOut = b.is_in_context === false || b.rank_status === "out_of_rank" ? 1 : 0;
+                  if (aOut !== bOut) return aOut - bOut;
+                  return (a?.rank || 999) - (b?.rank || 999);
+                });
+                setDocChats((prev) => {
+                  const cur = prev[docId] || INITIAL_STATE;
+                  return {
+                    ...prev,
+                    [docId]: {
+                      ...cur,
+                      currentCitations: receivedCitations,
+                      retainedCitations: mergeCitations(cur.retainedCitations || [], receivedCitations),
+                      messages: cur.messages.map((m) =>
+                        m.id === assistantId ? { ...m, citations: receivedCitations } : m
+                      ),
+                    },
+                  };
+                });
+              } else if (data.type === "legal_analytics") {
+                const analytics = data.data as LegalAnalytics;
+                setDocChats((prev) => {
+                  const cur = prev[docId] || INITIAL_STATE;
+                  return {
+                    ...prev,
+                    [docId]: {
+                      ...cur,
+                      legalAnalytics: analytics,
+                      messages: cur.messages.map((m) =>
+                        m.id === assistantId ? { ...m, legalAnalytics: analytics } : m
+                      ),
+                    },
+                  };
+                });
+              } else if (data.type === "accumulated_citations") {
+                const incoming = data.data || [];
+                setDocChats((prev) => {
+                  const cur = prev[docId] || INITIAL_STATE;
+                  return {
+                    ...prev,
+                    [docId]: {
+                      ...cur,
+                      retainedCitations: mergeCitations(cur.retainedCitations || [], incoming),
+                    },
+                  };
+                });
+              } else if (data.type === "follow_ups") {
+                const suggestions = Array.isArray(data.data)
+                  ? (data.data as unknown[]).filter((s: unknown): s is string => typeof s === "string" && s.trim().length > 0).slice(0, 3)
+                  : [];
+                if (suggestions.length > 0) {
+                  receivedFollowUps = true;
+                  setDocChats((prev) => {
+                    const cur = prev[docId] || INITIAL_STATE;
+                    return {
+                      ...prev,
+                      [docId]: { ...cur, followUpPrompts: suggestions },
+                    };
+                  });
+                }
+              } else if (data.type === "text" && data.text) {
+                fullResponseAccumulator += data.text;
+                if (activeDocStreamContextRef.current[docId]) {
+                  activeDocStreamContextRef.current[docId]!.fullResponse = fullResponseAccumulator;
+                }
+                enqueueText(data.text);
+              } else if (data.type === "done") {
+                setDocChats((prev) => {
+                  const cur = prev[docId] || INITIAL_STATE;
+                  return {
+                    ...prev,
+                    [docId]: {
+                      ...cur,
+                      ragStatus: { stage: "completed", message: "Analysis complete" },
+                    },
+                  };
+                });
+              }
+            },
+            signal: controller.signal,
+          });
         };
 
-        // Client-side heartbeat watchdog: detects hung/suspended TCP streams
-        lastDocChunkTimeRef.current[docId] = Date.now();
-        heartbeatTimer = setInterval(() => {
-          if (Date.now() - (lastDocChunkTimeRef.current[docId] || 0) > 30000) {
-            if (abortControllersRef.current[docId] && !abortControllersRef.current[docId]?.signal.aborted && !explicitlyStoppedDocsRef.current[docId]) {
-              console.warn(`[DocChatContext] SSE heartbeat timeout (30s) for doc ${docId} — aborting for DB recovery`);
-              try {
-                abortControllersRef.current[docId]?.abort("Stream heartbeat timeout");
-              } catch {}
-            }
-          }
-        }, 5000);
+        const outcome = await streamExecution();
 
-        while (!done) {
-          const { value, done: readerDone } = await reader.read();
-          done = readerDone;
-          if (value) {
-            lastDocChunkTimeRef.current[docId] = Date.now();
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split("\n\n");
-            buffer = lines.pop() || "";
-
-            for (const line of lines) {
-              // Ignore SSE comment ping lines (: ping)
-              if (line.startsWith(":")) {
-                lastDocChunkTimeRef.current[docId] = Date.now();
-                continue;
-              }
-              if (line.startsWith("data: ")) {
-                try {
-                  const data = JSON.parse(line.slice(6));
-
-                  // Handle ping heartbeat
-                  if (data.type === "ping") {
-                    lastDocChunkTimeRef.current[docId] = Date.now();
-                    continue;
-                  }
-
-                  if (data.type === "status") {
-                    const statusObj: RagStatus = {
-                      stage: data.stage as RagStage,
-                      message: data.message,
-                      count: data.count,
-                      queue_position: data.queue_position,
-                    };
-                    setDocChats((prev) => {
-                      const cur = prev[docId] || INITIAL_STATE;
-                      return {
-                        ...prev,
-                        [docId]: {
-                          ...cur,
-                          ragStatus: statusObj,
-                          messages: cur.messages.map((m) =>
-                            m.id === assistantId ? { ...m, ragStatus: statusObj } : m
-                          ),
-                        },
-                      };
-                    });
-                  } else if (data.type === "citations") {
-                    receivedCitations = (data.data || [])
-                      .map((c: any) => {
-                        if (c.suitability_percent === undefined) {
-                          const rawScore = c.similarity ?? c.score ?? 0.88;
-                          return {
-                            ...c,
-                            suitability_percent: Math.round(rawScore > 1 ? rawScore : rawScore * 100),
-                          };
-                        }
-                        return c;
-                      })
-                      .sort((a: any, b: any) => (Number(b?.suitability_percent) || 0) - (Number(a?.suitability_percent) || 0));
-                    const isOutOfDomain = receivedCitations.length === 0;
-                    const topScore = receivedCitations[0]?.suitability_percent || 0;
-                    const calculatedNli: LegalAnalytics = isOutOfDomain ? {
-                      nli_score: null,
-                      nli_status: "Out of Domain",
-                      is_out_of_domain: true,
-                      top_article_score: 0,
-                    } : {
-                      nli_score: null,
-                      nli_status: "Pending",
-                      top_article_score: topScore,
-                    };
-
-                    pendingCitations = receivedCitations;
-                    pendingLegalAnalytics = calculatedNli;
-                    if (hasStartedStreaming) {
-                      commitDocCitations();
-                    }
-                  } else if (data.type === "legal_analytics") {
-                    const analytics: LegalAnalytics = data.data;
-                    pendingLegalAnalytics = analytics;
-                    setDocChats((prev) => {
-                      const cur = prev[docId] || INITIAL_STATE;
-                      return {
-                        ...prev,
-                        [docId]: {
-                          ...cur,
-                          legalAnalytics: analytics,
-                          currentCitations: analytics?.is_out_of_domain ? [] : cur.currentCitations,
-                          messages: cur.messages.map((m) =>
-                            m.id === assistantId
-                              ? {
-                                  ...m,
-                                  legalAnalytics: analytics,
-                                  ...(analytics?.is_out_of_domain ? { citations: [] } : {}),
-                                }
-                              : m
-                          ),
-                        },
-                      };
-                    });
-                  } else if (data.type === "accumulated_citations") {
-                    const accumulated = (data.data || [])
-                      .map((c: any) => {
-                        if (c.suitability_percent === undefined) {
-                          const rawScore = c.similarity ?? c.score ?? 0.88;
-                          return {
-                            ...c,
-                            suitability_percent: Math.round(rawScore > 1 ? rawScore : rawScore * 100),
-                          };
-                        }
-                        return c;
-                      })
-                      .sort((a: any, b: any) => {
-                        const scoreA = Number(a?.suitability_percent) || 0;
-                        const scoreB = Number(b?.suitability_percent) || 0;
-                        const scoreDiff = scoreB - scoreA;
-                        if (scoreDiff !== 0) return scoreDiff;
-                        const priority = (type?: string) =>
-                          type === "article" || type === "civil_code" ? 1 : type === "user_document" ? 2 : 3;
-                        return priority(a.parent_type) - priority(b.parent_type);
-                      });
-                    pendingAccumulatedCitations = accumulated;
-                    if (hasStartedStreaming) {
-                      commitDocCitations();
-                    }
-                  } else if (data.type === "follow_ups") {
-                    // LLM-generated follow-up suggestions (preferred over rule-based).
-                    const suggestions = Array.isArray(data.data)
-                      ? data.data.filter((s: any) => typeof s === "string" && s.trim()).slice(0, 3)
-                      : [];
-                    if (suggestions.length > 0) {
-                      receivedFollowUps = true;
-                      setDocChats((prev) => {
-                        const cur = prev[docId] || INITIAL_STATE;
-                        return {
-                          ...prev,
-                          [docId]: { ...cur, followUpPrompts: suggestions },
-                        };
-                      });
-                    }
-                  } else if (data.type === "text") {
-                    if (!hasStartedStreaming) {
-                      hasStartedStreaming = true;
-                      commitDocCitations();
-                    }
-                    fullResponseAccumulator += data.text;
-                    if (activeDocStreamContextRef.current[docId]) {
-                      activeDocStreamContextRef.current[docId]!.fullResponse = fullResponseAccumulator;
-                    }
-                    enqueueText(data.text);
-                  } else if (data.type === "error") {
-                    const errorMsg = data.message || "An error occurred while generating the legal analysis.";
-                    pendingCitations = null;
-                    pendingAccumulatedCitations = null;
-                    stopCharStream();
-                    setDocChats((prev) => {
-                      const cur = prev[docId] || INITIAL_STATE;
-                      return {
-                        ...prev,
-                        [docId]: {
-                          ...cur,
-                          isTyping: false,
-                          currentCitations: [],
-                          ragStatus: { stage: "error", message: errorMsg },
-                          messages: cur.messages.map((m) =>
-                            m.id === assistantId
-                              ? {
-                                  ...m,
-                                  citations: [],
-                                  content: m.content
-                                    ? `${m.content}\n\n> **Service Notice**\n>\n> ${errorMsg}`
-                                    : `> **Service Notice**\n>\n> ${errorMsg}`,
-                                  ragStatus: { stage: "error", message: errorMsg },
-                                }
-                              : m
-                          ),
-                        },
-                      };
-                    });
-                  } else if (data.type === "done") {
-                    commitDocCitations();
-                    // Prefer LLM-generated suggestions; fall back to rule-based.
-                    const fallbackFollowUps = receivedFollowUps
-                      ? null
-                      : generateDocFollowUpPrompts(fullResponseAccumulator, receivedCitations, filename);
-                    setDocChats((prev) => {
-                      const cur = prev[docId] || INITIAL_STATE;
-                      return {
-                        ...prev,
-                        [docId]: {
-                          ...cur,
-                          ...(fallbackFollowUps ? { followUpPrompts: fallbackFollowUps } : {}),
-                          ragStatus: { stage: "completed", message: "Analysis complete" },
-                          messages: cur.messages.map((m) =>
-                            m.id === assistantId
-                              ? {
-                                  ...m,
-                                  ragStatus: { stage: "completed", message: "Analysis complete" },
-                                }
-                              : m
-                          ),
-                        },
-                      };
-                    });
-                  }
-                } catch (e) {
-                  console.error("Parse error", e);
-                }
-              }
-            }
-          }
+        if (outcome === "expired" && activeSessionId) {
+          await reconcileDocWithServer(docId, activeSessionId, assistantId, token, filename);
         }
 
-        if (heartbeatTimer) {
-          clearInterval(heartbeatTimer);
-          heartbeatTimer = null;
-        }
-
-        // Wait for character queue to drain smoothly (with tab background instant flush & fallback timeout)
         const waitForDrain = () =>
           new Promise<void>((resolve) => {
             if (typeof document !== "undefined" && document.visibilityState === "hidden") {
@@ -1255,13 +1113,34 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
           });
         await waitForDrain();
         stopCharStream();
-      } catch (err: any) {
-        if (heartbeatTimer) {
-          clearInterval(heartbeatTimer);
-          heartbeatTimer = null;
-        }
-        stopCharStream();
 
+        setDocChats((prev) => {
+          const cur = prev[docId] || INITIAL_STATE;
+          return {
+            ...prev,
+            [docId]: {
+              ...cur,
+              isTyping: false,
+              ragStatus: { stage: "completed", message: "Analysis complete" },
+            },
+          };
+        });
+
+        if (!receivedFollowUps) {
+          const followUps = generateDocFollowUpPrompts(fullResponseAccumulator, receivedCitations, filename);
+          setDocChats((prev) => {
+            const cur = prev[docId] || INITIAL_STATE;
+            return {
+              ...prev,
+              [docId]: {
+                ...cur,
+                followUpPrompts: followUps,
+              },
+            };
+          });
+        }
+      } catch (err: any) {
+        stopCharStream();
         const isAbort =
           err?.name === "AbortError" ||
           err?.message?.toLowerCase().includes("abort") ||
@@ -1274,85 +1153,34 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
               ...prev,
               [docId]: {
                 ...cur,
+                isTyping: false,
+                ragStatus: null,
                 messages: cur.messages.map((m) =>
                   m.id === assistantId ? { ...m, content: m.content || "Analysis stopped." } : m
                 ),
               },
             };
           });
-        } else if (activeSessionId && !explicitlyStoppedDocsRef.current[docId]) {
-          // Tab-switch / mobile iOS disconnection recovery: poll session messages from DB
-          setDocChats((prev) => {
-            const cur = prev[docId] || INITIAL_STATE;
-            return {
-              ...prev,
-              [docId]: {
-                ...cur,
-                ragStatus: { stage: "reconnecting", message: "Reconnecting to legal analysis..." },
-                messages: cur.messages.map((m) =>
-                  m.id === assistantId
-                    ? {
-                        ...m,
-                        ragStatus: { stage: "reconnecting", message: "Reconnecting to legal analysis..." },
-                      }
-                    : m
-                ),
-              },
-            };
-          });
-
-          const recovered = await pollForRecoveredAssistantMessage(
-            docId,
-            activeSessionId,
-            assistantId,
-            token,
-            filename,
-            turnStartTime
-          );
-
-          if (!recovered && !explicitlyStoppedDocsRef.current[docId]) {
-            setDocChats((prev) => {
-              const cur = prev[docId] || INITIAL_STATE;
-              return {
-                ...prev,
-                [docId]: {
-                  ...cur,
-                  currentCitations: [],
-                  ragStatus: { stage: "error", message: "Service connection error" },
-                  messages: cur.messages.map((m) =>
-                    m.id === assistantId
-                      ? {
-                          ...m,
-                          citations: [],
-                          content:
-                            m.content ||
-                            "> **Analysis Notice**\n>\n> Unable to connect to the legal analysis service. The model service (LM Studio) may be offline. Please verify that the service is running and try again.",
-                        }
-                      : m
-                  ),
-                },
-              };
-            });
-          }
         } else {
-          console.error("Doc chat error:", err);
           setDocChats((prev) => {
             const cur = prev[docId] || INITIAL_STATE;
             return {
               ...prev,
               [docId]: {
                 ...cur,
+                isTyping: false,
                 currentCitations: [],
                 ragStatus: { stage: "error", message: "Service connection error" },
                 messages: cur.messages.map((m) =>
                   m.id === assistantId
                     ? {
-                      ...m,
-                      citations: [],
-                      content:
-                        m.content ||
-                        "> **Analysis Notice**\n>\n> Unable to connect to the legal analysis service. The model service (LM Studio) may be offline. Please verify that the service is running and try again.",
-                    }
+                        ...m,
+                        citations: [],
+                        ragStatus: { stage: "error", message: "Service connection error" },
+                        content:
+                          m.content ||
+                          "> **Analysis Notice**\n>\n> Unable to connect to the legal analysis service. The model service (LM Studio) may be offline. Please verify that the service is running and try again.",
+                      }
                     : m
                 ),
               },
@@ -1360,10 +1188,6 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
           });
         }
       } finally {
-        if (heartbeatTimer) {
-          clearInterval(heartbeatTimer);
-          heartbeatTimer = null;
-        }
         stopCharStream();
         setDocChats((prev) => {
           const cur = prev[docId] || INITIAL_STATE;
@@ -1378,7 +1202,7 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
         abortControllersRef.current[docId] = null;
       }
     },
-    [docChats, ensureDocSession, userFirstName, startCharStream, stopCharStream, enqueueText, pollForRecoveredAssistantMessage]
+    [docChats, ensureDocSession, userFirstName, startCharStream, stopCharStream, enqueueText, reconcileDocWithServer, flushCharQueueInstantly]
   );
 
   return (
@@ -1391,6 +1215,7 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
         ensureDocSession,
         handleSendDocMessage,
         handleStopDocMessage,
+        resumeActiveDocJob,
         userFirstName,
       }}
     >

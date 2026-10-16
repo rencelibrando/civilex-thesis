@@ -18,78 +18,80 @@ export const setupProxies = (app) => {
     })
   );
 
-  // Apply proxy middleware to chat endpoint
-  app.post(
-    '/api/chat',
-    requireAuth,
-    createProxyMiddleware({
-      target: ragServiceUrl,
-      changeOrigin: true,
-      timeout: 0, // Disable proxy socket timeout for continuous SSE streaming
-      proxyTimeout: 0, // Disable response timeout for long-running legal reasoning
-      pathRewrite: {
-        '^/api/chat': '/search',
-      },
-      on: {
-        proxyReq: (proxyReq, req, res) => {
-          // Disable socket timeout on outgoing proxy request for continuous SSE streaming
-          if (proxyReq.socket) {
-            proxyReq.socket.setTimeout(0);
-          } else {
-            proxyReq.on('socket', (socket) => {
-              socket.setTimeout(0);
-            });
-          }
-          proxyReq.setHeader('Connection', 'keep-alive');
+  const injectUserAndKeepAlive = (proxyReq, req) => {
+    if (proxyReq.socket) {
+      proxyReq.socket.setTimeout(0);
+    } else {
+      proxyReq.on('socket', (socket) => {
+        socket.setTimeout(0);
+      });
+    }
+    proxyReq.setHeader('Connection', 'keep-alive');
 
-          if (req.user) {
-            proxyReq.setHeader('x-user-id', req.user.id);
-            if (req.user.email) {
-              proxyReq.setHeader('x-user-email', req.user.email);
-            }
-            const fullName =
-              req.user.user_metadata?.full_name ||
-              (req.user.email ? req.user.email.split('@')[0] : 'User');
-            proxyReq.setHeader('x-user-name', encodeURIComponent(fullName));
-
-            try {
-              PresenceService.touch(req.user, req, 'Running Legal Query');
-            } catch (_) { }
-          }
-        },
-        proxyRes: (proxyRes, req, res) => {
-          // Prevent proxy buffering on SSE streams so chunks reach the frontend immediately
-          res.setHeader('X-Accel-Buffering', 'no');
-          res.setHeader('Cache-Control', 'no-cache, no-transform');
-          res.setHeader('Connection', 'keep-alive');
-          if (typeof res.flushHeaders === 'function') {
-            res.flushHeaders();
-          }
-          req.socket.setTimeout(0);
-          if (proxyRes.socket) {
-            proxyRes.socket.setTimeout(0);
-          }
-        },
-        error: (err, req, res) => {
-          // If the downstream client disconnected or aborted, this error is an expected result of proxyReq.destroy()
-          if (res.writableEnded || res.destroyed) {
-            return;
-          }
-          console.error('[Chat Proxy Error]:', err.message);
-          if (!res.headersSent) {
-            res.writeHead(503, { 'Content-Type': 'application/json' });
-            res.end(
-              JSON.stringify({
-                error: 'The AI legal engine is currently unavailable. Please verify the service is running and try again.',
-              })
-            );
-          } else if (!res.writableEnded) {
-            res.end();
-          }
-        },
+    if (req.user) {
+      proxyReq.setHeader('x-user-id', req.user.id);
+      if (req.user.email) {
+        proxyReq.setHeader('x-user-email', req.user.email);
       }
-    })
-  );
+      const fullName =
+        req.user.user_metadata?.full_name ||
+        (req.user.email ? req.user.email.split('@')[0] : 'User');
+      proxyReq.setHeader('x-user-name', encodeURIComponent(fullName));
+
+      if (req.method === 'POST') {
+        try {
+          PresenceService.touch(req.user, req, 'Running Legal Query');
+        } catch (_) { }
+      }
+    }
+  };
+
+  const disableBuffering = (proxyRes, req, res) => {
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    if (typeof res.flushHeaders === 'function') {
+      res.flushHeaders();
+    }
+    req.socket.setTimeout(0);
+    if (proxyRes.socket) {
+      proxyRes.socket.setTimeout(0);
+    }
+  };
+
+  const handleSseProxyError = (err, req, res) => {
+    if (res.writableEnded || res.destroyed) {
+      return;
+    }
+    console.error('[Chat Proxy Error]:', err.message);
+    if (!res.headersSent) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          error: 'The AI legal engine is currently unavailable. Please verify the service is running and try again.',
+        })
+      );
+    } else if (!res.writableEnded) {
+      res.end();
+    }
+  };
+
+  const sseProxy = (pathRewrite) => createProxyMiddleware({
+    target: ragServiceUrl,
+    changeOrigin: true,
+    timeout: 0,
+    proxyTimeout: 0,
+    pathRewrite,
+    on: {
+      proxyReq: injectUserAndKeepAlive,
+      proxyRes: disableBuffering,
+      error: handleSseProxyError,
+    },
+  });
+
+  app.post('/api/chat', requireAuth, sseProxy({ '^/api/chat': '/search' }));
+  app.get('/api/chat/stream/active', requireAuth, sseProxy({ '^/api/chat/stream/active': '/stream/active' }));
+  app.get('/api/chat/stream/:jobId', requireAuth, sseProxy({ '^/api/chat/stream': '/stream' }));
 
 
   const supabaseUrl = process.env.SUPABASE_URL || 'http://localhost:54321';

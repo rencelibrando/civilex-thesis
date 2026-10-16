@@ -35,8 +35,9 @@ from core.article_parser import (
 from services import memory as session_memory
 from services import followups as followup_svc
 
-# Registry of active detached generation tasks keyed by session_id
-active_generation_tasks: Dict[str, asyncio.Task] = {}
+from services.stream_jobs import stream_jobs
+
+SSE_HEADERS = {"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"}
 
 logging.basicConfig(
     level=logging.INFO,
@@ -482,13 +483,29 @@ class CancelRequest(BaseModel):
 async def cancel_generation(cancel_req: CancelRequest):
     """Explicitly cancels an active background generation task for a session, releasing GPU/queue slot."""
     session_id = cancel_req.session_id
-    if session_id and session_id in active_generation_tasks:
-        task = active_generation_tasks.get(session_id)
-        if task and not task.done():
-            task.cancel()
-            logging.info(f"Explicitly cancelled active generation task for session: {session_id}")
-            return {"status": "cancelled", "session_id": session_id}
+    job = stream_jobs.active_for_session(session_id) if session_id else None
+    if job and job.task and not job.task.done():
+        job.task.cancel()
+        logging.info(f"Explicitly cancelled active generation task for session: {session_id}")
+        return {"status": "cancelled", "session_id": session_id}
     return {"status": "not_found_or_already_done", "session_id": session_id}
+
+@app.get("/stream/active")
+async def active_stream(session_id: str, raw_req: Request):
+    user_id = raw_req.headers.get("x-user-id", "")
+    job = stream_jobs.active_for_session(session_id, user_id)
+    return {"job_id": job.job_id if job else None}
+
+@app.get("/stream/{job_id}")
+async def resume_stream(job_id: str, raw_req: Request, after: int = -1):
+    user_id = raw_req.headers.get("x-user-id", "")
+    job = stream_jobs.get(job_id, user_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Stream expired")
+    last_id = raw_req.headers.get("last-event-id", "")
+    if last_id.isdigit():
+        after = max(after, int(last_id))
+    return StreamingResponse(job.subscribe(after), media_type="text/event-stream", headers=SSE_HEADERS)
 
 # Stopwords for both English and conversational Filipino/Tagalog
 ENGLISH_STOPWORDS = {
@@ -1468,6 +1485,12 @@ def collapse_duplicate_statute_blocks(text: str, queried_art_nums: Optional[List
     """
     if not text:
         return text
+
+    # Strip leaked prompt scaffold instructions
+    text = re.sub(r'(?im)^\s*\(?Quote the governing statutory basis for [^)\n]*?EXACTLY ONCE:?\)?\s*\n?', '', text)
+    text = re.sub(r'(?im)^\s*\(?Provide a dedicated bullet for each case found in CONTEXT:?\)?\s*\n?', '', text)
+    text = re.sub(r'(?im)^\s*\(?Provide a dedicated quote block for EACH queried article found in CONTEXT:?\)?\s*\n?', '', text)
+    text = re.sub(r'(?im)^\s*\(?For each governing Civil Code article in CONTEXT, provide a dedicated blockquote EXACTLY ONCE:?\)?\s*\n?', '', text)
 
     # 1. Normalize duplicate '###  Governing Statutory Basis' headers
     header_pattern = re.compile(r'(#{2,4}[^\n]*?(?:Governing Statutory Basis|Statutory Basis)[^\n]*)', re.IGNORECASE)
@@ -3468,12 +3491,10 @@ MANDATORY MARKDOWN FORMAT:
 [1-2 clear, direct, and conversational sentences summarizing the judicial doctrine and legal conclusion strictly for {art_str} in plain words.]
 
 ### Governing Statutory Basis
-(Quote the governing statutory basis for {art_str} EXACTLY ONCE:)
 > **Article [Number] ([Law Title, e.g. Republic Act No. 386 or Executive Order No. 209 - Family Code of the Philippines as given in CONTEXT])**
 > "[Quote statutory text verbatim from CONTEXT]"
 
 ### Related Supreme Court Jurisprudence & Doctrines
-(Provide a dedicated bullet for each case found in CONTEXT:)
 - **[Case Title]** (*G.R. No. [GR Number], [Date]*):
   - **Core Doctrine & Ruling**: [1-2 simple sentences on what the Supreme Court decided.]
   - **Factual Context & Application**: [1-2 simple sentences on how the Court applied the law in daily life.]
@@ -3845,12 +3866,12 @@ CONTEXT:
                 except Exception as rel_err:
                     logging.warning(f"Early queue slot release failed: {rel_err}")
 
+                # Save to DB if valid UUID session_id is provided
+                await asyncio.to_thread(save_assistant_message_to_db, request.session_id, full_text, results, analytics_payload)
+
                 # Signal completion
                 logging.info("Finished streaming response.")
                 yield f"data: {dumps({'type': 'done'})}\n\n"
-
-                # Save to DB if valid UUID session_id is provided
-                save_assistant_message_to_db(request.session_id, full_text, results, analytics_payload)
 
                 # Best-effort rolling summary refresh for long chats (never blocks SSE — already done).
                 try:
@@ -3879,14 +3900,17 @@ CONTEXT:
                     logging.error(f"Error releasing queue slot for ticket #{ticket}: {clean_err}")
 
         session_key = request.session_id or f"anon_{uuid.uuid4().hex}"
-        sse_queue: asyncio.Queue = asyncio.Queue()
+        job = stream_jobs.create(session_key, user_identifier)
+        await job.publish(f"data: {dumps({'type': 'job', 'job_id': job.job_id})}\n\n")
 
         async def pipeline_worker():
             gen = sse_generator()
+            status = "completed"
             try:
                 async for chunk in gen:
-                    await sse_queue.put(chunk)
+                    await job.publish(chunk)
             except asyncio.CancelledError:
+                status = "cancelled"
                 logging.info(f"Pipeline worker explicitly cancelled for session {session_key}")
                 try:
                     await gen.aclose()
@@ -3894,35 +3918,17 @@ CONTEXT:
                     pass
                 raise
             except Exception as e:
+                status = "error"
                 logging.error(f"Pipeline worker unhandled error for session {session_key}: {e}", exc_info=True)
-                await sse_queue.put(f"data: {dumps({'type': 'error', 'message': 'An error occurred while generating the legal analysis.'})}\n\n")
+                await job.publish(f"data: {dumps({'type': 'error', 'message': 'An error occurred while generating the legal analysis.'})}\n\n")
             finally:
-                if session_key in active_generation_tasks:
-                    active_generation_tasks.pop(session_key, None)
-                await sse_queue.put(None)
+                await asyncio.shield(job.finish(status))
 
-        worker_task = asyncio.create_task(pipeline_worker())
-        active_generation_tasks[session_key] = worker_task
-
-        async def sse_consumer():
-            try:
-                while True:
-                    try:
-                        item = await asyncio.wait_for(sse_queue.get(), timeout=12.0)
-                    except asyncio.TimeoutError:
-                        # iOS Safari / Dev Tunnel / reverse proxy keepalive heartbeat
-                        yield f": ping\n\ndata: {dumps({'type': 'ping'})}\n\n"
-                        continue
-
-                    if item is None:
-                        break
-                    yield item
-            except (asyncio.CancelledError, GeneratorExit):
-                logging.info(f"Client disconnected from SSE stream for session {session_key}. Background worker continues.")
-
+        job.task = asyncio.create_task(pipeline_worker())
         return StreamingResponse(
-            sse_consumer(),
-            media_type="text/event-stream"
+            job.subscribe(),
+            media_type="text/event-stream",
+            headers=SSE_HEADERS
         )
 
 

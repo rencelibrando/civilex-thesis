@@ -25,8 +25,8 @@ mkdir -p ./supabase_storage_files
 tar -xzvf supabase_storage_backup.tar.gz -C ./supabase_storage_files/
 docker cp ./supabase_storage_files/. $(docker ps -qf "name=supabase_storage"):/mnt/
 
-2. Pre-requisite: Enable vector & uuid extensions before schema restore
-docker exec -i $(docker ps -qf "name=supabase_db") psql -U supabase_admin -d postgres -c "CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA extensions; CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\" WITH SCHEMA extensions;"
+2. Pre-requisite: Enable vector, uuid, and pg_trgm extensions before schema restore
+docker exec -i $(docker ps -qf "name=supabase_db") psql -U supabase_admin -d postgres -c "CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA extensions; CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\" WITH SCHEMA extensions; CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA extensions;"
 
 3. Inject schema into the PostgreSQL database (Use supabase_admin superuser to allow auth & storage schema modifications)
 docker exec -i $(docker ps -qf "name=supabase_db") psql -U supabase_admin -d postgres < supabase_schema.sql

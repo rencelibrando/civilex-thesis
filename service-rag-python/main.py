@@ -30,7 +30,10 @@ from core.article_parser import (
     is_compound_or_multi_intent_query,
     is_jurisprudence_query,
     get_out_of_bounds_articles,
-    resolve_candidate_article_ids
+    resolve_candidate_article_ids,
+    parse_gr_numbers,
+    extract_case_parties,
+    extract_case_title_candidate
 )
 from services import memory as session_memory
 from services import followups as followup_svc
@@ -428,14 +431,13 @@ def get_civil_code_article(article_id: str):
                 
             # Fetch related jurisprudence (if any)
             cur.execute("""
-                SELECT j.case_uid, j.title, j.gr_number, j.decision_date, j.content_summary, j.source_url
+                SELECT j.case_uid, j.title, j.gr_number, j.decision_date,
+                       COALESCE(NULLIF(NULLIF(j.content_summary, 'Summary unavailable.'), ''), j.full_text) AS content_summary,
+                       j.source_url
                 FROM article_jurisprudence_relations r
                 JOIN jurisprudence_cases j ON r.case_uid = j.case_uid
                 WHERE r.article_id = %s
-                  AND j.content_summary IS NOT NULL
-                  AND j.content_summary != ''
-                  AND j.content_summary != 'Summary unavailable.'
-                  AND j.content_summary NOT ILIKE '%%summary unavailable%%'
+                  AND COALESCE(NULLIF(NULLIF(j.content_summary, 'Summary unavailable.'), ''), j.full_text) IS NOT NULL
                 LIMIT 5;
             """, (article_id,))
             related_cases = cur.fetchall()
@@ -1016,7 +1018,13 @@ def classify_query_intent(
         }
 
     has_article_ref = bool(valid_articles)
-    return domain_router.route(eval_query, has_article_ref=has_article_ref, document_id=document_id)
+    has_case_ref = bool(parse_gr_numbers(eval_query)) or is_jurisprudence_query(eval_query)
+    return domain_router.route(
+        eval_query,
+        has_article_ref=has_article_ref,
+        has_case_ref=has_case_ref,
+        document_id=document_id
+    )
 
 
 def is_simple_lookup(query: str, history: Optional[List[Any]] = None) -> bool:
@@ -1781,7 +1789,10 @@ def rank_and_stratify_citations(
             it['is_exact'] = True
 
         if is_exact:
-            return 1000.0 + float(it.get('suitability_percent', 98.5))
+            base_exact = 1000.0 + float(it.get('suitability_percent', 98.5))
+            if is_juris:
+                return base_exact + (50.0 if ptype == 'case' else 10.0)
+            return base_exact
 
         base_sim = float(it.get('similarity', 0.0) or 0.0)
         rrf = float(it.get('rrf_score', 0.0) or 0.0)
@@ -1803,7 +1814,7 @@ def rank_and_stratify_citations(
 
     active_statute_count = 0
     active_case_count = 0
-    max_active_statutes = (len(explicit_art_nums) if explicit_art_nums else 2) if is_juris else context_budget
+    max_active_statutes = (len(explicit_art_nums) if explicit_art_nums else 3) if is_juris else context_budget
     max_active_cases = 4 if is_juris else context_budget
 
     prev_suitability = 100.0
@@ -1827,13 +1838,22 @@ def rank_and_stratify_citations(
                 item['rank_status'] = 'out_of_rank'
 
         elif is_exact or (idx == 0 and item.get('parent_type') == 'article' and (is_simple or len(explicit_art_nums) > 0)):
-            if is_juris and active_statute_count >= max_active_statutes:
-                item['is_in_context'] = False
-                item['rank_status'] = 'out_of_rank'
+            if ptype == 'case':
+                if active_case_count < max_active_cases:
+                    item['is_in_context'] = True
+                    item['rank_status'] = 'primary'
+                    active_case_count += 1
+                else:
+                    item['is_in_context'] = False
+                    item['rank_status'] = 'out_of_rank'
             else:
-                item['is_in_context'] = True
-                item['rank_status'] = 'primary'
-                active_statute_count += 1
+                if is_juris and active_statute_count >= max_active_statutes:
+                    item['is_in_context'] = False
+                    item['rank_status'] = 'out_of_rank'
+                else:
+                    item['is_in_context'] = True
+                    item['rank_status'] = 'primary'
+                    active_statute_count += 1
 
         elif item.get('is_linked_jurisprudence'):
             if active_case_count < max_active_cases and idx < context_budget:
@@ -1903,9 +1923,10 @@ def search_with_embedding(q_emb: list, query: str, document_id: Optional[str] = 
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             def hybrid_search(parent_type, limit=20, parent_id=None):
                 raw_words = [w for w in re.split(r'\W+', query) if w]
+                gr_tokens = set(parse_gr_numbers(query))
                 filtered_words = [
                     w for w in raw_words 
-                    if len(w) > 2 and (not w.isdigit() or (1 <= int(w) <= 2270)) and w.lower() not in SEARCH_STOPWORDS
+                    if len(w) > 2 and (not w.isdigit() or (1 <= int(w) <= 2270) or w in gr_tokens or any(w in g for g in gr_tokens)) and w.lower() not in SEARCH_STOPWORDS
                 ]
                 search_words = filtered_words if filtered_words else [w for w in raw_words if len(w) > 1]
                 if not search_words:
@@ -2017,21 +2038,20 @@ def search_with_embedding(q_emb: list, query: str, document_id: Optional[str] = 
                     if statutory_articles:
                         art_ids = [a['parent_id'] for a in statutory_articles]
                         cur.execute("""
-                            SELECT r.article_id, j.case_uid, j.title, j.gr_number, j.content_summary, j.source_url, j.decision_date
+                            SELECT r.article_id, j.case_uid, j.title, j.gr_number,
+                                   COALESCE(NULLIF(NULLIF(j.content_summary, 'Summary unavailable.'), ''), j.full_text) AS content_summary,
+                                   j.source_url, j.decision_date
                             FROM article_jurisprudence_relations r
                             JOIN jurisprudence_cases j ON r.case_uid = j.case_uid
                             WHERE r.article_id = ANY(%s)
-                              AND j.content_summary IS NOT NULL
-                              AND j.content_summary != ''
-                              AND j.content_summary != 'Summary unavailable.'
-                              AND j.content_summary NOT ILIKE '%%summary unavailable%%'
+                              AND COALESCE(NULLIF(NULLIF(j.content_summary, 'Summary unavailable.'), ''), j.full_text) IS NOT NULL
                             LIMIT 3;
                         """, (art_ids,))
                         for row in cur.fetchall():
                             linked_cases.append({
                                 "parent_type": "case",
                                 "parent_id": row['case_uid'],
-                                "content": f"[Supporting Case Doctrine for {row['article_id']}] {row['title']} (GR No. {row['gr_number']}): {row.get('content_summary', '')}",
+                                "content": f"[Supporting Case Doctrine for {row['article_id']}] {row['title']} (GR No. {row['gr_number']}): {row.get('content_summary', '')[:4000]}",
                                 "metadata": {
                                     "title": row.get('title'),
                                     "gr_number": row.get('gr_number'),
@@ -2050,6 +2070,100 @@ def search_with_embedding(q_emb: list, query: str, document_id: Optional[str] = 
 
             # 1. Exact match extraction for Civil Code Articles or General Codal Overview
             exact_articles = []
+
+            # Exact jurisprudence cases (by G.R. number or landmark party title)
+            def resolve_exact_cases(cur_db, q_text: str) -> List[Dict[str, Any]]:
+                gr_numbers = parse_gr_numbers(q_text)
+                case_parties = extract_case_parties(q_text)
+                candidate_title = extract_case_title_candidate(q_text)
+                matched_rows = []
+                seen_uids = set()
+
+                if gr_numbers:
+                    for gr in gr_numbers:
+                        clean_digits = re.sub(r'[^A-Za-z0-9]', '', gr)
+                        cur_db.execute("""
+                            SELECT case_uid, title, gr_number, decision_date,
+                                   COALESCE(NULLIF(NULLIF(content_summary, 'Summary unavailable.'), ''), full_text) AS content_summary,
+                                   source_url
+                            FROM jurisprudence_cases
+                            WHERE (gr_number ILIKE %s OR case_uid ILIKE %s)
+                              AND COALESCE(NULLIF(NULLIF(content_summary, 'Summary unavailable.'), ''), full_text) IS NOT NULL
+                            LIMIT 3;
+                        """, (f"%{gr}%", f"%{clean_digits}%"))
+                        for r in cur_db.fetchall():
+                            if r['case_uid'] not in seen_uids:
+                                seen_uids.add(r['case_uid'])
+                                matched_rows.append(r)
+
+                if candidate_title and len(matched_rows) < 3:
+                    cur_db.execute("""
+                        SELECT case_uid, title, gr_number, decision_date,
+                               COALESCE(NULLIF(NULLIF(content_summary, 'Summary unavailable.'), ''), full_text) AS content_summary,
+                               source_url,
+                               similarity(title, %s) AS sim
+                        FROM jurisprudence_cases
+                        WHERE similarity(title, %s) > 0.35
+                          AND COALESCE(NULLIF(NULLIF(content_summary, 'Summary unavailable.'), ''), full_text) IS NOT NULL
+                        ORDER BY sim DESC
+                        LIMIT 3;
+                    """, (candidate_title, candidate_title))
+                    for r in cur_db.fetchall():
+                        if r['case_uid'] not in seen_uids:
+                            seen_uids.add(r['case_uid'])
+                            matched_rows.append(r)
+
+                if case_parties and len(matched_rows) < 3:
+                    pattern = "%" + "%".join(case_parties[:2]) + "%"
+                    cur_db.execute("""
+                        SELECT case_uid, title, gr_number, decision_date,
+                               COALESCE(NULLIF(NULLIF(content_summary, 'Summary unavailable.'), ''), full_text) AS content_summary,
+                               source_url
+                        FROM jurisprudence_cases
+                        WHERE title ILIKE %s
+                          AND COALESCE(NULLIF(NULLIF(content_summary, 'Summary unavailable.'), ''), full_text) IS NOT NULL
+                        LIMIT 3;
+                    """, (pattern,))
+                    for r in cur_db.fetchall():
+                        if r['case_uid'] not in seen_uids:
+                            seen_uids.add(r['case_uid'])
+                            matched_rows.append(r)
+
+                items = []
+                for r in matched_rows:
+                    cur_db.execute("""
+                        SELECT content
+                        FROM document_chunks
+                        WHERE parent_type = 'case' AND parent_id = %s
+                        ORDER BY chunk_id ASC
+                        LIMIT 3;
+                    """, (r['case_uid'],))
+                    chunks = cur_db.fetchall()
+                    chunk_excerpt = ("\n".join([c['content'] for c in chunks])).strip() if chunks else ""
+                    summary = (r.get('content_summary') or '').strip()
+                    body = f"[Jurisprudence Doctrine] {r['title']} (GR No. {r['gr_number']}): {summary[:4000]}"
+                    if chunk_excerpt:
+                        body += f"\n\n[Case Record Excerpt]:\n{chunk_excerpt[:1500]}"
+
+                    items.append({
+                        "parent_type": "case",
+                        "parent_id": r['case_uid'],
+                        "content": body,
+                        "similarity": 0.98,
+                        "rrf_score": 0.08,
+                        "is_exact": True,
+                        "suitability_percent": 98.5,
+                        "display_suitability": 98.5,
+                        "metadata": {
+                            "title": r.get('title'),
+                            "gr_number": r.get('gr_number'),
+                            "source_url": r.get('source_url'),
+                            "decision_date": r.get('decision_date'),
+                            "content_summary": r.get('content_summary'),
+                            "case_uid": r.get('case_uid')
+                        }
+                    })
+                return items
 
             # Check for general / structural inquiries about the Civil Code
             is_general_or_structural = bool(re.search(
@@ -2232,15 +2346,14 @@ def search_with_embedding(q_emb: list, query: str, document_id: Optional[str] = 
                 article_ids = [a['parent_id'] for a in target_articles]
                 cur.execute("""
                     WITH ranked_cases AS (
-                        SELECT r.article_id, j.case_uid, j.title, j.gr_number, j.content_summary, j.source_url, j.decision_date,
+                        SELECT r.article_id, j.case_uid, j.title, j.gr_number,
+                               COALESCE(NULLIF(NULLIF(j.content_summary, 'Summary unavailable.'), ''), j.full_text) AS content_summary,
+                               j.source_url, j.decision_date,
                                ROW_NUMBER() OVER (PARTITION BY r.article_id ORDER BY j.decision_date DESC NULLS LAST) as rn
                         FROM article_jurisprudence_relations r
                         JOIN jurisprudence_cases j ON r.case_uid = j.case_uid
                         WHERE r.article_id = ANY(%s)
-                          AND j.content_summary IS NOT NULL
-                          AND j.content_summary != ''
-                          AND j.content_summary != 'Summary unavailable.'
-                          AND j.content_summary NOT ILIKE '%%summary unavailable%%'
+                          AND COALESCE(NULLIF(NULLIF(j.content_summary, 'Summary unavailable.'), ''), j.full_text) IS NOT NULL
                     )
                     SELECT article_id, case_uid, title, gr_number, content_summary, source_url, decision_date
                     FROM ranked_cases
@@ -2267,61 +2380,98 @@ def search_with_embedding(q_emb: list, query: str, document_id: Optional[str] = 
                         }
                     })
 
-            # 4. Top case matches (jurisprudence) via Hybrid Search - supplementary
-            cases = []
-            if len(linked_cases) < 2:
+            # 4. Top case matches (jurisprudence) via Hybrid Search
+            exact_cases = resolve_exact_cases(cur, user_facing_q)
+            cases = exact_cases.copy()
+            exact_case_uids = {c['parent_id'] for c in exact_cases}
+
+            # Retrieve statutory Civil Code articles linked to the matched jurisprudence case(s)
+            if exact_cases:
+                case_uids = list(exact_case_uids)
+                cur.execute("""
+                    SELECT r.article_id, a.article_number, a.hierarchy, a.content
+                    FROM article_jurisprudence_relations r
+                    JOIN civil_code_articles a ON r.article_id = a.article_id
+                    WHERE r.case_uid = ANY(%s)
+                    ORDER BY a.article_number ASC
+                    LIMIT 4;
+                """, (case_uids,))
+                linked_statutes = []
+                for l_art in cur.fetchall():
+                    if l_art['article_id'] not in exact_ids_set:
+                        linked_statutes.append({
+                            "parent_type": "article",
+                            "parent_id": l_art['article_id'],
+                            "content": l_art['content'],
+                            "similarity": 0.96,
+                            "rrf_score": 0.08,
+                            "is_exact": True,
+                            "is_linked_statute": True,
+                            "metadata": {
+                                "article_number": l_art['article_number'],
+                                "hierarchy": l_art['hierarchy']
+                            }
+                        })
+                        exact_ids_set.add(l_art['article_id'])
+                if linked_statutes:
+                    articles = linked_statutes + articles
+
+            if not exact_cases and (is_juris or len(linked_cases) < 2):
                 hybrid_case_chunks = hybrid_search('case', limit=4)
                 if hybrid_case_chunks:
-                    case_uids = [c['parent_id'] for c in hybrid_case_chunks]
-                    cur.execute("""
-                        SELECT case_uid, title, gr_number, decision_date, source_url, content_summary
-                        FROM jurisprudence_cases
-                        WHERE case_uid = ANY(%s)
-                          AND content_summary IS NOT NULL
-                          AND content_summary != ''
-                          AND content_summary != 'Summary unavailable.'
-                          AND content_summary NOT ILIKE '%%summary unavailable%%';
-                    """, (case_uids,))
-                    meta_map = {row['case_uid']: row for row in cur.fetchall()}
-                    for hc in hybrid_case_chunks:
-                        h_sim = float(hc.get('similarity', 0.0) or 0.0)
-                        if is_juris and h_sim < 0.55:
-                            continue
-                        if hc['parent_id'] in meta_map:
-                            m = meta_map[hc['parent_id']]
-                            hc['metadata'] = m
-                            summary_snip = m.get('content_summary') or hc.get('content', '')
-                            hc['content'] = f"[Jurisprudence Doctrine] {m.get('title', '')} (GR No. {m.get('gr_number', '')}): {summary_snip}"
-                            cases.append(hc)
-                else:
+                    case_uids = [c['parent_id'] for c in hybrid_case_chunks if c['parent_id'] not in exact_case_uids]
+                    if case_uids:
+                        cur.execute("""
+                            SELECT case_uid, title, gr_number, decision_date, source_url,
+                                   COALESCE(NULLIF(NULLIF(content_summary, 'Summary unavailable.'), ''), full_text) AS content_summary
+                            FROM jurisprudence_cases
+                            WHERE case_uid = ANY(%s)
+                              AND COALESCE(NULLIF(NULLIF(content_summary, 'Summary unavailable.'), ''), full_text) IS NOT NULL;
+                        """, (case_uids,))
+                        meta_map = {row['case_uid']: row for row in cur.fetchall()}
+                        for hc in hybrid_case_chunks:
+                            if hc['parent_id'] in exact_case_uids:
+                                continue
+                            h_sim = float(hc.get('similarity', 0.0) or 0.0)
+                            if is_juris and h_sim < 0.55:
+                                continue
+                            if hc['parent_id'] in meta_map:
+                                m = meta_map[hc['parent_id']]
+                                hc['metadata'] = m
+                                summary_snip = m.get('content_summary') or hc.get('content', '')
+                                hc['content'] = f"[Jurisprudence Doctrine] {m.get('title', '')} (GR No. {m.get('gr_number', '')}): {summary_snip[:4000]}"
+                                cases.append(hc)
+                                exact_case_uids.add(hc['parent_id'])
+                elif not cases:
                     clean_terms = [w for w in re.split(r'\W+', query) if len(w) > 2 and w.lower() not in SEARCH_STOPWORDS]
                     if clean_terms:
                         case_search_query = " ".join(clean_terms[:6])
                         cur.execute("""
-                            SELECT case_uid, title, gr_number, source_url, content_summary, decision_date
+                            SELECT case_uid, title, gr_number, source_url,
+                                   COALESCE(NULLIF(NULLIF(content_summary, 'Summary unavailable.'), ''), full_text) AS content_summary,
+                                   decision_date
                             FROM jurisprudence_cases
                             WHERE to_tsvector('simple', title || ' ' || coalesce(content_summary, '')) @@ plainto_tsquery('simple', %s)
-                              AND content_summary IS NOT NULL
-                              AND content_summary != ''
-                              AND content_summary != 'Summary unavailable.'
-                              AND content_summary NOT ILIKE '%%summary unavailable%%'
+                              AND COALESCE(NULLIF(NULLIF(content_summary, 'Summary unavailable.'), ''), full_text) IS NOT NULL
                             LIMIT 2;
                         """, (case_search_query,))
                         for row in cur.fetchall():
-                            cases.append({
-                                "parent_type": "case",
-                                "parent_id": row['case_uid'],
-                                "content": f"[Jurisprudence Doctrine] {row['title']} (GR No. {row['gr_number']}): {row.get('content_summary', '')}",
-                                "similarity": 0.82,
-                                "metadata": {
-                                    "title": row.get('title'),
-                                    "gr_number": row.get('gr_number'),
-                                    "source_url": row.get('source_url'),
-                                    "decision_date": row.get('decision_date'),
-                                    "content_summary": row.get('content_summary'),
-                                    "case_uid": row.get('case_uid')
-                                }
-                            })
+                            if row['case_uid'] not in exact_case_uids:
+                                cases.append({
+                                    "parent_type": "case",
+                                    "parent_id": row['case_uid'],
+                                    "content": f"[Jurisprudence Doctrine] {row['title']} (GR No. {row['gr_number']}): {row.get('content_summary', '')}",
+                                    "similarity": 0.82,
+                                    "metadata": {
+                                        "title": row.get('title'),
+                                        "gr_number": row.get('gr_number'),
+                                        "source_url": row.get('source_url'),
+                                        "decision_date": row.get('decision_date'),
+                                        "content_summary": row.get('content_summary'),
+                                        "case_uid": row.get('case_uid')
+                                    }
+                                })
+                                exact_case_uids.add(row['case_uid'])
 
             # Merge and apply unified high-accuracy ranking without discarding lower-ranked citations
             all_found = articles + linked_cases + cases
@@ -2378,13 +2528,15 @@ def format_context_item(row: dict, doc_filename: Optional[str] = None) -> str:
         gr_num = meta.get('gr_number')
         source_url = meta.get('source_url')
         lines = [f"SOURCE TYPE: JURISPRUDENCE CASE (Ref: {source_id})"]
-        if title and gr_num:
-            lines.append(f"TITLE: {title} (GR No. {gr_num})")
+        if title or gr_num:
+            lines.append(f"TITLE: {title or 'Supreme Court Decision'}{f' (GR No. {gr_num})' if gr_num else ''}")
         if source_url:
             lines.append(f"LINK: {source_url}")
         content_text = row.get('content', '').strip()
-        if len(content_text) > 1500:
-            content_text = content_text[:1500] + "..."
+        # Retain sufficient case text for jurisprudence doctrines to prevent truncating rulings
+        max_chars = 25000 if row.get('is_exact') else 6000
+        if len(content_text) > max_chars:
+            content_text = content_text[:max_chars] + "..."
         lines.append(f"CONTENT: {content_text}")
         return "\n".join(lines) + "\n"
 
@@ -3301,9 +3453,11 @@ YOUR MANDATORY REFUSAL AND STATUTORY RULES:
                             if any(is_matching_article_id(s.get('parent_id'), num) for num in queried_art_nums)
                         ] or statutory_items[:1]
                     else:
-                        statutory_items = statutory_items[:2]
-                    linked_in_ctx = [c for c in case_items if c.get('is_linked_jurisprudence')]
-                    case_items = linked_in_ctx[:3] if linked_in_ctx else case_items[:3]
+                        statutory_items = statutory_items[:3]
+                    exact_in_ctx = [c for c in case_items if c.get('is_exact')]
+                    linked_in_ctx = [c for c in case_items if c.get('is_linked_jurisprudence') and not c.get('is_exact')]
+                    other_in_ctx = [c for c in case_items if not c.get('is_exact') and not c.get('is_linked_jurisprudence')]
+                    case_items = (exact_in_ctx + linked_in_ctx + other_in_ctx)[:4]
 
                 # Construct context: STATUTORY CIVIL CODE ALWAYS LEADS FIRST
                 context_str = ""
@@ -3464,34 +3618,57 @@ CONTEXT:
 {context_str}
 """
                 elif is_juris and case_items:
-                    art_str = f"Article {queried_art_nums[0]}" if queried_art_nums else "the Philippine Civil Code provision"
-                    system_prompt = f"""{lang_directive}You are CIVIL-LEX, a warm, lively, and approachable Philippine Legal Assistant synthesizing Philippine Supreme Court civil jurisprudence for ordinary citizens.
-Your persona is an engaging community paralegal who translates high court decisions into lively, everyday language that citizens with basic literacy can easily understand and apply.
+                    target_case = next((c for c in case_items if c.get('is_exact')), case_items[0])
+                    case_meta = target_case.get('metadata') or {}
+                    target_case_label = f"{case_meta.get('title', 'Supreme Court Decision')}"
+                    if case_meta.get('gr_number'):
+                        target_case_label += f" ({case_meta.get('gr_number')})"
 
-The user is inquiring about relevant Supreme Court jurisprudence, court rulings, and landmark cases interpreting {art_str}.
+                    art_str = f"Article {queried_art_nums[0]}" if queried_art_nums else "the applicable Philippine civil law doctrines"
+                    inquiry_desc = f"interpreting {art_str}" if queried_art_nums else f"regarding {target_case_label}"
+
+                    no_dispute_directive = ""
+                    if not is_dispute:
+                        no_dispute_directive = (
+                            "\n   - STRICT OBJECTIVE THIRD-PERSON PERSPECTIVE (NO HYPOTHETICAL USER ROLE): "
+                            "The user is asking an objective question about this Supreme Court ruling and has NOT presented a personal dispute. "
+                            "ABSOLUTELY FORBIDDEN: NEVER say 'In your situation', 'in your case', 'your property', 'you and your siblings', or 'your donation'. "
+                            "NEVER address the user as if they or their family were parties in this lawsuit. Refer to the actual case parties by name (e.g., 'In this case, the donor Basilisa Comerciante...')."
+                        )
+
+                    system_prompt = f"""{lang_directive}You are CIVIL-LEX, an approachable and precise Philippine Legal Assistant synthesizing Philippine Supreme Court civil jurisprudence for citizens.
+Your persona translates high court decisions into clear, accessible everyday language while preserving rigorous legal and statutory accuracy.
+
+The user is inquiring about Supreme Court jurisprudence {inquiry_desc}.
 
 MANDATORY RULES:
-1. Under `### Direct Answer & Legal Conclusion`: Summarize in 1-2 clear, conversational, and direct sentences how Philippine courts and the Supreme Court interpret and apply {art_str}. Anchor your direct answer strictly to {art_str}. Do NOT cite other articles.
-2. Under `### Governing Statutory Basis`: Quote the governing statutory basis for {art_str} EXACTLY ONCE. Provide exactly one quote block for the queried article. NEVER repeat the verbatim block.
+1. Under `### Direct Answer & Legal Conclusion`: Summarize in 1-2 clear, direct sentences the exact legal ruling and doctrine established by the Supreme Court in {target_case_label if not queried_art_nums else art_str}, explicitly identifying the governing Civil Code article(s) (such as Article 728, Article 729, or Article 764) from CONTEXT.{no_dispute_directive}
+2. Under `### Governing Statutory Basis`: Quote verbatim from CONTEXT the primary governing Civil Code article(s) (e.g. Article 728 or Article 764) providing the statutory foundation for this ruling. Include the exact article number and statutory text in a blockquote. Format as:
+> **Article [Number] (Republic Act No. 386 - Civil Code of the Philippines)**
+> "[Quote statutory text verbatim from CONTEXT]"
 3. Under `### Related Supreme Court Jurisprudence & Doctrines`:
    - For EACH supporting Supreme Court case provided in CONTEXT:
      - State the **Case Title** (*G.R. No. [number], [Date]*).
-     - **Core Doctrine & Ruling**: In 1-2 clear, simple sentences, explain what the Supreme Court decided and what rule was established.
+     - **Core Doctrine & Ruling**: In 1-2 clear, simple sentences, explain what the Supreme Court decided and what rule was established based strictly on CONTEXT.
      - **Factual Context & Application**: In 1-2 clear, simple sentences, explain what happened in the case using plain everyday words.
      - Keep summaries concise, engaging, and focused.
-4. STRICT CLOSED-BOOK FIDELITY & CIVIL LAW EXCLUSIVITY:
-   - Rely strictly on the case titles, G.R. numbers, and doctrines provided in CONTEXT. Never fabricate non-existent case citations.
-   - ABSOLUTELY FORBIDDEN: NEVER cite, invent, mention, or reference ANY statutory articles from other legal codes (especially the Revised Penal Code / RPC, Labor Code, or Tax Code). CIVIL-LEX is exclusively a Philippine Civil Law platform. You MUST ONLY cite and explain Civil Code articles present in CONTEXT. Do NOT cite or guess any criminal code articles.
-5. LIVELY CONVERSATIONAL EXPLANATION WITH PRACTICAL EXAMPLE:
-   - Avoid deep legal words. Explain every legal term in everyday conversational words that a citizen with limited formal education can easily follow.
-   - In `### Practical Legal Implications`, include a dedicated practical example directly tailored to the user's situation ("Halimbawa sa Totoong Buhay (Batay sa Inyong Sitwasyon):" / "Real-Life Practical Example (Based on Your Situation):").
+4. STRICT CLOSED-BOOK FIDELITY & ZERO-HALLUCINATION DIRECTIVE:
+   - Rely strictly and exclusively on the actual case facts, legal issues, and doctrines provided in CONTEXT.
+   - ABSOLUTELY FORBIDDEN: NEVER invent facts, legal issues, or personal conditions not stated in CONTEXT (e.g., do NOT invent mental incapacity, unsound mind, fraud, murder, or crimes).
+   - If the user did not describe a personal dispute, do NOT invent or assume a client scenario (do NOT say "In your situation, if you were mentally incapacitated...").
+   - NEVER cite, invent, mention, or reference ANY statutory articles from other legal codes (especially the Revised Penal Code / RPC, Labor Code, or Tax Code). CIVIL-LEX is exclusively a Philippine Civil Law platform. You MUST ONLY cite and explain Civil Code articles present in CONTEXT.
+5. CONVERSATIONAL EXPLANATION WITH PRACTICAL EXAMPLE:
+   - Avoid deep legalese. Explain every legal term in everyday conversational words that an ordinary citizen can easily follow.
+   - In `### Practical Legal Implications`, explain what this Supreme Court ruling means for ordinary people, followed by a realistic practical example:
+     - If the user described their own legal problem, tailor the example to their facts: "**Halimbawa sa Totoong Buhay (Batay sa Inyong Sitwasyon):**" (or in English: "**Real-Life Practical Example (Based on Your Situation):**").
+     - If the user asked about the case or G.R. number in general, provide a general everyday example illustrating the case doctrine: "**Halimbawa sa Totoong Buhay:**" (or in English: "**Real-Life Practical Example:**").
 
 MANDATORY MARKDOWN FORMAT:
 ### Direct Answer & Legal Conclusion
-[1-2 clear, direct, and conversational sentences summarizing the judicial doctrine and legal conclusion strictly for {art_str} in plain words.]
+[1-2 clear, direct sentences summarizing the judicial doctrine and governing Civil Code articles in plain words based strictly on CONTEXT without addressing the user as a party.]
 
 ### Governing Statutory Basis
-> **Article [Number] ([Law Title, e.g. Republic Act No. 386 or Executive Order No. 209 - Family Code of the Philippines as given in CONTEXT])**
+> **Article [Number] (Republic Act No. 386 - Civil Code of the Philippines)**
 > "[Quote statutory text verbatim from CONTEXT]"
 
 ### Related Supreme Court Jurisprudence & Doctrines
@@ -3500,10 +3677,10 @@ MANDATORY MARKDOWN FORMAT:
   - **Factual Context & Application**: [1-2 simple sentences on how the Court applied the law in daily life.]
 
 ### Practical Legal Implications
-[1-2 clear, lively paragraphs explaining what these judicial rulings mean in practice for ordinary citizens, using simple everyday words.
+[1-2 clear paragraphs explaining what these judicial rulings mean in practice for ordinary citizens, using simple everyday words.
 
-**Halimbawa sa Totoong Buhay (Batay sa Inyong Sitwasyon):** (or in English: **Real-Life Practical Example (Based on Your Situation):**)
-[2-3 lively sentences illustrating a realistic scenario directly tailored to the user's query situation showing how the Supreme Court doctrine works in practice.]]
+**Halimbawa sa Totoong Buhay:** (or **Real-Life Practical Example:**)
+[2-3 sentences illustrating an everyday realistic scenario showing how this Supreme Court doctrine works in practice.]]
 
 CONTEXT:
 {context_str}
@@ -3655,7 +3832,10 @@ CONTEXT:
                 # Inject user persona prefix at the top so the LLM always
                 # sees the user's professional profile first.
                 if user_persona_prefix:
-                    system_prompt = user_persona_prefix + system_prompt
+                    if is_juris and not is_dispute:
+                        system_prompt = user_persona_prefix + "\nCRITICAL OVERRIDE FOR THIS SESSION: The citizen is asking an objective legal/research question about a Supreme Court case. Do NOT assume the user is in this situation or address them as a litigant.\n\n" + system_prompt
+                    else:
+                        system_prompt = user_persona_prefix + system_prompt
 
                 # Inject rolling per-chat summary (long-chat memory) if present.
                 system_prompt = session_memory.inject_summary_into_system_prompt(

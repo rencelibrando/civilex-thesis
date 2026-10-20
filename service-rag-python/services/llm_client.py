@@ -4,11 +4,16 @@ import logging
 import time
 from typing import Optional
 import httpx
-from core.config import LM_STUDIO_URL
+from core.config import LM_STUDIO_URL, LM_STUDIO_MODEL
 
 _async_client: Optional[httpx.AsyncClient] = None
 _sync_client: Optional[httpx.Client] = None
 _model_online_cache: tuple[bool, str, float] = (False, "server_offline", 0.0)
+_active_model_name: Optional[str] = None
+
+def get_target_model_name() -> str:
+    global _active_model_name
+    return _active_model_name or LM_STUDIO_MODEL or "gemma 4-e4b-civilex"
 
 def set_model_offline() -> None:
     global _model_online_cache
@@ -38,6 +43,8 @@ async def check_model_readiness(timeout: float = 1.5) -> tuple[bool, str]:
             if not loaded:
                 _model_online_cache = (False, "no_model_loaded", time.time())
                 return False, "LM Studio is running, but no model is loaded into memory. Please load your model in LM Studio and try again."
+            global _active_model_name
+            _active_model_name = loaded[0]
             _model_online_cache = (True, "ready", time.time())
             return True, "ready"
 
@@ -54,6 +61,7 @@ async def check_model_readiness(timeout: float = 1.5) -> tuple[bool, str]:
             _model_online_cache = (False, "no_model_loaded", time.time())
             return False, "LM Studio is running, but no model is loaded into memory. Please load your model in LM Studio and try again."
 
+        _active_model_name = models[0].get("id") or LM_STUDIO_MODEL
         _model_online_cache = (True, "ready", time.time())
         return True, "ready"
     except Exception:
@@ -127,7 +135,7 @@ async def generate_response_stream(
 
     url = f"{LM_STUDIO_URL.rstrip('/')}/chat/completions"
     payload = {
-        "model": "local-model",
+        "model": get_target_model_name(),
         "messages": messages,
         "temperature": 0.3,
         "max_tokens": max_tokens,
@@ -195,7 +203,7 @@ async def call_chat_completion_async(
 ) -> str | None:
     url = f"{LM_STUDIO_URL.rstrip('/')}/chat/completions"
     payload = {
-        "model": "local-model",
+        "model": get_target_model_name(),
         "messages": messages,
         "temperature": temperature,
         "max_tokens": max_tokens,
@@ -229,7 +237,7 @@ def call_chat_completion_sync(
 ) -> str | None:
     url = f"{LM_STUDIO_URL.rstrip('/')}/chat/completions"
     payload = {
-        "model": "local-model",
+        "model": get_target_model_name(),
         "messages": messages,
         "temperature": temperature,
         "max_tokens": max_tokens,

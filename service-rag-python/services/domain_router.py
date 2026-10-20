@@ -164,6 +164,7 @@ class DomainRouter:
         self,
         query: str,
         has_article_ref: bool = False,
+        has_case_ref: bool = False,
         document_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """Classifies incoming query into in_domain_civil, out_of_domain_legal, or out_of_domain_non_legal."""
@@ -190,12 +191,13 @@ class DomainRouter:
                         "reason": f"Explicit reference to non-civil statute ({domain_name}) detected."
                     }
 
-        # Fast path 1: Explicit statutory article references always route to civil law
-        if has_article_ref:
+        # Fast path 1: Explicit statutory article or jurisprudence case references always route to civil law
+        is_explicit_case = has_case_ref or bool(re.search(r'\b(?:g\.?r\.?\s*(?:no\.?|nos\.?)?\s*[\w\-]+|gr\s*no\.?\s*\d+|gr\s+number\s*\d+|jurisprudence|court\s+of\s+appeals|supreme\s+court)\b', q_lower))
+        if has_article_ref or is_explicit_case:
             return {
                 "category": "in_domain_civil",
                 "target_domain": None,
-                "reason": "Explicit statutory article reference detected."
+                "reason": "Explicit statutory article or jurisprudence reference detected."
             }
 
         # Fast path 2: Casual greetings without substantive legal inquiry

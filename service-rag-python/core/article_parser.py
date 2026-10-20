@@ -155,12 +155,106 @@ def is_compound_or_multi_intent_query(query: str) -> bool:
     return any(bool(re.search(p, q_lower)) for p in COMPOUND_INTENT_PATTERNS)
 
 
+# General Register (G.R.) docket number pattern matching SC docket variations
+GR_PATTERN = re.compile(
+    r'(?:\bGR\b|\bG\s*\.\s*R\s*\.?)\s*(?:(?:Nos?|No|Number)\b\.?)?\s*([A-Za-z]?\s*[-–]?\s*\d+(?:[-–]\d+)?)',
+    re.IGNORECASE
+)
+
+# Case title party pattern matching 'Party A vs. Party B'
+CASE_VS_PATTERN = re.compile(
+    r'\b([A-Z][a-zA-Z\s\.,\'-]+?)\s+(?:v\.?|vs\.?|versus|contra|laban\s+sa)\s+([A-Z][a-zA-Z\s\.,\'-]+)',
+    re.IGNORECASE
+)
+
+CASE_TITLE_STOPWORDS = frozenset({
+    'what', 'whats', 'why', 'whys', 'how', 'was', 'the', 'ruling', 'in', 'case', 'doctrine', 'of',
+    'and', 'for', 'about', 'court', 'appeals', 'ca', 'republic', 'philippines', 'supreme', 'decision',
+    'decision_date', 'ano', 'ang', 'hatol', 'korte', 'suprema', 'desisyon', 'ukol', 'sa', 'mga',
+    'tell', 'me', 'summarize', 'summary', 'explain', 'held', 'hold', 'decided', 'can', 'cant', 'cannot',
+    'could', 'would', 'search', 'searching', 'find', 'finding', 'look', 'lookup', 'though', 'through',
+    'name', 'names', 'give', 'show', 'ask', 'asking', 'details', 'info', 'information', 'now', 'please',
+    'paki', 'pakisabi', 'pakipaliwanag', 'anong', 'bakit', 'paano', 'kaso', 'ng', 'tungkol', 'titled',
+    'versus', 'vs', 'contra', 'laban', 'regarding', 'concerning'
+})
+
+CONVERSATIONAL_PREFIX_PATTERN = re.compile(
+    r'^(?:.*?\b(?:case\s+(?:of|titled|named|involving)|ruling\s+(?:in|of)|doctrine\s+(?:in|of|under)|decision\s+(?:in|of)|search\s+(?:for|through|though|the|name)?|whats?\s+(?:the)?|why\s+(?:is|it|cant|can\'t)?|tell\s+me\s+about|explain|give\s+me|hatol\s+sa|desisyon\s+sa|kaso\s+ng?|ano\s+ang|tungkol\s+sa)\s+)+',
+    re.IGNORECASE
+)
+
+
+def parse_gr_numbers(text: str) -> List[str]:
+    # Extracts clean G.R. docket numbers avoiding false matches and handling keyboard typos
+    if not text:
+        return []
+    matches = GR_PATTERN.findall(text)
+    clean_nums = []
+    seen = set()
+    for m in matches:
+        cleaned = re.sub(r'\s+', '', m).strip()
+        if cleaned and cleaned not in seen:
+            seen.add(cleaned)
+            clean_nums.append(cleaned)
+            alt_zero = re.sub(r'[Oo]$', '0', cleaned)
+            if alt_zero != cleaned and alt_zero not in seen:
+                seen.add(alt_zero)
+                clean_nums.append(alt_zero)
+    extended_matches = re.findall(r'(?:\bGR\b|\bG\s*\.\s*R\s*\.?)\s*(?:(?:Nos?|No|Number)\b\.?)?\s*([A-Za-z]?\s*[-–]?\s*\d+[Oo])\b', text, re.IGNORECASE)
+    for em in extended_matches:
+        cleaned = re.sub(r'\s+', '', em).strip()
+        as_zero = re.sub(r'[Oo]$', '0', cleaned)
+        if as_zero not in seen:
+            seen.add(as_zero)
+            clean_nums.append(as_zero)
+        stripped_l = re.sub(r'^[A-Za-z][-–]?', '', as_zero)
+        if stripped_l and stripped_l not in seen:
+            seen.add(stripped_l)
+            clean_nums.append(stripped_l)
+    return clean_nums
+
+
+def extract_case_title_candidate(text: str) -> Optional[str]:
+    # Extracts and cleans candidate case title like 'Party A vs. Party B' from conversational queries
+    if not text:
+        return None
+    m = CASE_VS_PATTERN.search(text)
+    if not m:
+        return None
+    side1 = m.group(1).strip()
+    side2 = m.group(2).strip()
+    side1_cleaned = CONVERSATIONAL_PREFIX_PATTERN.sub('', side1).strip()
+    if not side1_cleaned:
+        side1_cleaned = side1
+    side2_cleaned = re.split(r'[\?\n;]', side2)[0].strip()
+    if not side1_cleaned or not side2_cleaned:
+        return None
+    return f"{side1_cleaned} vs. {side2_cleaned}"
+
+
+def extract_case_parties(text: str) -> List[str]:
+    # Extracts significant party search terms from title patterns
+    if not text:
+        return []
+    cand = extract_case_title_candidate(text)
+    m = CASE_VS_PATTERN.search(cand) if cand else CASE_VS_PATTERN.search(text)
+    if not m:
+        return []
+    terms = []
+    for side in (m.group(1), m.group(2)):
+        words = [w for w in re.split(r'\W+', side) if len(w) > 2 and w.lower() not in CASE_TITLE_STOPWORDS]
+        if words:
+            terms.extend(words[:2])
+    return terms[:4]
+
+
 JURISPRUDENCE_PATTERNS = [
-    r'(?:jurisprudence|jurisprudensya|\bscra\b|g\.?\s*r\.?\s*(?:no\.?|nos\.?)?\s*\d+)',
+    r'(?:jurisprudence|jurisprudensya|\bscra\b|(?:\bgr\b|\bg\s*\.\s*r\s*\.?)\s*(?:(?:nos?|no|number)\b\.?)?\s*[a-z]?\s*[-–]?\s*\d+)',
     r'\b(?:supreme\s+court|korte\s+suprema)\b',
     r'\b(?:landmark\s+cases?|court\s+cases?|related\s+cases?|relevant\s+cases?|cited\s+cases?|court\s+rulings?|court\s+decisions?|judicial\s+precedents?|legal\s+precedents?)\b',
     r'\b(?:mga\s+kaso\s+sa\s+korte(?:\s+suprema)?|desisyon\s+ng\s+korte(?:\s+suprema)?|hatol\s+ng\s+korte(?:\s+suprema)?|doktrina\s+ng\s+korte(?:\s+suprema)?)\b',
     r'\b(?:cases?\s+(?:on|about|interpreting|under|for|involving)|doctrines?\s+(?:on|about|under|of))\b',
+    r'\b(?:v\.?|vs\.?|versus|contra|laban\s+sa)\s+[A-Z][a-zA-Z]',
 ]
 
 EXCLUDE_CHARGE_PATTERNS = [
@@ -177,6 +271,8 @@ def is_jurisprudence_query(query: str) -> bool:
     """
     if not query:
         return False
+    if parse_gr_numbers(query) or extract_case_parties(query):
+        return True
     q_lower = query.lower()
     if any(re.search(p, q_lower) for p in EXCLUDE_CHARGE_PATTERNS) and not any(
         re.search(p, q_lower) for p in [r'\bsupreme\s+court\b', r'\bkorte\s+suprema\b', r'jurisprudenc', r'jurisprudens']

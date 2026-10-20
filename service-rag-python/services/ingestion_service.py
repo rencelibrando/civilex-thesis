@@ -118,8 +118,21 @@ class DBHelper:
 
     @staticmethod
     def create_indexes(conn):
-        print("Creating post-ingestion indexes (HNSW vector index & Full-Text Search index)...")
+        print("Creating post-ingestion indexes (vector, FTS, and trigram)...")
         with conn.cursor() as cur:
+            cur.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm;")
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_jurisprudence_title_trgm 
+                ON jurisprudence_cases USING gin (title gin_trgm_ops);
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_jurisprudence_gr_trgm 
+                ON jurisprudence_cases USING gin (gr_number gin_trgm_ops);
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_jurisprudence_date_trgm 
+                ON jurisprudence_cases USING gin (decision_date gin_trgm_ops);
+            """)
             cur.execute("""
                 CREATE INDEX IF NOT EXISTS vector_idx 
                 ON document_chunks USING hnsw (embedding vector_cosine_ops);
@@ -133,12 +146,20 @@ class DBHelper:
                 ON document_chunks USING hnsw (embedding vector_cosine_ops) WHERE parent_type = 'user_document';
             """)
             cur.execute("""
+                CREATE INDEX IF NOT EXISTS case_parent_id_idx 
+                ON document_chunks (parent_id) WHERE parent_type = 'case';
+            """)
+            cur.execute("""
                 ALTER TABLE document_chunks 
                 ADD COLUMN IF NOT EXISTS fts tsvector GENERATED ALWAYS AS (to_tsvector('english', content)) STORED;
             """)
             cur.execute("""
                 CREATE INDEX IF NOT EXISTS fts_idx 
                 ON document_chunks USING GIN (fts);
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS case_fts_idx 
+                ON document_chunks USING GIN (fts) WHERE parent_type = 'case';
             """)
             conn.commit()
         print("Post-ingestion indexes created successfully.")

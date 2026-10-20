@@ -20,8 +20,8 @@ POSTGRES_DB_URL = os.getenv(
     "postgresql://postgres:postgres@localhost:54322/postgres"
 )
 
-# LM Studio default URL (OpenAI Compatible)
 LM_STUDIO_URL = os.getenv("LM_STUDIO_URL", "http://10.57.24.131:1234/v1")
+LM_STUDIO_MODEL = os.getenv("LM_STUDIO_MODEL", "gemma 4-e4b-civilex").strip("\"'")
 
 # LLM Provider Configuration (LM Studio as Main & Exclusive Provider)
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "lmstudio").lower()

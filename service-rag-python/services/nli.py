@@ -32,6 +32,7 @@ import json
 import logging
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict
+from core.article_parser import parse_gr_numbers
 
 
 
@@ -468,8 +469,8 @@ def _extract_article_ids(text: str) -> List[str]:
 
 
 def _extract_gr_numbers(text: str) -> List[str]:
-    """Extract all G.R. No. references."""
-    return _GR_PATTERN.findall(text)
+    # Extracts all G.R. No. references using canonical parser
+    return parse_gr_numbers(text)
 
 
 def _has_negation_before(text_lower: str, target_start: int, window: int = 40) -> bool:

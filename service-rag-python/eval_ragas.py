@@ -16,7 +16,7 @@ import httpx
 import numpy as np
 from dotenv import load_dotenv
 
-from core.config import LM_STUDIO_URL
+from core.config import LM_STUDIO_URL, LM_STUDIO_MODEL
 from main import (
     classify_query_intent,
     embed_and_search,
@@ -133,7 +133,7 @@ CONTEXT:
             resp = client.post(
                 url,
                 json={
-                    "model": "local-model",
+                    "model": LM_STUDIO_MODEL,
                     "messages": [
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": query},
@@ -229,7 +229,7 @@ def generate_hypothetical_questions(response: str, n: int = 3) -> list:
             resp = client.post(
                 url,
                 json={
-                    "model": "local-model",
+                    "model": LM_STUDIO_MODEL,
                     "messages": [{"role": "user", "content": prompt}],
                     "temperature": 0.3,
                 },

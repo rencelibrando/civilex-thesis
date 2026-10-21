@@ -14,9 +14,9 @@ const dbPool = new Pool({
   connectionString:
     process.env.DATABASE_URL ||
     'postgresql://postgres:postgres@localhost:54322/postgres',
-  max: 5,
+  max: parseInt(process.env.DB_POOL_MAX || '25', 10),
   idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 2000,
+  connectionTimeoutMillis: 10000,
 });
 
 // Suppress unhandled pool errors if DB restarts
@@ -27,6 +27,11 @@ dbPool.on('error', (err) => {
 // In-memory active heartbeats map
 // userId -> { userId, email, fullName, ip, client, lastActive, action }
 const inMemoryHeartbeats = new Map();
+
+// Short cache for background database sessions to prevent thousands of simultaneous JOINs under stress load
+let cachedDbSessions = [];
+let cachedDbSessionsExpiry = 0;
+const DB_SESSIONS_TTL_MS = 2000;
 
 // Helper to simplify user-agent string
 export function parseClientDevice(userAgent) {
@@ -122,24 +127,30 @@ export class PresenceService {
       }
     }
 
-    // 2. Query Supabase Postgres for active sessions in last 30 minutes
+    // 2. Query Supabase Postgres for active sessions in last 30 minutes (cached 2s)
     try {
-      const dbQuery = `
-        SELECT DISTINCT ON (s.user_id)
-          s.user_id,
-          u.email,
-          COALESCE(u.raw_user_meta_data->>'full_name', split_part(u.email, '@', 1)) as full_name,
-          ROUND(EXTRACT(EPOCH FROM (NOW() - s.updated_at)))::int as last_seen_sec,
-          COALESCE(host(s.ip), 'local') as ip,
-          s.user_agent
-        FROM auth.sessions s
-        JOIN auth.users u ON u.id = s.user_id
-        WHERE s.updated_at >= NOW() - INTERVAL '30 minutes'
-        ORDER BY s.user_id, s.updated_at DESC;
-      `;
-      const dbRes = await dbPool.query(dbQuery);
+      let rows = cachedDbSessions;
+      if (now >= cachedDbSessionsExpiry) {
+        const dbQuery = `
+          SELECT DISTINCT ON (s.user_id)
+            s.user_id,
+            u.email,
+            COALESCE(u.raw_user_meta_data->>'full_name', split_part(u.email, '@', 1)) as full_name,
+            ROUND(EXTRACT(EPOCH FROM (NOW() - s.updated_at)))::int as last_seen_sec,
+            COALESCE(host(s.ip), 'local') as ip,
+            s.user_agent
+          FROM auth.sessions s
+          JOIN auth.users u ON u.id = s.user_id
+          WHERE s.updated_at >= NOW() - INTERVAL '30 minutes'
+          ORDER BY s.user_id, s.updated_at DESC;
+        `;
+        const dbRes = await dbPool.query(dbQuery);
+        rows = dbRes.rows || [];
+        cachedDbSessions = rows;
+        cachedDbSessionsExpiry = now + DB_SESSIONS_TTL_MS;
+      }
 
-      for (const row of dbRes.rows) {
+      for (const row of rows) {
         const userId = row.user_id;
         const lastSeen = Math.max(0, parseInt(row.last_seen_sec, 10) || 0);
 

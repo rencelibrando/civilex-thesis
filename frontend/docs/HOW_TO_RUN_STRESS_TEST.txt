@@ -8,7 +8,7 @@ Date: 2026-10-21
 ================================================================================
 
 1. OVERVIEW & TEST SUITE ARCHITECTURE
---------------------------------------------------------------------------------
+
 This test suite empirically measures the Maximum Sustainable Load (MSL), response
 latencies, throughput (RPS), and transaction error rates of the CIVIL-LEX platform
 under heavy concurrent user traffic.
@@ -26,7 +26,7 @@ Tested Operating Tiers:
 
 
 2. SCRIPT INVENTORY (SCRIPTS DIRECTORY)
---------------------------------------------------------------------------------
+
 All test files are located in the `scripts/` directory:
 
   FILE NAME                 PURPOSE & DESCRIPTION
@@ -44,7 +44,7 @@ All test files are located in the `scripts/` directory:
 
 
 3. PREREQUISITES & PRE-FLIGHT CHECKLIST
---------------------------------------------------------------------------------
+
 Before running stress tests, ensure all backend microservices are running:
 
   1. Node.js API Gateway (:4000):
@@ -69,7 +69,7 @@ Before running stress tests, ensure all backend microservices are running:
 
 
 4. STEP 1: PROVISION AUTHENTICATED TEST USERS (ONE-TIME SETUP)
---------------------------------------------------------------------------------
+
 The stress test requires authenticated JWT tokens. A dataset of 10,000 accounts
 is already stored in `scripts/stress-users.json`.
 
@@ -82,13 +82,13 @@ If you ever need to generate fresh users or increase the count:
   node scripts/inject-users.mjs 10000
 
   # Point to a specific Supabase instance over LAN
-  SUPABASE_URL="http://192.168.100.76:54321" node scripts/inject-users.mjs 1000
+  SUPABASE_URL="" node scripts/inject-users.mjs 1000
 
 Note: The script automatically skips existing users and only injects missing accounts.
 
 
 5. STEP 2: RUNNING THE STRESS TEST (GRAFANA K6 - RECOMMENDED)
---------------------------------------------------------------------------------
+
 Execute the test from the repository root directory (`civilex-thesis/`).
 
 A. RUN TIER 1 (1,000 VUs - OPTIMAL ZONE):
@@ -123,7 +123,7 @@ C. RUN A CUSTOM TARGET (QUICK VALIDATION):
 
 
 6. STEP 3: RUNNING WITH NATIVE NODE.JS (FALLBACK RUNNER)
---------------------------------------------------------------------------------
+
 If Grafana k6 is not installed on your machine, use the native Node.js runner:
 
   # Default: 500 VUs for 60 seconds against LAN IP
@@ -140,7 +140,7 @@ with Min, Avg, and 95th Percentile latencies upon conclusion.
 
 
 7. STEP 4: INTERPRETING OUTPUT METRICS & UNDERSTANDING CHECKS
---------------------------------------------------------------------------------
+
 When k6 finishes, examine the terminal report:
 
   Metric / Check Name         Interpretation & Healthy Benchmark
@@ -166,7 +166,7 @@ When k6 finishes, examine the terminal report:
 
 
 8. STEP 5: CLEANUP & TEST ACCOUNT TEARDOWN
---------------------------------------------------------------------------------
+
 When load testing is concluded and you wish to remove the generated test accounts
 from your Supabase database:
 
@@ -178,7 +178,7 @@ from your Supabase database:
 
 
 9. THESIS DEFENSE CHEAT SHEET (SOP 3 & 4)
---------------------------------------------------------------------------------
+
 Key questions panel members may ask and your empirical answers:
 
   Q: "What are your concurrency targets?"

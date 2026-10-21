@@ -18,65 +18,40 @@ echo -e "${BOLD}${CYAN}====================================================${RES
 echo -e "${BOLD}${CYAN}   CIVIL-LEX Local Services Tunnel Helper for Azure   ${RESET}"
 echo -e "${BOLD}${CYAN}====================================================${RESET}"
 
-# Check available tunneling tool
-TOOL=""
-if command -v devtunnel >/dev/null 2>&1; then
-  TOOL="devtunnel"
-elif command -v cloudflared >/dev/null 2>&1; then
-  TOOL="cloudflared"
-fi
-
-if [ -z "$TOOL" ]; then
-  echo -e "${YELLOW}[!] Neither 'devtunnel' (Microsoft) nor 'cloudflared' was found in PATH.${RESET}"
-  echo -e "\n${BOLD}Choose one to install on your machine:${RESET}"
-  echo -e "  ${BLUE}1. Microsoft Dev Tunnels CLI (Recommended for Azure):${RESET}"
-  echo -e "     curl -sL https://aka.ms/TunnelsCliDownload/linux-x64 -o /tmp/devtunnel && chmod +x /tmp/devtunnel && sudo mv /tmp/devtunnel /usr/local/bin/"
-  echo -e "\n  ${BLUE}2. Cloudflare Tunnel (cloudflared):${RESET}"
-  echo -e "     # On Fedora: sudo dnf install cloudflared"
-  echo -e "     # Or universal: curl -sL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /tmp/cloudflared && chmod +x /tmp/cloudflared && sudo mv /tmp/cloudflared /usr/local/bin/"
-  echo ""
+# Check if devtunnel is available
+if ! command -v devtunnel >/dev/null 2>&1; then
+  echo -e "${YELLOW}[!] 'devtunnel' (Microsoft Dev Tunnels CLI) was not found in PATH.${RESET}"
+  echo -e "\n${BOLD}Install Microsoft Dev Tunnels CLI:${RESET}"
+  echo -e "  ${BLUE}curl -sL https://aka.ms/TunnelsCliDownload/linux-x64 -o /tmp/devtunnel && chmod +x /tmp/devtunnel && sudo mv /tmp/devtunnel /usr/local/bin/${RESET}\n"
   exit 1
 fi
 
-if [ "$TOOL" = "devtunnel" ]; then
-  echo -e "${GREEN}[✔] Using Microsoft Dev Tunnels ('devtunnel')${RESET}"
-  echo -e "${CYAN}[i] Creating or connecting persistent tunnel 'civilex-tunnel'...${RESET}"
-  
-  # Ensure user is logged in
-  if ! devtunnel user show >/dev/null 2>&1; then
-    echo -e "${YELLOW}[!] Please log in to Microsoft / GitHub for Dev Tunnels:${RESET}"
-    devtunnel user login
-  fi
+echo -e "${GREEN}[✔] Using Microsoft Dev Tunnels ('devtunnel')${RESET}"
+echo -e "${CYAN}[i] Creating or connecting persistent tunnel 'civilex-tunnel-2'...${RESET}"
 
-  # Create tunnel if not existing
-  devtunnel show civilex-tunnel >/dev/null 2>&1 || devtunnel create civilex-tunnel -a --allow-anonymous
-
-  # Add ports if not added (configured with http protocol to prevent raw TCP window stalls)
-  devtunnel port create civilex-tunnel -p 4000 --protocol http >/dev/null 2>&1 || true
-  devtunnel port create civilex-tunnel -p 8000 --protocol http >/dev/null 2>&1 || true
-  devtunnel port create civilex-tunnel -p 54321 --protocol http >/dev/null 2>&1 || true
-
-  echo -e "${GREEN}[✔] Ports configured:${RESET}"
-  echo -e "  - Port 4000  (Node.js Backend Gateway)"
-  echo -e "  - Port 8000  (Python RAG Service)"
-  echo -e "  - Port 54321 (Local Supabase API Gateway)"
-  echo -e "\n${BOLD}${YELLOW}Your Dev Tunnel URLs:${RESET}"
-  echo -e "  - Backend API:  https://w21xbn22-4000.asse.devtunnels.ms"
-  echo -e "  - Python RAG:   https://w21xbn22-8000.asse.devtunnels.ms"
-  echo -e "  - Supabase API: https://w21xbn22-54321.asse.devtunnels.ms"
-
-
-  while true; do
-    echo -e "${CYAN}[i] Hosting tunnel 'civilex-tunnel'...${RESET}"
-    devtunnel host civilex-tunnel || true
-    echo -e "${YELLOW}[!] Dev Tunnel disconnected or encountered an error. Reconnecting in 3 seconds...${RESET}"
-    sleep 3
-  done
-
-elif [ "$TOOL" = "cloudflared" ]; then
-  echo -e "${GREEN}[✔] Using Cloudflare Quick Tunnels ('cloudflared')${RESET}"
-  echo -e "${CYAN}[i] Starting tunnel for Python RAG Service on port 8000...${RESET}"
-  echo -e "${YELLOW}[*] Run in a second terminal for Supabase (port 54321): 'cloudflared tunnel --url http://localhost:54321'${RESET}\n"
-
-  cloudflared tunnel --url http://localhost:8000
+# Ensure user is logged in
+if ! devtunnel user show >/dev/null 2>&1; then
+  echo -e "${YELLOW}[!] Please log in to Microsoft / GitHub for Dev Tunnels:${RESET}"
+  devtunnel user login
 fi
+
+# Create tunnel if not existing
+devtunnel show civilex-tunnel-2 >/dev/null 2>&1 || devtunnel create civilex-tunnel-2 -a --allow-anonymous
+
+# Add ports if not added (configured with http protocol to prevent raw TCP window stalls)
+devtunnel port create civilex-tunnel-2 -p 4000 --protocol http >/dev/null 2>&1 || true
+devtunnel port create civilex-tunnel-2 -p 54321 --protocol http >/dev/null 2>&1 || true
+
+echo -e "${GREEN}[✔] Ports configured:${RESET}"
+echo -e "  - Port 4000  (Node.js Backend Gateway)"
+echo -e "  - Port 54321 (Local Supabase API Gateway)"
+echo -e "\n${BOLD}${YELLOW}Your Dev Tunnel URLs:${RESET}"
+echo -e "  - Backend API:  https://ps7cvfbz-4000.asse.devtunnels.ms"
+echo -e "  - Supabase API: https://ps7cvfbz-54321.asse.devtunnels.ms"
+
+while true; do
+  echo -e "${CYAN}[i] Hosting tunnel 'civilex-tunnel-2'...${RESET}"
+  devtunnel host civilex-tunnel-2 || true
+  echo -e "${YELLOW}[!] Dev Tunnel disconnected or encountered an error. Reconnecting in 3 seconds...${RESET}"
+  sleep 3
+done

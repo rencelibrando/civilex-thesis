@@ -284,8 +284,8 @@ start_python() {
 
 start_tunnel() {
   rotate_log_if_large "${TUNNEL_LOG}"
-  echo -e "${YELLOW}[+] Starting Azure Dev Tunnel (civilex-tunnel)...${RESET}"
-  echo "[$(date '+%Y-%m-%d %H:%M:%S')] [SYSTEM] Starting Azure Dev Tunnel (civilex-tunnel)" >> "${TUNNEL_LOG}"
+  echo -e "${YELLOW}[+] Starting Azure Dev Tunnel (civilex-tunnel-2)...${RESET}"
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] [SYSTEM] Starting Azure Dev Tunnel (civilex-tunnel-2)" >> "${TUNNEL_LOG}"
   setsid bash -c "
     echo \$\$ > '${TUNNEL_PID_FILE}'
     exec '${ROOT_DIR}/scripts/start-azure-tunnel.sh'
@@ -398,7 +398,7 @@ get_tunnel_badge() {
   fi
 
   if [ -n "$pid" ] && is_pid_alive "$pid"; then
-    echo -e "${GREEN}[ONLINE] ${DIM}(civilex-tunnel, PID ${pid})${RESET}"
+    echo -e "${GREEN}[ONLINE] ${DIM}(civilex-tunnel-2, PID ${pid})${RESET}"
   else
     echo -e "${DIM}[STOPPED]${RESET}"
   fi
@@ -472,11 +472,10 @@ print_cli_status() {
   echo -e "  Python RAG (FastAPI)  : Port 8000 | PID: ${py_pid:-OFF} | Status: $(get_status_badge "$py_st" "${PYTHON_PID_FILE}" "${PYTHON_LOG}")"
   local tu_badge
   tu_badge=$(get_tunnel_badge)
-  echo -e "  Azure Dev Tunnel      : civilex-tunnel | Status: ${tu_badge}"
+  echo -e "  Azure Dev Tunnel      : civilex-tunnel-2 | Status: ${tu_badge}"
   if [[ "$tu_badge" == *"ONLINE"* ]]; then
-    echo -e "    ↳ Backend API  (Port 4000) : https://w21xbn22-4000.asse.devtunnels.ms"
-    echo -e "    ↳ Python RAG   (Port 8000) : https://w21xbn22-8000.asse.devtunnels.ms"
-    echo -e "    ↳ Supabase API (Port 54321): https://w21xbn22-54321.asse.devtunnels.ms"
+    echo -e "    ↳ Backend API  (Port 4000) : https://ps7cvfbz-4000.asse.devtunnels.ms"
+    echo -e "    ↳ Supabase API (Port 54321): https://ps7cvfbz-54321.asse.devtunnels.ms"
   fi
 }
 
@@ -618,7 +617,7 @@ launch_tmux() {
   [ -n "$P_FE" ] && tmux select-pane -t "$P_FE" -T "[1] Frontend (Next.js :3000)"
   [ -n "$P_BE" ] && tmux select-pane -t "$P_BE" -T "[2] Backend Gateway (Node :4000)"
   [ -n "$P_PY" ] && tmux select-pane -t "$P_PY" -T "[3] Python RAG Engine (:8000)"
-  [ -n "$P_TU" ] && tmux select-pane -t "$P_TU" -T "[4] Azure Dev Tunnel (w21xbn22)"
+  [ -n "$P_TU" ] && tmux select-pane -t "$P_TU" -T "[4] Azure Dev Tunnel (ps7cvfbz)"
   [ -n "$P_CTRL" ] && tmux select-pane -t "$P_CTRL" -T "[5] CIVIL-LEX Process Controller"
 
   # Focus the interactive controller pane
@@ -654,7 +653,7 @@ stream_log() {
     "frontend") target_log="${FRONTEND_LOG}"; title="Next.js Frontend (Port 3000)" ;;
     "backend") target_log="${BACKEND_LOG}"; title="Node.js Gateway (Port 4000)" ;;
     "python") target_log="${PYTHON_LOG}"; title="Python RAG Service (Port 8000)" ;;
-    "tunnel") target_log="${TUNNEL_LOG}"; title="Azure Dev Tunnel (w21xbn22)" ;;
+    "tunnel") target_log="${TUNNEL_LOG}"; title="Azure Dev Tunnel (ps7cvfbz)" ;;
     *) echo "Unknown service: $service"; exit 1 ;;
   esac
 
@@ -837,11 +836,10 @@ render_status_buffer() {
   buf+=" ${BOLD}1. Frontend (Next.js)${RESET}     : http://localhost:3000 | Status: $(get_status_badge "$fe_st" "${FRONTEND_PID_FILE}" "${FRONTEND_LOG}")${CLEAR_LINE}\n"
   buf+=" ${BOLD}2. Backend (Node.js)${RESET}     : http://localhost:4000 | Status: $(get_status_badge "$be_st" "${BACKEND_PID_FILE}" "${BACKEND_LOG}")${CLEAR_LINE}\n"
   buf+=" ${BOLD}3. RAG Service (Python)${RESET}  : http://localhost:8000 | Status: $(get_status_badge "$py_st" "${PYTHON_PID_FILE}" "${PYTHON_LOG}")${CLEAR_LINE}\n"
-  buf+=" ${BOLD}4. Azure Dev Tunnel${RESET}      : civilex-tunnel | Status: ${tu_badge}${CLEAR_LINE}\n"
+  buf+=" ${BOLD}4. Azure Dev Tunnel${RESET}      : civilex-tunnel-2 | Status: ${tu_badge}${CLEAR_LINE}\n"
   if [[ "$tu_badge" == *"ONLINE"* ]]; then
-    buf+="    ${CYAN}↳ Backend API  (Port 4000) : https://w21xbn22-4000.asse.devtunnels.ms${RESET}${CLEAR_LINE}\n"
-    buf+="    ${MAGENTA}↳ Python RAG   (Port 8000) : https://w21xbn22-8000.asse.devtunnels.ms${RESET}${CLEAR_LINE}\n"
-    buf+="    ${GREEN}↳ Supabase API (Port 54321): https://w21xbn22-54321.asse.devtunnels.ms${RESET}${CLEAR_LINE}\n"
+    buf+="    ${CYAN}↳ Backend API  (Port 4000) : https://ps7cvfbz-4000.asse.devtunnels.ms${RESET}${CLEAR_LINE}\n"
+    buf+="    ${GREEN}↳ Supabase API (Port 54321): https://ps7cvfbz-54321.asse.devtunnels.ms${RESET}${CLEAR_LINE}\n"
   fi
   buf+="${BLUE}----------------------------------------------------------------------${RESET}${CLEAR_LINE}\n"
   buf+=" ${BOLD}Controls & Hotkeys:${RESET}${CLEAR_LINE}\n"

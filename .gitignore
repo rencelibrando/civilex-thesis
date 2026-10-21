@@ -61,4 +61,7 @@ supabase/.branches/
 *.tar.gz
 supabase_storage_files/
 
+# load testing credentials cache
+scripts/stress-users.json
+
 

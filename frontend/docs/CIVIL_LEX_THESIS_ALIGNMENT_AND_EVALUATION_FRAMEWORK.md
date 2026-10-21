@@ -198,7 +198,8 @@ The table below compiles every metric, formula, interpretation, and target thres
 │                    │ Average Response Time                │ < 8.0 s     │ Table 3.6    │
 │                    │ P95 Latency (95th Percentile)        │ < 15.0 s    │ Table 3.6    │
 │ 7. Throughput      │ Queries Per Second (QPS)             │ Benchmark   │ Table 3.7    │
-│                    │ Concurrent Users                     │ >= 10 users │ Table 3.7    │
+│                    │ Concurrent Web Users                 │ >= 500 users│ Table 3.7    │
+│                    │ Parallel AI Chat Slots (LM Studio)   │ >= 10 slots │ Table 3.7    │
 │                    │ System Saturation Capacity           │ Peak Load   │ Table 3.7    │
 └────────────────────┴──────────────────────────────────────┴─────────────┴──────────────┘
 ```

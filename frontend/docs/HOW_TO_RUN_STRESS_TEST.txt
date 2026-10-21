@@ -1,0 +1,200 @@
+================================================================================
+CIVIL-LEX: HIGH-CONCURRENCY STRESS TESTING GUIDE & INSTRUCTIONS
+================================================================================
+Document: HOW_TO_RUN_STRESS_TEST.txt
+Thesis Chapter: Chapter 4 (Statement of the Problem 3 & 4 Data Presentation)
+Target System: CIVIL-LEX Legal Platform (Node.js Gateway, Supabase, Python RAG)
+Date: 2026-10-21
+================================================================================
+
+1. OVERVIEW & TEST SUITE ARCHITECTURE
+--------------------------------------------------------------------------------
+This test suite empirically measures the Maximum Sustainable Load (MSL), response
+latencies, throughput (RPS), and transaction error rates of the CIVIL-LEX platform
+under heavy concurrent user traffic.
+
+The tests simulate real citizen workflows:
+  - Presence Heartbeats (POST /api/system/heartbeat)
+  - Civil Code Table of Contents (GET /api/civil-code/toc)
+  - Virtualized Article Scrolling (GET /api/civil-code/article/:id)
+  - Statutory Full-Text Search (GET /api/civil-code/search?q=...)
+  - Legal AI Chat Inquiries (POST /api/chat via Gemma 4 E4B)
+
+Tested Operating Tiers:
+  - Tier 1 (Optimal Operating Zone): 1,000 Concurrent VUs (53,674 reqs, 99.76% success)
+  - Tier 2 (Peak Hardware Ceiling): 3,500 Concurrent VUs (80,459 reqs, 94.39% success)
+
+
+2. SCRIPT INVENTORY (SCRIPTS DIRECTORY)
+--------------------------------------------------------------------------------
+All test files are located in the `scripts/` directory:
+
+  FILE NAME                 PURPOSE & DESCRIPTION
+  ------------------------- ---------------------------------------------------
+  inject-users.mjs          Provisions N authenticated user accounts into 
+                            Supabase Auth and exports tokens to stress-users.json.
+  k6-stress-test.js         Main Grafana k6 high-concurrency runner. Supports
+                            Tier 1 (1k VUs) and Tier 2 (3.5k VUs) presets.
+  node-stress-test.mjs      Standalone pure Node.js fallback runner (runs on any
+                            system without needing the k6 binary installed).
+  cleanup-users.mjs         Safely batch-deletes all test accounts from Supabase.
+  stress-users.json         Credential database of provisioned test users with JWTs.
+  STRESS_TEST_FINDINGS.md   Comprehensive academic findings and latency report.
+  HOW_TO_RUN_STRESS_TEST.txt This instructions manual.
+
+
+3. PREREQUISITES & PRE-FLIGHT CHECKLIST
+--------------------------------------------------------------------------------
+Before running stress tests, ensure all backend microservices are running:
+
+  1. Node.js API Gateway (:4000):
+     Check: curl http://localhost:4000/api/civil-code/toc
+     (Or remote host IP, e.g., http://192.168.100.76:4000)
+
+  2. Supabase PostgreSQL & Auth (:54321):
+     Must have connection pool scaled (`max: 25` in backend-node/src/services/presence.js).
+
+  3. Python RAG Microservice (:8000):
+     Check: curl http://localhost:8000/health
+
+  4. LM Studio GPU Server (:1234):
+     Gemma 4 (E4B) loaded with 10 parallel slots allocated (`parallel_slots = 10`).
+
+  5. Testing Tool:
+     Install k6 on the client machine:
+       Fedora/RHEL : sudo dnf install k6
+       Ubuntu/Debian: sudo apt-get install k6
+       macOS        : brew install k6
+     (If k6 is unavailable, you can use `node scripts/node-stress-test.mjs` directly).
+
+
+4. STEP 1: PROVISION AUTHENTICATED TEST USERS (ONE-TIME SETUP)
+--------------------------------------------------------------------------------
+The stress test requires authenticated JWT tokens. A dataset of 10,000 accounts
+is already stored in `scripts/stress-users.json`.
+
+If you ever need to generate fresh users or increase the count:
+
+  # Generate 1,000 test users
+  node scripts/inject-users.mjs 1000
+
+  # Generate 10,000 test users (with 20 parallel workers)
+  node scripts/inject-users.mjs 10000
+
+  # Point to a specific Supabase instance over LAN
+  SUPABASE_URL="http://192.168.100.76:54321" node scripts/inject-users.mjs 1000
+
+Note: The script automatically skips existing users and only injects missing accounts.
+
+
+5. STEP 2: RUNNING THE STRESS TEST (GRAFANA K6 - RECOMMENDED)
+--------------------------------------------------------------------------------
+Execute the test from the repository root directory (`civilex-thesis/`).
+
+A. RUN TIER 1 (1,000 VUs - OPTIMAL ZONE):
+   Tests up to 1,000 simultaneous users across 3.5 minutes.
+   Command:
+   k6 run -e TIER=1 -e BACKEND_URL="http://192.168.100.76:4000" scripts/k6-stress-test.js
+
+   Expected Metrics:
+   - Throughput: ~250 RPS
+   - Overall Success Rate: ~99.76%
+   - Core Web Success: 100.00%
+   - Legal AI Chat Success: ~96.00%
+
+B. RUN TIER 2 (3,500 VUs - PEAK HARDWARE CEILING):
+   Escalates load from 500 -> 1,500 -> 2,500 -> 3,500 peak VUs over 4.5 minutes.
+   Command:
+   k6 run -e TIER=2 -e BACKEND_URL="http://192.168.100.76:4000" scripts/k6-stress-test.js
+
+   Expected Metrics:
+   - Throughput: ~318 RPS
+   - Overall Success Rate: ~94.39%
+   - Presence Heartbeats: ~99.41%
+   - Legal Codal Search: ~99.60%
+   - Legal AI Chat Success: ~91.78%
+
+C. RUN A CUSTOM TARGET (QUICK VALIDATION):
+   Test 300 VUs for 1 minute:
+   k6 run -e VUS=300 -e DURATION=1m -e BACKEND_URL="http://192.168.100.76:4000" scripts/k6-stress-test.js
+
+   Test localhost:
+   k6 run -e VUS=100 -e DURATION=30s -e BACKEND_URL="http://localhost:4000" scripts/k6-stress-test.js
+
+
+6. STEP 3: RUNNING WITH NATIVE NODE.JS (FALLBACK RUNNER)
+--------------------------------------------------------------------------------
+If Grafana k6 is not installed on your machine, use the native Node.js runner:
+
+  # Default: 500 VUs for 60 seconds against LAN IP
+  node scripts/node-stress-test.mjs
+
+  # Custom parameters:
+  CONCURRENCY=1000 DURATION=120 BACKEND_URL="http://192.168.100.76:4000" node scripts/node-stress-test.mjs
+
+  # Localhost test:
+  CONCURRENCY=100 DURATION=30 BACKEND_URL="http://localhost:4000" node scripts/node-stress-test.mjs
+
+The Node runner displays live real-time RPS and prints a clean ASCII summary table
+with Min, Avg, and 95th Percentile latencies upon conclusion.
+
+
+7. STEP 4: INTERPRETING OUTPUT METRICS & UNDERSTANDING CHECKS
+--------------------------------------------------------------------------------
+When k6 finishes, examine the terminal report:
+
+  Metric / Check Name         Interpretation & Healthy Benchmark
+  --------------------------- -------------------------------------------------
+  ✓ heartbeat 200             Presence ping success rate (target >= 99.0%)
+  ✓ toc 200                   Civil Code index retrieval (target >= 90.0%)
+  ✓ article 200               Article scroll & view (target >= 89.0%)
+  ✓ search 200                Statutory search (target >= 98.0%)
+  ✓ chat 200                  Legal AI reasoning (target >= 90.0%)
+  heartbeat_duration          Average & p(95) latency for presence pings (< 1.5s)
+  scroll_duration             Average & p(95) latency for codal browsing (< 6.0s)
+  search_duration             Average & p(95) latency for search (< 1.0s)
+  http_req_failed             Global HTTP error rate (must be < 6.0%)
+  data_received               Total network bandwidth delivered (4 GB - 5.5 GB)
+
+*Note on Chat Timeouts during Intense Bursts:
+ If k6 shows a timeout on chat during instantaneous 3,500 VU bursts, this is a
+ client-side timeout artifact: the host GPU generates tokens at 4-8s per prompt
+ across 10 parallel slots in LM Studio. While the backend safely serializes prompts
+ in its FIFO queue without crashing, deep queues naturally take longer than the
+ client's HTTP wait window. Upstream DomainRouter triage (42ms) and statutory caching
+ ensure real-world chat queries achieve 96.00% (Tier 1) and 91.78% (Tier 2).
+
+
+8. STEP 5: CLEANUP & TEST ACCOUNT TEARDOWN
+--------------------------------------------------------------------------------
+When load testing is concluded and you wish to remove the generated test accounts
+from your Supabase database:
+
+  # Run cleanup script (deletes stress_user_* accounts in parallel batches of 25)
+  node scripts/cleanup-users.mjs
+
+  # Remote Supabase cleanup over LAN:
+  SUPABASE_URL="http://192.168.100.76:54321" node scripts/cleanup-users.mjs
+
+
+9. THESIS DEFENSE CHEAT SHEET (SOP 3 & 4)
+--------------------------------------------------------------------------------
+Key questions panel members may ask and your empirical answers:
+
+  Q: "What are your concurrency targets?"
+  A: "We define two distinct concurrency specifications: (1) >= 500 active concurrent
+     web users across the platform, and (2) 10 parallel inference streams in LM Studio
+     on the host GPU. Tier 1 (1k VUs) and Tier 2 (3.5k VUs) exceeded the 500-user
+     target by 200% and 700% respectively."
+
+  Q: "Why did you test up to 3,500 VUs instead of 10,000 VUs?"
+  A: "Simulating 10,000 active looping TLS/HTTP virtual users exceeded the 13 GB RAM
+     capacity of the client testing laptop, triggering the Linux kernel oom-killer
+     at ~5,705 VUs. 3,500 VUs is the hardware ceiling of the testbed, which equates
+     to 75,000 to 105,000 daily active human users with realistic think times."
+
+  Q: "Why did presence heartbeat latency drop from 10.4s to 415ms?"
+  A: "We expanded the PostgreSQL direct connection pool from 5 to 25 connections in
+     PresenceService and added a 2-second in-memory session cache, eliminating pool
+     starvation."
+================================================================================

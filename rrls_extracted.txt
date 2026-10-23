@@ -1,0 +1,180 @@
+E5 base ​
+​
+References
+Conneau, A., Khandelwal, K., Goyal, N., Chaudhary, V., Wenzek, G., Guzmán, F., Grave, E.,
+Ott, M., Zettlemoyer, L., & Stoyanov, V. (2020). Unsupervised cross-lingual representation
+learning at scale. Proceedings of the 58th Annual Meeting of the Association for Computational
+Linguistics. Association for Computational Linguistics.
+https://doi.org/10.18653/v1/2020.acl-main.747
+Es, S., James, J., Espinosa Anke, L., & Schockaert, S. (2024). RAGAs: Automated evaluation of
+retrieval augmented generation. In N. Aletras & O. De Clercq (Eds.), Proceedings of the 18th
+Conference of the European Chapter of the Association for Computational Linguistics: System
+Demonstrations (pp. 150–158). Association for Computational Linguistics.
+https://aclanthology.org/2024.eacl-demo.16
+Lewis, P., Perez, E., Piktus, A., Petroni, F., Karpukhin, V., Goyal, N., Küttler, H., Lewis, M., Yih,
+W., Rocktäschel, T., Riedel, S., & Kiela, D. (2020). Retrieval-augmented generation for
+knowledge-intensive NLP tasks. Advances in Neural Information Processing Systems, 33.
+https://doi.org/10.48550/arXiv.2005.11401
+Niklaus, J., Matoshi, V., Stürmer, M., Chalkidis, I., & Ho, D. E. (2024). MultiLegalPile: A 689GB
+multilingual legal corpus. Proceedings of the 62nd Annual Meeting of the Association for
+Computational Linguistics (Volume 1: Long Papers). Association for Computational Linguistics.
+https://doi.org/10.18653/v1/2024.acl-long.805
+Wang, L., Yang, N., Huang, X., Jiao, B., Yang, L., Jiang, D., Majumder, R., & Wei, F. (2022). Text
+embeddings by weakly-supervised contrastive pre-training. arXiv.
+https://doi.org/10.48550/arXiv.2212.03533
+Wang, L., Yang, N., Huang, X., Yang, L., Majumder, R., & Wei, F. (2024). Multilingual E5 text
+embeddings: A technical report. arXiv. https://doi.org/10.48550/arXiv.2402.05672
+Winata, G. I., Zhang, R., & Adelani, D. I. (2024). MINERS: Multilingual language models as
+semantic retrievers. In Y. Al-Onaizan, M. Bansal, & Y.-N. Chen (Eds.), Findings of the
+Association for Computational Linguistics: EMNLP 2024. Association for Computational
+Linguistics. https://aclanthology.org/2024.findings-emnlp.155
+
+Abstracts
+Conneau et al. (2020) (https://aclanthology.org/2020.acl-main.747)​
+The paper shows that pretraining multilingual models at large scale gives big gains on
+
+cross-lingual transfer tasks. Its XLM-R model beats multilingual BERT on XNLI, MLQA, and
+NER, with especially strong gains for low-resource languages such as Swahili and Urdu. The
+authors also report that multilingual modeling can stay competitive with strong monolingual
+models on GLUE and XNLI.
+Wang et al. (2022) (https://arxiv.org/abs/2212.03533)​
+The paper presents E5, a family of general-purpose text embeddings trained contrastively on a
+curated, large-scale set of text pairs (CCPairs), for retrieval, clustering, and classification. It is
+evaluated on 56 BEIR and MTEB datasets. Zero-shot, it is the first model to outperform BM25
+on BEIR without labeled data, and fine-tuned, it achieves the best MTEB results, beating
+models with far more parameters.
+Wang et al. (2024) (https://arxiv.org/abs/2402.05672)​
+This technical report describes the open-source multilingual E5 models in small, base, and
+large sizes. Training follows the English E5 recipe: contrastive pre-training on 1 billion
+multilingual text pairs, then fine-tuning on labeled datasets. It also introduces an
+instruction-tuned embedding model whose performance is on par with state-of-the-art
+English-only models of similar size.
+Winata et al. (2024) (https://aclanthology.org/2024.findings-emnlp.155)​
+The authors note that how well multilingual language models work for semantic retrieval had
+not been thoroughly studied. They introduce MINERS, a benchmark covering bitext mining and
+classification via retrieval-augmented context, across more than 200 languages including
+low-resource, cross-lingual, and code-switching settings. They report that simply retrieving
+semantically similar embeddings is competitive with state-of-the-art approaches, with no
+fine-tuning needed.
+Niklaus et al. (2024) (https://aclanthology.org/2024.acl-long.805)​
+The paper argues that specialized domains like law lack large, high-quality datasets. It releases
+MultiLegalPile, a 689GB corpus covering 24 languages and 17 jurisdictions, and pretrains
+multilingual and monolingual models on it. The multilingual models set a new state of the art on
+LEXTREME, and the English models on LexGLUE. The dataset, models, and code are released
+openly.
+Lewis et al. (2020) (https://arxiv.org/abs/2005.11401)​
+The paper notes that large pretrained models store knowledge but struggle to access and
+update it precisely. It proposes retrieval-augmented generation (RAG), which combines a
+pretrained generator with a dense retrieval index over Wikipedia. RAG sets state-of-the-art
+results on three open-domain QA tasks and produces more specific, diverse, and factual text
+than a parametric-only baseline.
+Es et al. (2024) (https://aclanthology.org/2024.eacl-demo.16)​
+The paper introduces RAGAs, a framework for reference-free evaluation of RAG pipelines. It
+addresses the several dimensions that matter: whether retrieval finds relevant and focused
+
+passages, whether the LLM uses them faithfully, and the quality of the generation itself. Its
+metrics need no ground-truth human annotations, which speeds up evaluation cycles.
+
+NLI ​
+​
+1. Five relevant NLI research papers
+1. NLI models for evaluating faithfulness
+Steen et al. (2023) — With a Little Push, NLI Models can Robustly and Efficiently Predict
+Faithfulness
+Abstract summary: The researchers investigated the use of NLI models to determine whether
+generated text is supported by its source evidence. They found that NLI-based faithfulness
+evaluation can improve through task-specific data augmentation, consideration of both
+entailment and contradiction probabilities, and Monte Carlo dropout. Their findings demonstrate
+that an NLI model can serve as an efficient faithfulness evaluator when appropriately adapted to
+the task.
+
+ACL Anthology
+Relevance to CIVIL LEX: This is one of the strongest sources for your NLI component because
+your system evaluates whether generated legal explanations are supported by retrieved Civil
+Code provisions.
+APA 7th edition:
+Steen, J., Opitz, J., Frank, A., & Markert, K. (2023). With a little push, NLI models can robustly
+and efficiently predict faithfulness. Proceedings of the 61st Annual Meeting of the Association
+for Computational Linguistics (Volume 2: Short Papers), 914–924.
+https://doi.org/10.18653/v1/2023.acl-short.79
+Read the full paper
+2. Fine-grained NLI-based faithfulness evaluation
+Zhang et al. (2024) — Fine-Grained Natural Language Inference Based Faithfulness Evaluation
+for Diverse Summarisation Tasks
+Abstract summary: The study examined limitations in existing NLI-based approaches to
+evaluating generated summaries. The researchers proposed INFUSE, a method that adjusts the
+amount of source evidence considered and simplifies generated sentences into shorter
+
+hypotheses. Their findings showed improved performance across diverse summarization tasks,
+highlighting the importance of how source evidence and generated claims are structured during
+entailment evaluation.
+ACL Anthology
+Relevance to CIVIL LEX: Legal explanations can contain several claims supported by different
+statutory articles. This study supports evaluating individual claims against relevant evidence
+rather than treating an entire answer as one undivided statement.
+APA 7th edition:
+Zhang, H., Xu, Y., & Perez-Beltrachini, L. (2024). Fine-grained natural language inference based
+faithfulness evaluation for diverse summarisation tasks. Proceedings of the 18th Conference of
+the European Chapter of the Association for Computational Linguistics (Volume 1: Long
+Papers), 1701–1722. https://doi.org/10.18653/v1/2024.eacl-long.102
+Read the full paper
+3. Cross-lingual NLI and hallucination detection
+Zhang and Perez-Beltrachini (2024) — Leveraging Entailment Judgements in Cross-Lingual
+Summarisation
+Abstract summary: This study explored the use of cross-lingual NLI to identify generated
+summaries containing information unsupported by their source documents. The researchers
+investigated methods for detecting unfaithful content and improving model training to reduce
+hallucinations while retaining useful information. Their results support the use of entailment
+judgments to assess factual consistency in multilingual generation tasks.
+
+ACL Anthology
+Relevance to CIVIL LEX: This research is relevant when legal questions or explanations use
+Filipino, English, or mixed-language phrasing. However, cross-lingual performance does not
+automatically establish accuracy for Philippine legal terminology; your system still needs its own
+evaluation.
+APA 7th edition:
+Zhang, H., & Perez-Beltrachini, L. (2024). Leveraging entailment judgements in cross-lingual
+summarisation. Findings of the Association for Computational Linguistics: ACL 2024,
+14481–14497. https://doi.org/10.18653/v1/2024.findings-acl.862
+Read the full paper
+
+4. Adversarial Natural Language Inference
+Nie et al. (2020) — Adversarial NLI: A New Benchmark for Natural Language Understanding
+Abstract summary: The authors introduced the Adversarial NLI (ANLI) benchmark, which was
+developed through an iterative process involving human annotators and machine-learning
+models. Their experiments demonstrated that adversarially constructed examples create a more
+difficult test of NLI systems than conventional benchmark examples. The study also showed that
+existing models remain vulnerable to challenging inference cases.
+
+ACL Anthology
+Relevance to CIVIL LEX: Legal questions often involve exceptions, conditions, and distinctions
+between similar statutory provisions. ANLI provides a useful foundation for understanding why
+an NLI model should be tested on difficult examples, not only straightforward entailment cases.
+APA 7th edition:
+Nie, Y., Williams, A., Dinan, E., Bansal, M., Weston, J., & Kiela, D. (2020). Adversarial NLI: A
+new benchmark for natural language understanding. Proceedings of the 58th Annual Meeting of
+the Association for Computational Linguistics, 4885–4901.
+https://doi.org/10.18653/v1/2020.acl-main.441
+Read the full paper
+5. NLI with faithful explanations
+Kumar and Talukdar (2020) — NILE: Natural Language Inference with Faithful Natural
+Language Explanations
+Abstract summary: The researchers introduced NILE, a method designed to produce NLI
+predictions alongside explanations that reflect the reasoning behind those predictions. They
+evaluated the method using automated and human assessments and emphasized that
+prediction accuracy alone is insufficient to establish the faithfulness of explanations. Their
+findings highlight the value of examining whether a model's decisions are genuinely supported
+by the evidence used to make them.
+
+ACL Anthology
+Relevance to CIVIL LEX: This study supports the importance of evidence-based explanations
+and transparent inference decisions in your legal RAG system. It is particularly useful when
+discussing why legal answers should be accompanied by relevant statutory citations.
+APA 7th edition:
+
+Kumar, S., & Talukdar, P. (2020). NILE: Natural language inference with faithful natural language
+explanations. Proceedings of the 58th Annual Meeting of the Association for Computational
+Linguistics, 8730–8742. https://doi.org/10.18653/v1/2020.acl-main.771
+Read the full paper
+
+

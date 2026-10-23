@@ -440,3 +440,6 @@ To finalize the thesis paper and prepare for the oral defense, execute the follo
   - Distribute Set B to 2 lawyers and the citizen cohort in Barangay 548.
 - [ ] **Task 7: Populate Chapter 4 Tables and Results**
   - Copy the generated tables into Chapter 4 of `CIVIL-LEX_ Group 7 THESIS.pdf` to directly answer Research Questions 1, 2, 3, and 4.
+- [x] **Task 8: Master the NLI Faithfulness & Layperson Simplification Defense**
+  - Review and rehearse the comprehensive defense script and peer-reviewed literature in [COMPREHENSIVE_RRL_ANALYSIS_AND_NLI_DEFENSE.md](file:///home/rencehp/github-repo/civilex-thesis/frontend/docs/COMPREHENSIVE_RRL_ANALYSIS_AND_NLI_DEFENSE.md) to defend against panel questions regarding why lower NLI scores reflect plain-language simplification and cross-lingual translation rather than hallucination.
+

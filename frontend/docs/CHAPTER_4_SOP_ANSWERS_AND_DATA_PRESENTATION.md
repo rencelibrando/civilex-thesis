@@ -246,6 +246,9 @@ True: Specialized Law      |          0            |          39           |    
 True: Non-Legal Refusal    |          0            |           2           |           38            |     95.00%     |
 ```
 
+> **Review of Related Literature (RRL) & Metric Analysis Reference:**  
+> For the comprehensive mathematical definitions, standard acceptable academic thresholds, peer-reviewed literature citations (Sokolova & Lapalme, 2009; Manning et al., 2008; Blair & Maron, 1985; Sebastiani, 2002; Chicco & Jurman, 2020), and the technical explanation of how 100.00% Context Recall was achieved, refer to the companion document: [TABLE_4_5_RRL_AND_100_PERCENT_RECALL_EXPLANATION.md](file:///home/rence/github_repos/civilex-thesis/frontend/docs/TABLE_4_5_RRL_AND_100_PERCENT_RECALL_EXPLANATION.md).
+
 #### Table 4.6: Natural Language Generation Quality & RAGAS Benchmark Scores (Gemma 4 E4B Model)
 
 | Metric Evaluated | Category / Tool | Target Standard | Achieved Score | Evaluation Outcome |

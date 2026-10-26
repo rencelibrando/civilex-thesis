@@ -58,7 +58,9 @@ supabase/.branches/
 
 # database dumps & backups
 *.sql
+*.sql.gz
 *.tar.gz
+backups/
 supabase_storage_files/
 
 # load testing credentials cache

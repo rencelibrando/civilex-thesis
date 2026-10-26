@@ -1,39 +1,82 @@
-PART 1: EXPORT / BACKUP (Source Machine)
-1. Export database schema (public tables, auth schemas, storage schemas, vector extensions)
+# CIVIL-LEX DATABASE & STORAGE BACKUP / RESTORE GUIDE
+
+## OPTION A: AUTOMATED CLOUDFLARE R2 BACKUP (RECOMMENDED)
+To back up the database, vector embeddings, and storage files with gzip compression and automatic retention pruning (max 2 backups to stay within the 10 GB free tier):
+
+```bash
+./scripts/backup-to-r2.sh
+```
+
+To list backups in Cloudflare R2:
+```bash
+aws s3 ls s3://civilex-db-backups/ --profile r2
+```
+
+To download a backup from Cloudflare R2:
+```bash
+aws s3 cp s3://civilex-db-backups/<TIMESTAMP>/ ./restore/ --profile r2 --recursive
+```
+
+---
+
+## OPTION B: MANUAL EXPORT / BACKUP (Source Machine)
+
+1. Export database schema (public tables, auth schemas, storage schemas, vector extensions):
+```bash
 npx supabase db dump --local --schema public,auth,storage -f supabase_schema.sql
+gzip -f supabase_schema.sql
+```
 
-2. Export database records (table data, vectors, auth users, and storage metadata)
+2. Export database records (table data, vectors, auth users, and storage metadata):
+```bash
 npx supabase db dump --local --data-only --use-copy --schema public,auth,storage -f supabase_data.sql
+gzip -f supabase_data.sql
+```
 
-3. Export all physical storage files (avatars, uploaded PDFs, document attachments)
-Copies files directly out of the storage container mount:
-docker cp $(docker ps -qf "name=supabase_storage"):/mnt ./supabase_storage_files
-
-Compress the storage files into a single archive for transfer:
+3. Export all physical storage files (avatars, uploaded PDFs, document attachments):
+```bash
+docker cp $(docker ps -qf "name=supabase_storage_civilex-thesis"):/mnt ./supabase_storage_files
 tar -czvf supabase_storage_backup.tar.gz -C ./supabase_storage_files .
+rm -rf ./supabase_storage_files
+```
 
+---
 
+## PART 2: RESTORE / IMPORT (Target Machine / New Database)
 
-PART 2: RESTORE / IMPORT (Target Machine / New Database)
-
-1. Restore physical storage files into the target storage container
-If using the copied folder:
-docker cp ./supabase_storage_files/. $(docker ps -qf "name=supabase_storage"):/mnt/
-
-If you transferred the tar archive, unpack it first:
+1. Restore physical storage files into the target storage container:
+```bash
 mkdir -p ./supabase_storage_files
 tar -xzvf supabase_storage_backup.tar.gz -C ./supabase_storage_files/
-docker cp ./supabase_storage_files/. $(docker ps -qf "name=supabase_storage"):/mnt/
+docker cp ./supabase_storage_files/. $(docker ps -qf "name=supabase_storage_civilex-thesis"):/mnt/
+rm -rf ./supabase_storage_files
+```
 
-2. Pre-requisite: Enable vector, uuid, and pg_trgm extensions before schema restore
-docker exec -i $(docker ps -qf "name=supabase_db") psql -U supabase_admin -d postgres -c "CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA extensions; CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\" WITH SCHEMA extensions; CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA extensions;"
+2. Pre-requisite: Enable vector, uuid, and pg_trgm extensions before schema restore:
+```bash
+docker exec -i $(docker ps -qf "name=supabase_db_civilex-thesis") psql -U supabase_admin -d postgres -c \
+  "CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA extensions; CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\" WITH SCHEMA extensions; CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA extensions;"
+```
 
-3. Inject schema into the PostgreSQL database (Use supabase_admin superuser to allow auth & storage schema modifications)
-docker exec -i $(docker ps -qf "name=supabase_db") psql -U supabase_admin -d postgres < supabase_schema.sql
+3. Inject schema into the PostgreSQL database (Use supabase_admin superuser):
+```bash
+# If uncompressed:
+docker exec -i $(docker ps -qf "name=supabase_db_civilex-thesis") psql -U supabase_admin -d postgres < supabase_schema.sql
 
-4. Inject data, vectors, user accounts, and storage metadata (Use supabase_admin superuser)
-docker exec -i $(docker ps -qf "name=supabase_db") psql -U supabase_admin -d postgres < supabase_data.sql
+# If compressed (.sql.gz):
+gunzip -c supabase_schema.sql.gz | docker exec -i $(docker ps -qf "name=supabase_db_civilex-thesis") psql -U supabase_admin -d postgres
+```
 
-5. Restart the storage service so permissions and cached objects refresh immediately
-docker restart $(docker ps -qf "name=supabase_storage")
+4. Inject data, vectors, user accounts, and storage metadata (Use supabase_admin superuser):
+```bash
+# If uncompressed:
+docker exec -i $(docker ps -qf "name=supabase_db_civilex-thesis") psql -U supabase_admin -d postgres < supabase_data.sql
 
+# If compressed (.sql.gz):
+gunzip -c supabase_data.sql.gz | docker exec -i $(docker ps -qf "name=supabase_db_civilex-thesis") psql -U supabase_admin -d postgres
+```
+
+5. Restart the storage service so permissions and cached objects refresh immediately:
+```bash
+docker restart $(docker ps -qf "name=supabase_storage_civilex-thesis")
+```

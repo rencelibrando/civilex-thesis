@@ -145,7 +145,7 @@ function LoginFormContent() {
           clearFormError();
           try {
             await resendVerificationOtp(cleanEmail);
-          } catch (_) {}
+          } catch (_) { }
           router.push(`/verify-email?email=${encodeURIComponent(cleanEmail)}&prompt=existing`);
           return;
         } else {

@@ -42,7 +42,22 @@ rm -rf ./supabase_storage_files
 
 ---
 
-## PART 2: RESTORE / IMPORT (Target Machine / New Database)
+## PART 2: RESTORE / DISASTER RECOVERY (Target Machine / Recovered Database)
+
+### OPTION A: AUTOMATED CLOUDFLARE R2 RESTORE (RECOMMENDED)
+To automatically download the latest (or specified) compressed backup from Cloudflare R2, decompress, restore extensions, schema, data, and storage files, and run integrity checks:
+
+```bash
+# Automatically restore from the latest snapshot in Cloudflare R2:
+./scripts/restore-from-r2.sh
+
+# Or restore from a specific snapshot timestamp:
+./scripts/restore-from-r2.sh 20261026_233701
+```
+
+---
+
+### OPTION B: MANUAL RESTORE / IMPORT
 
 1. Restore physical storage files into the target storage container:
 ```bash

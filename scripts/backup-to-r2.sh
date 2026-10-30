@@ -4,6 +4,10 @@ set -e
 # CIVIL-LEX Automated Database & Storage Backup to Cloudflare R2
 # Includes: Gzip compression, Cloudflare R2 upload, and Auto-prune of oldest backup
 
+# Disable AWS CLI v2 flexible/CRC64 checksums to maintain compatibility with Cloudflare R2 multipart uploads
+export AWS_REQUEST_CHECKSUM_CALCULATION="WHEN_REQUIRED"
+export AWS_RESPONSE_CHECKSUM_VALIDATION="WHEN_REQUIRED"
+
 BUCKET_NAME="civilex-db-backups"
 MAX_BACKUPS=2  # Keep the 2 most recent backups to stay well within 10 GB free tier
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
@@ -14,8 +18,8 @@ BACKUP_DIR="$PROJECT_ROOT/backups/$TIMESTAMP"
 mkdir -p "$BACKUP_DIR"
 
 
-echo " Starting CIVIL-LEX Backup: $TIMESTAMP"
-echo " Retention Policy: Max $MAX_BACKUPS backups in Cloudflare R2"
+echo "Starting CIVIL-LEX Backup: $TIMESTAMP"
+echo "Retention Policy: Max $MAX_BACKUPS backups in Cloudflare R2"
 
 
 # Step 1: Export Database Schema & Compress
@@ -80,6 +84,6 @@ fi
 find "$PROJECT_ROOT/backups" -mindepth 1 -maxdepth 1 -type d ! -name "$TIMESTAMP" -exec rm -rf {} + 2>/dev/null || true
 
 
-echo " Backup & Retention Pipeline Finished Successfully!"
-echo " Total Backups Remaining in Cloudflare R2: $(aws s3 ls "s3://$BUCKET_NAME/" --profile r2 | awk '{print $2}' | grep '/' | wc -l)"
+echo "Backup & Retention Pipeline Finished Successfully!"
+echo "Total Backups Remaining in Cloudflare R2: $(aws s3 ls "s3://$BUCKET_NAME/" --profile r2 | awk '{print $2}' | grep '/' | wc -l)"
 

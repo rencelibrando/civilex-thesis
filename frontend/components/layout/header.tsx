@@ -2,7 +2,8 @@
 
 import { useState, useEffect } from "react";
 import Link from "next/link";
-import { Scale, Menu, Settings, LogOut } from "lucide-react";
+import { Menu, Settings, LogOut } from "lucide-react";
+import { CivilexLogo } from "@/components/icons";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
@@ -159,14 +160,14 @@ export function Header() {
           </SheetTrigger>
           <SheetContent side="left" className="w-[85vw] sm:w-72 max-w-xs p-0">
             <div className="flex items-center gap-2.5 p-5 border-b border-border">
-              <Scale className="w-5 h-5 text-[#100771] dark:text-blue-500 shrink-0" />
+              <CivilexLogo size={22} className="text-primary shrink-0" />
               <span className="font-bold text-lg tracking-wide">CIVIL-LEX</span>
             </div>
             <SidebarNav className="h-[calc(100dvh-4.5rem)]" />
           </SheetContent>
         </Sheet>
         <Link href="/dashboard" className="font-bold text-base sm:text-lg tracking-wide flex items-center gap-2 focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:outline-none rounded-md">
-          <Scale className="w-5 h-5 text-[#100771] dark:text-blue-500 shrink-0" />
+          <CivilexLogo size={22} className="text-primary shrink-0" />
           <span>CIVIL-LEX</span>
           <span className="font-normal text-muted-foreground text-xs sm:text-sm hidden sm:inline-block">Legal Intelligence</span>
         </Link>

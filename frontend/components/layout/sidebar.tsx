@@ -3,22 +3,23 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
-  Scale,
   MessageSquare,
   History,
-  BookOpen,
-  FileText,
   Settings,
   LogOut,
-  ChevronRight,
 } from "lucide-react";
+import {
+  ScalesOfJustice,
+  CivilCodeCodex,
+  LegalShieldCheck,
+} from "@/components/icons";
 import { cn } from "@/lib/utils";
 
 const sidebarNavItems = [
   {
     title: "Dashboard",
     href: "/dashboard",
-    icon: Scale,
+    icon: ScalesOfJustice,
   },
   {
     title: "Legal Chat",
@@ -33,12 +34,12 @@ const sidebarNavItems = [
   {
     title: "Civil Code",
     href: "/civil-code",
-    icon: BookOpen,
+    icon: CivilCodeCodex,
   },
   {
     title: "Document Analysis",
     href: "/research",
-    icon: FileText,
+    icon: LegalShieldCheck,
   },
 ];
 
@@ -85,6 +86,8 @@ export function SidebarNav({ className }: { className?: string }) {
                 )}
               >
                 <item.icon
+                  strokeWidth={1.75}
+                  aria-hidden="true"
                   className={cn(
                     "w-4 h-4 xl:w-4.5 xl:h-4.5 2xl:w-5 2xl:h-5 shrink-0 transition-colors",
                     isActive ? "text-primary" : "text-muted-foreground group-hover:text-foreground"
@@ -118,7 +121,7 @@ export function SidebarNav({ className }: { className?: string }) {
               : "text-muted-foreground hover:bg-accent/40 hover:text-foreground font-medium"
           )}
         >
-          <Settings className={cn("w-4 h-4 xl:w-4.5 xl:h-4.5 2xl:w-5 2xl:h-5 shrink-0 transition-colors", pathname === "/settings" ? "text-primary" : "text-muted-foreground group-hover:text-foreground")} />
+          <Settings strokeWidth={1.75} className={cn("w-4 h-4 xl:w-4.5 xl:h-4.5 2xl:w-5 2xl:h-5 shrink-0 transition-colors", pathname === "/settings" ? "text-primary" : "text-muted-foreground group-hover:text-foreground")} aria-hidden="true" />
           <span className="truncate">Settings</span>
         </Link>
         <button
@@ -126,7 +129,7 @@ export function SidebarNav({ className }: { className?: string }) {
           onClick={handleLogout}
           className="w-full flex items-center gap-2.5 xl:gap-3 px-3 py-2 xl:px-3.5 xl:py-2.5 rounded-xl text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-all duration-200 focus-visible:ring-2 focus-visible:ring-destructive focus-visible:ring-offset-2 focus-visible:outline-none cursor-pointer text-left text-[13px] sm:text-[13.5px] xl:text-sm 2xl:text-[15px] font-medium leading-snug group"
         >
-          <LogOut className="w-4 h-4 xl:w-4.5 xl:h-4.5 2xl:w-5 2xl:h-5 text-muted-foreground group-hover:text-destructive shrink-0 transition-colors" />
+          <LogOut strokeWidth={1.75} className="w-4 h-4 xl:w-4.5 xl:h-4.5 2xl:w-5 2xl:h-5 text-muted-foreground group-hover:text-destructive shrink-0 transition-colors" aria-hidden="true" />
           <span className="truncate">Sign Out</span>
         </button>
       </div>

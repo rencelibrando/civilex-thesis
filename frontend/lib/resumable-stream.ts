@@ -103,7 +103,17 @@ async function executeStream(options: ResumableStreamOptions): Promise<StreamOut
           if (streamResponse.status === 404 && currentJobId) {
             return "expired";
           }
-          throw new Error(`HTTP ${streamResponse.status}: ${streamResponse.statusText}`);
+          let errorDetail = "";
+          try {
+            const errorData = await streamResponse.json();
+            errorDetail = errorData?.error || errorData?.message || errorData?.detail || "";
+          } catch {
+            try {
+              errorDetail = await streamResponse.text();
+            } catch {}
+          }
+          const finalErrMsg = errorDetail || `HTTP ${streamResponse.status}: ${streamResponse.statusText}`;
+          throw new Error(finalErrMsg);
         }
 
         if (!streamResponse.body) {

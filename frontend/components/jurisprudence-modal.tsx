@@ -12,7 +12,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
-  Scale,
   Copy,
   Check,
   ExternalLink,
@@ -23,6 +22,7 @@ import {
   BookOpen,
   X,
 } from "lucide-react";
+import { JurisprudenceGavel } from "@/components/icons";
 import { BACKEND_URL } from "@/lib/config";
 
 export type JurisprudenceCase = {
@@ -389,7 +389,7 @@ export function JurisprudenceModal({
           {/* Badge Row: Stack vertically on mobile, wrap on sm */}
           <div className="flex flex-col items-start sm:flex-row sm:items-center gap-2 min-w-0 w-full flex-wrap">
             <span className="inline-flex items-center gap-1.5 text-[11px] sm:text-xs font-bold uppercase tracking-wider px-2.5 py-1 rounded-full bg-blue-500/10 dark:bg-blue-500/20 text-blue-700 dark:text-blue-300 border border-blue-500/25 max-w-full">
-              <Scale className="w-3.5 h-3.5 shrink-0" />
+              <JurisprudenceGavel size={14} className="shrink-0" />
               <span className="truncate">Supreme Court of the Philippines Jurisprudence</span>
             </span>
             <div className="flex flex-wrap items-center gap-2 min-w-0">
@@ -543,7 +543,7 @@ export function JurisprudenceModal({
                       href="#fallo-section"
                       className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-2 sm:px-2.5 sm:py-1 min-h-[40px] sm:min-h-0 sm:h-8 rounded-lg bg-blue-500/10 hover:bg-blue-500/20 text-blue-700 dark:text-blue-300 border border-blue-500/25 transition-colors shrink-0"
                     >
-                      <Scale className="w-3.5 h-3.5 sm:w-3 sm:h-3" />
+                      <JurisprudenceGavel size={14} className="shrink-0" />
                       <span>Jump to Ruling</span>
                     </a>
                   )}
@@ -605,7 +605,7 @@ export function JurisprudenceModal({
               {/* Ponente Attribution */}
               {parsedJurisprudence.ponente && (
                 <div className="flex items-center gap-2 text-xs font-semibold text-blue-700 dark:text-blue-300 bg-blue-500/10 dark:bg-blue-500/20 px-3 py-1.5 rounded-lg border border-blue-500/25 w-fit max-w-full break-words [overflow-wrap:anywhere]">
-                  <Scale className="w-3.5 h-3.5 shrink-0" />
+                  <JurisprudenceGavel size={14} className="shrink-0" />
                   <span className="break-words [overflow-wrap:anywhere]">Ponente: {parsedJurisprudence.ponente}</span>
                 </div>
               )}
@@ -652,7 +652,7 @@ export function JurisprudenceModal({
                 >
                   <div className="flex items-center justify-between gap-2 flex-wrap min-w-0">
                     <span className="inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-amber-900 dark:text-amber-200">
-                      <Scale className="w-4 h-4 shrink-0" />
+                      <JurisprudenceGavel size={16} className="shrink-0" />
                       Ruling / Dispositive Portion (Fallo)
                     </span>
                     <Badge

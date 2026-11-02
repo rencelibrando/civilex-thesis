@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { User, Shield, Save, Loader2, Camera, Trash2, KeyRound, Eye, EyeOff, AlertTriangle } from "lucide-react";
+import { User, Shield, Save, Loader2, Camera, Trash2, KeyRound, Eye, EyeOff, AlertTriangle, CheckCircle2, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
@@ -12,10 +12,9 @@ import {
   DialogHeader,
   DialogTitle,
   DialogDescription,
-  DialogFooter,
 } from "@/components/ui/dialog";
 import { supabase, signOutUser } from "@/lib/supabase";
-import { BACKEND_URL, apiUrl } from "@/lib/config";
+import { apiUrl } from "@/lib/config";
 import { getCachedProfile, saveCachedProfile } from "@/lib/auth-storage";
 import { validatePassword } from "@/lib/password-policy";
 import { PasswordChecklist } from "@/components/auth/password-checklist";
@@ -28,7 +27,7 @@ export default function SettingsPage() {
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
+  const [, setIsLoading] = useState(true);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
   const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
   const [avatarFeedback, setAvatarFeedback] = useState<{ type: "success" | "error"; message: string } | null>(null);
@@ -44,6 +43,16 @@ export default function SettingsPage() {
   const [passwordStatus, setPasswordStatus] = useState<"idle" | "updating" | "saved" | "error">("idle");
   const [passwordMessage, setPasswordMessage] = useState("");
   const [isNewPasswordFocused, setIsNewPasswordFocused] = useState(false);
+  const [isPasswordAutofillLocked, setIsPasswordAutofillLocked] = useState(true);
+
+  const unlockPasswordAutofill = (
+    e: React.FocusEvent<HTMLInputElement> | React.MouseEvent<HTMLInputElement> | React.TouchEvent<HTMLInputElement>
+  ) => {
+    e.currentTarget.removeAttribute("readonly");
+    if (isPasswordAutofillLocked) {
+      setIsPasswordAutofillLocked(false);
+    }
+  };
 
   // Delete account state
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
@@ -236,20 +245,29 @@ export default function SettingsPage() {
 
       if (newAvatarUrl) {
         setAvatarUrl(newAvatarUrl);
-        saveCachedProfile(session.user.id, { avatar_url: newAvatarUrl });
-        await supabase.auth.updateUser({
-          data: { avatar_url: newAvatarUrl },
+        saveCachedProfile(session.user.id, {
+          id: session.user.id,
+          avatar_url: newAvatarUrl,
+          full_name: name,
+          email: session.user.email,
         });
+        try {
+          await supabase.auth.updateUser({
+            data: { avatar_url: newAvatarUrl },
+          });
+        } catch (metaErr) {
+          console.warn("Could not sync user auth metadata:", metaErr);
+        }
         window.dispatchEvent(new Event("profile-updated"));
         setAvatarFeedback({ type: "success", message: "Profile photo updated successfully!" });
       } else {
         throw new Error("Unable to save photo. Please try again.");
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error("Failed to upload avatar", err);
       setAvatarFeedback({
         type: "error",
-        message: err.message || "Failed to upload avatar. Please try again.",
+        message: err instanceof Error ? err.message : "Failed to upload avatar. Please try again.",
       });
     } finally {
       setIsUploadingAvatar(false);
@@ -287,14 +305,23 @@ export default function SettingsPage() {
 
       if (res && res.ok) {
         setAvatarUrl(null);
-        saveCachedProfile(session.user.id, { avatar_url: null });
-        await supabase.auth.updateUser({
-          data: { avatar_url: null },
+        saveCachedProfile(session.user.id, {
+          id: session.user.id,
+          avatar_url: null,
+          full_name: name,
+          email: session.user.email,
         });
+        try {
+          await supabase.auth.updateUser({
+            data: { avatar_url: null },
+          });
+        } catch (metaErr) {
+          console.warn("Could not sync user auth metadata:", metaErr);
+        }
         window.dispatchEvent(new Event("profile-updated"));
         setAvatarFeedback({ type: "success", message: "Profile photo removed." });
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error("Failed to remove avatar", err);
       setAvatarFeedback({ type: "error", message: "Failed to remove photo." });
     } finally {
@@ -306,11 +333,15 @@ export default function SettingsPage() {
     setSaveStatus("saving");
     try {
       const { data: { session } } = await supabase.auth.getSession();
-      if (!session) return;
+      if (!session) {
+        setSaveStatus("error");
+        setTimeout(() => setSaveStatus("idle"), 3000);
+        return;
+      }
 
       const saveUrl = apiUrl("/api/profiles/me");
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 4000);
+      const timeoutId = setTimeout(() => controller.abort(), 10000);
 
       let res = await fetch(saveUrl, {
         method: "PATCH",
@@ -340,13 +371,20 @@ export default function SettingsPage() {
 
       if (res && res.ok) {
         saveCachedProfile(session.user.id, {
+          id: session.user.id,
           full_name: name,
+          avatar_url: avatarUrl,
+          email: session.user.email,
         });
-        await supabase.auth.updateUser({
-          data: {
-            full_name: name,
-          }
-        });
+        try {
+          await supabase.auth.updateUser({
+            data: {
+              full_name: name,
+            }
+          });
+        } catch (metaErr) {
+          console.warn("Could not sync user auth metadata:", metaErr);
+        }
         window.dispatchEvent(new Event("profile-updated"));
         setSaveStatus("saved");
         setTimeout(() => setSaveStatus("idle"), 2000);
@@ -423,6 +461,7 @@ export default function SettingsPage() {
       setCurrentPassword("");
       setNewPassword("");
       setConfirmPassword("");
+      setIsPasswordAutofillLocked(true);
       setTimeout(() => {
         setPasswordStatus("idle");
         setPasswordMessage("");
@@ -462,7 +501,7 @@ export default function SettingsPage() {
 
   return (
     <div className="flex-1 min-h-0 w-full overflow-y-auto overscroll-contain custom-scrollbar">
-      <div className="w-full max-w-4xl 2xl:max-w-5xl 3xl:max-w-6xl mx-auto space-y-4 sm:space-y-6 2xl:space-y-8 animate-fade-in pb-2 px-1 sm:px-2">
+      <div className="w-full max-w-4xl 2xl:max-w-5xl 3xl:max-w-6xl mx-auto space-y-4 sm:space-y-6 2xl:space-y-8 animate-fade-in pb-16 sm:pb-24 px-1 sm:px-2">
         <div>
           <h1 className="text-xl sm:text-2xl 2xl:text-3xl font-bold text-foreground">Settings</h1>
           <p className="text-muted-foreground text-xs sm:text-sm mt-1">
@@ -570,12 +609,16 @@ export default function SettingsPage() {
               {/* Email Address */}
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
-                  <label className="text-sm font-medium text-foreground">Email Address</label>
+                  <label htmlFor="settings-display-email" className="text-sm font-medium text-foreground">Email Address</label>
                   <span className="text-[11px] text-muted-foreground">Managed by auth provider</span>
                 </div>
                 <Input
+                  id="settings-display-email"
+                  name="settings_display_email"
                   type="email"
+                  autoComplete="off"
                   value={email}
+                  readOnly
                   className="bg-background/30 dark:bg-background/20 border-border/50 text-muted-foreground cursor-not-allowed rounded-xl h-10"
                   disabled
                 />
@@ -607,14 +650,43 @@ export default function SettingsPage() {
             </CardDescription>
           </CardHeader>
           <CardContent className="p-6">
-            <form onSubmit={handlePasswordUpdate} className="space-y-4 max-w-xl">
+            <form onSubmit={handlePasswordUpdate} autoComplete="off" className="space-y-4 max-w-xl">
+              {/* Offscreen decoy inputs to trap browser password managers from auto-populating */}
+              <div
+                className="sr-only opacity-0 absolute -top-[9999px] -left-[9999px] h-0 w-0 pointer-events-none"
+                aria-hidden="true"
+                tabIndex={-1}
+              >
+                <input
+                  type="text"
+                  name="prevent_autofill_username"
+                  tabIndex={-1}
+                  autoComplete="username"
+                  defaultValue=""
+                />
+                <input
+                  type="password"
+                  name="prevent_autofill_password"
+                  tabIndex={-1}
+                  autoComplete="current-password"
+                  defaultValue=""
+                />
+              </div>
+
               {/* Current Password */}
               <div className="space-y-1.5">
-                <label className="text-xs font-medium text-foreground">Current Password</label>
+                <label htmlFor="settings-current-password" className="text-xs font-medium text-foreground">Current Password</label>
                 <div className="relative">
                   <Input
+                    id="settings-current-password"
+                    name="current_password_secure"
                     type={showCurrentPassword ? "text" : "password"}
                     value={currentPassword}
+                    readOnly={isPasswordAutofillLocked}
+                    autoComplete="one-time-code"
+                    onFocus={unlockPasswordAutofill}
+                    onMouseDown={unlockPasswordAutofill}
+                    onTouchStart={unlockPasswordAutofill}
                     onChange={(e) => setCurrentPassword(e.target.value)}
                     placeholder="Enter your current password"
                     required
@@ -626,6 +698,7 @@ export default function SettingsPage() {
                     onClick={() => setShowCurrentPassword(!showCurrentPassword)}
                     className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground p-1 transition-colors"
                     tabIndex={-1}
+                    aria-label={showCurrentPassword ? "Hide current password" : "Show current password"}
                   >
                     {showCurrentPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                   </button>
@@ -633,106 +706,166 @@ export default function SettingsPage() {
               </div>
 
               {/* New Password & Confirm */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div className="space-y-1.5">
-                  <label className="text-xs font-medium text-foreground">New Password</label>
-                  <div className="relative">
-                    <Input
-                      type={showNewPassword ? "text" : "password"}
-                      value={newPassword}
-                      onChange={(e) => setNewPassword(e.target.value)}
-                      onFocus={() => setIsNewPasswordFocused(true)}
-                      onBlur={(e) => {
-                        if (!e.currentTarget.parentElement?.contains(e.relatedTarget as Node)) {
-                          setIsNewPasswordFocused(false);
-                        }
-                      }}
-                      placeholder="Create a strong password"
-                      required
-                      disabled={passwordStatus === "updating"}
-                      aria-describedby={isNewPasswordFocused || newPassword.length > 0 ? "settings-password-requirements" : undefined}
-                      className="pr-10 bg-background/60 dark:bg-background/40 border-border focus-visible:ring-primary/30 focus-visible:border-primary rounded-xl h-10 transition-colors"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowNewPassword(!showNewPassword)}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground p-1 transition-colors"
-                      tabIndex={-1}
-                    >
-                      {showNewPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                    </button>
-                  </div>
-                </div>
-                <div className="space-y-1.5">
-                  <label className="text-xs font-medium text-foreground">Confirm New Password</label>
-                  <div className="relative">
-                    <Input
-                      type={showConfirmPassword ? "text" : "password"}
-                      value={confirmPassword}
-                      onChange={(e) => setConfirmPassword(e.target.value)}
-                      placeholder="Confirm new password"
-                      required
-                      disabled={passwordStatus === "updating"}
-                      className="pr-10 bg-background/60 dark:bg-background/40 border-border focus-visible:ring-primary/30 focus-visible:border-primary rounded-xl h-10 transition-colors"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowConfirmPassword(!showConfirmPassword)}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground p-1 transition-colors"
-                      tabIndex={-1}
-                    >
-                      {showConfirmPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                    </button>
-                  </div>
-                </div>
-              </div>
+              {(() => {
+                const isConfirmTyped = confirmPassword.length > 0;
+                const isPasswordMatch = isConfirmTyped && newPassword.length > 0 && newPassword === confirmPassword;
+                const isPasswordMismatch = isConfirmTyped && newPassword !== confirmPassword;
 
-              <PasswordChecklist
-                id="settings-password-requirements"
-                password={newPassword}
-                visible={isNewPasswordFocused || newPassword.length > 0}
-              />
-
-              {passwordMessage && (
-                <div className={`text-xs font-medium ${passwordStatus === "saved" ? "text-emerald-500" : "text-destructive"}`}>
-                  {passwordMessage}
-                </div>
-              )}
-
-              <Button
-                type="submit"
-                disabled={passwordStatus === "updating" || !currentPassword || !newPassword || !confirmPassword}
-                variant="outline"
-                className="text-primary border-primary/30 hover:bg-primary/10 rounded-xl cursor-pointer"
-              >
-                {passwordStatus === "updating" ? (
+                return (
                   <>
-                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                    Verifying & Updating...
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <div className="space-y-1.5">
+                        <label htmlFor="settings-new-password" className="text-xs font-medium text-foreground">New Password</label>
+                        <div className="relative">
+                          <Input
+                            id="settings-new-password"
+                            name="new_password_secure"
+                            type={showNewPassword ? "text" : "password"}
+                            value={newPassword}
+                            readOnly={isPasswordAutofillLocked}
+                            autoComplete="new-password"
+                            onChange={(e) => {
+                              setNewPassword(e.target.value);
+                              if (passwordStatus === "error") {
+                                setPasswordStatus("idle");
+                                setPasswordMessage("");
+                              }
+                            }}
+                            onFocus={(e) => {
+                              unlockPasswordAutofill(e);
+                              setIsNewPasswordFocused(true);
+                            }}
+                            onMouseDown={unlockPasswordAutofill}
+                            onTouchStart={unlockPasswordAutofill}
+                            onBlur={(e) => {
+                              if (!e.currentTarget.parentElement?.contains(e.relatedTarget as Node)) {
+                                setIsNewPasswordFocused(false);
+                              }
+                            }}
+                            placeholder="Create a strong password"
+                            required
+                            disabled={passwordStatus === "updating"}
+                            aria-describedby={isNewPasswordFocused || newPassword.length > 0 ? "settings-password-requirements" : undefined}
+                            className="pr-10 bg-background/60 dark:bg-background/40 border-border focus-visible:ring-primary/30 focus-visible:border-primary rounded-xl h-10 transition-colors"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setShowNewPassword(!showNewPassword)}
+                            className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground p-1 transition-colors"
+                            tabIndex={-1}
+                            aria-label={showNewPassword ? "Hide new password" : "Show new password"}
+                          >
+                            {showNewPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                          </button>
+                        </div>
+                      </div>
+                      <div className="space-y-1.5">
+                        <div className="flex items-center justify-between">
+                          <label htmlFor="settings-confirm-password" className="text-xs font-medium text-foreground">Confirm New Password</label>
+                          {isPasswordMatch && (
+                            <span className="text-[11px] text-emerald-600 dark:text-emerald-400 font-medium flex items-center gap-1 animate-fade-in">
+                              <CheckCircle2 className="w-3 h-3" />
+                              Passwords match
+                            </span>
+                          )}
+                          {isPasswordMismatch && (
+                            <span className="text-[11px] text-destructive font-medium flex items-center gap-1 animate-fade-in">
+                              <AlertCircle className="w-3 h-3" />
+                              Passwords do not match
+                            </span>
+                          )}
+                        </div>
+                        <div className="relative">
+                          <Input
+                            id="settings-confirm-password"
+                            name="confirm_password_secure"
+                            type={showConfirmPassword ? "text" : "password"}
+                            value={confirmPassword}
+                            readOnly={isPasswordAutofillLocked}
+                            autoComplete="new-password"
+                            onFocus={unlockPasswordAutofill}
+                            onMouseDown={unlockPasswordAutofill}
+                            onTouchStart={unlockPasswordAutofill}
+                            onChange={(e) => {
+                              setConfirmPassword(e.target.value);
+                              if (passwordStatus === "error") {
+                                setPasswordStatus("idle");
+                                setPasswordMessage("");
+                              }
+                            }}
+                            placeholder="Confirm new password"
+                            required
+                            disabled={passwordStatus === "updating"}
+                            className={`pr-10 bg-background/60 dark:bg-background/40 transition-colors rounded-xl h-10 ${
+                              isPasswordMatch
+                                ? "border-emerald-500/60 focus-visible:ring-emerald-500/30 focus-visible:border-emerald-500"
+                                : isPasswordMismatch
+                                  ? "border-destructive/60 focus-visible:ring-destructive/30 focus-visible:border-destructive"
+                                  : "border-border focus-visible:ring-primary/30 focus-visible:border-primary"
+                            }`}
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setShowConfirmPassword(!showConfirmPassword)}
+                            className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground p-1 transition-colors"
+                            tabIndex={-1}
+                            aria-label={showConfirmPassword ? "Hide confirm password" : "Show confirm password"}
+                          >
+                            {showConfirmPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+
+                    <PasswordChecklist
+                      id="settings-password-requirements"
+                      password={newPassword}
+                      visible={isNewPasswordFocused || newPassword.length > 0}
+                    />
+
+                    {passwordMessage && (
+                      <div className={`text-xs font-medium ${passwordStatus === "saved" ? "text-emerald-500" : "text-destructive"}`}>
+                        {passwordMessage}
+                      </div>
+                    )}
+
+                    <Button
+                      type="submit"
+                      disabled={passwordStatus === "updating" || !currentPassword || !newPassword || !confirmPassword || isPasswordMismatch}
+                      variant="outline"
+                      className="text-primary border-primary/30 hover:bg-primary/10 rounded-xl cursor-pointer"
+                    >
+                      {passwordStatus === "updating" ? (
+                        <>
+                          <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                          Verifying &amp; Updating...
+                        </>
+                      ) : (
+                        <>
+                          <KeyRound className="w-4 h-4 mr-2" />
+                          Update Password
+                        </>
+                      )}
+                    </Button>
                   </>
-                ) : (
-                  <>
-                    <KeyRound className="w-4 h-4 mr-2" />
-                    Update Password
-                  </>
-                )}
-              </Button>
+                );
+              })()}
             </form>
           </CardContent>
         </Card>
 
         {/* Section 3: Danger Zone / Delete Account */}
-        <Card className="bg-destructive/5 border border-destructive/20 shadow-xs rounded-xl p-3 sm:p-3.5">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-            <div className="flex items-start sm:items-center gap-2.5 min-w-0">
-              <AlertTriangle className="w-4 h-4 text-destructive shrink-0 mt-0.5 sm:mt-0" />
-              <div className="min-w-0">
+        <div className="bg-destructive/[0.04] border border-destructive/25 shadow-xs rounded-2xl p-6 sm:p-7 mb-10 sm:mb-14">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-5">
+            <div className="flex items-start sm:items-center gap-3.5 min-w-0">
+              <AlertTriangle className="w-5 h-5 text-destructive shrink-0 mt-0.5 sm:mt-0" aria-hidden="true" />
+              <div className="min-w-0 space-y-0.5">
                 <div className="flex items-center gap-2">
-                  <span className="text-xs font-semibold text-destructive">Danger Zone</span>
-                  <span className="text-[11px] text-muted-foreground hidden sm:inline">•</span>
-                  <span className="text-xs font-medium text-foreground hidden sm:inline">Delete Account</span>
+                  <span className="text-xs sm:text-sm font-semibold text-destructive">Danger Zone</span>
+                  <span className="text-[11px] text-muted-foreground">•</span>
+                  <span className="text-xs sm:text-sm font-medium text-foreground">Delete Account</span>
                 </div>
-                <p className="text-[11px] text-muted-foreground">
+                <p className="text-xs text-muted-foreground leading-relaxed">
                   Permanently delete your account and all associated research data.
                 </p>
               </div>
@@ -745,44 +878,42 @@ export default function SettingsPage() {
                 setDeleteError("");
                 setIsDeleteDialogOpen(true);
               }}
-              className="rounded-lg h-7 px-2.5 text-[11px] font-medium shrink-0 cursor-pointer shadow-xs active:scale-95 transition-all self-end sm:self-center"
+              className="rounded-xl h-10 px-5 text-xs font-semibold shrink-0 cursor-pointer shadow-xs active:scale-95 transition-all self-start sm:self-center"
             >
-              <Trash2 className="w-3 h-3 mr-1.5" />
+              <Trash2 className="w-3.5 h-3.5 mr-1.5" />
               Delete Account
             </Button>
           </div>
-        </Card>
+        </div>
 
         {/* Delete Account Confirmation Modal */}
         <Dialog open={isDeleteDialogOpen} onOpenChange={setIsDeleteDialogOpen}>
           <DialogContent className="sm:max-w-md p-0 overflow-hidden bg-card border-border shadow-2xl rounded-2xl">
-            <DialogHeader className="p-5 pb-3 border-b border-border/60">
-              <div className="flex items-center gap-2.5">
-                <div className="p-2 rounded-xl bg-destructive/10 text-destructive">
-                  <AlertTriangle className="w-5 h-5" />
-                </div>
+            <DialogHeader className="p-5 pb-4 border-b border-border/60">
+              <div className="flex items-center gap-3">
+                <AlertTriangle className="w-5 h-5 text-destructive shrink-0" />
                 <div>
                   <DialogTitle className="text-base font-semibold text-destructive">Delete Account Confirmation</DialogTitle>
-                  <DialogDescription className="text-xs text-muted-foreground">
+                  <DialogDescription className="text-xs text-muted-foreground mt-0.5">
                     This action is permanent and cannot be undone
                   </DialogDescription>
                 </div>
               </div>
             </DialogHeader>
 
-            <div className="p-6 space-y-4">
-              <p className="text-xs text-muted-foreground leading-relaxed">
+            <div className="p-5 sm:p-6 space-y-4">
+              <p className="text-xs sm:text-sm text-muted-foreground leading-relaxed">
                 You are about to permanently delete the account registered to <strong className="text-foreground">{email}</strong>. All of your research sessions, briefings, and profile credentials will be deleted permanently.
               </p>
 
-              <div className="space-y-1.5 bg-destructive/10 p-3.5 rounded-xl border border-destructive/20 text-destructive text-xs">
+              <div className="space-y-2 bg-destructive/10 p-4 rounded-xl text-destructive text-xs">
                 <p className="font-semibold">To confirm, please type <span className="underline font-mono">DELETE</span> below:</p>
                 <Input
                   type="text"
                   value={deleteConfirmText}
                   onChange={(e) => setDeleteConfirmText(e.target.value)}
                   placeholder="Type DELETE to confirm"
-                  className="h-9 text-xs bg-background/80 border-destructive/30 focus-visible:ring-destructive/30 rounded-lg text-foreground mt-2 font-mono"
+                  className="h-10 text-xs sm:text-sm bg-background border-destructive/30 focus-visible:ring-destructive/30 rounded-xl text-foreground mt-2 font-mono"
                 />
               </div>
 
@@ -793,7 +924,7 @@ export default function SettingsPage() {
               )}
             </div>
 
-            <DialogFooter className="p-4 bg-muted/30 border-t border-border flex flex-row items-center justify-end gap-2">
+            <div className="m-0 p-4 sm:p-5 bg-muted/30 border-t border-border flex items-center justify-end gap-3 rounded-b-2xl">
               <Button
                 variant="ghost"
                 size="sm"
@@ -822,7 +953,7 @@ export default function SettingsPage() {
                   </>
                 )}
               </Button>
-            </DialogFooter>
+            </div>
           </DialogContent>
         </Dialog>
 
@@ -831,9 +962,7 @@ export default function SettingsPage() {
           <DialogContent className="sm:max-w-md p-0 gap-0 overflow-hidden bg-card/95 backdrop-blur-xl border-border shadow-2xl rounded-2xl">
             <DialogHeader className="p-5 pb-4 border-b border-border/60">
               <div className="flex items-center gap-3">
-                <div className="p-2.5 rounded-xl bg-primary/10 text-primary border border-primary/20">
-                  <User className="w-4 h-4" />
-                </div>
+                <User className="w-5 h-5 text-primary shrink-0" />
                 <div>
                   <DialogTitle className="text-base font-semibold text-foreground">Profile Picture Preview</DialogTitle>
                   <DialogDescription className="text-xs text-muted-foreground mt-0.5">
@@ -862,7 +991,7 @@ export default function SettingsPage() {
                   />
                 ) : (
                   <div className="flex flex-col items-center justify-center text-center p-6 space-y-2">
-                    <div className="w-20 h-20 rounded-full bg-primary/10 text-primary flex items-center justify-center text-3xl font-bold border border-primary/20 shadow-sm">
+                    <div className="w-20 h-20 rounded-full bg-primary/10 text-primary flex items-center justify-center text-3xl font-bold shadow-sm">
                       {name ? name.charAt(0).toUpperCase() : 'U'}
                     </div>
                     <p className="text-xs text-muted-foreground">No custom photo</p>
@@ -873,7 +1002,7 @@ export default function SettingsPage() {
               <div className="mt-5 text-center space-y-1">
                 <h3 className="text-base font-bold text-foreground">{name || "CIVIL-LEX User"}</h3>
                 {email && (
-                  <div className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs text-muted-foreground bg-muted/60 border border-border/50">
+                  <div className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs text-muted-foreground bg-muted/60">
                     {email}
                   </div>
                 )}

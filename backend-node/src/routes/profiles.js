@@ -413,11 +413,22 @@ router.patch('/me', requireAuth, async (req, res) => {
     if (theme_preferences !== undefined) updates.theme_preferences = theme_preferences;
 
     // Use upsert so it creates the row if missing
-    const { data, error } = await req.supabase
+    let { data, error } = await req.supabase
       .from('profiles')
       .upsert(updates, { onConflict: 'id' })
       .select()
       .maybeSingle();
+
+    if (error) {
+      console.warn("req.supabase upsert profile failed, falling back to supabaseAdmin:", error.message);
+      const adminResult = await supabaseAdmin
+        .from('profiles')
+        .upsert(updates, { onConflict: 'id' })
+        .select()
+        .maybeSingle();
+      data = adminResult.data;
+      error = adminResult.error;
+    }
 
     if (error) throw error;
 

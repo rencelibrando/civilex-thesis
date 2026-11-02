@@ -3,7 +3,8 @@
 import React, { useEffect } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import { useAuth } from "@/context/auth-context";
-import { Scale, Loader2, ShieldCheck } from "lucide-react";
+import { Loader2 } from "lucide-react";
+import { CivilexLogo, LegalShieldCheck } from "@/components/icons";
 
 interface AuthGuardProps {
   children: React.ReactNode;
@@ -31,10 +32,10 @@ export function AuthGuard({ children }: AuthGuardProps) {
         <div className="flex flex-col items-center space-y-4 text-center max-w-sm px-6">
           <div className="relative">
             <div className="w-14 h-14 rounded-2xl bg-primary/10 border border-primary/30 flex items-center justify-center shadow-md">
-              <Scale className="w-7 h-7 text-primary animate-pulse" />
+              <CivilexLogo size={28} className="text-primary animate-pulse" />
             </div>
             <div className="absolute -bottom-1 -right-1 w-5 h-5 rounded-full bg-background border border-border flex items-center justify-center shadow-xs">
-              <ShieldCheck className="w-3.5 h-3.5 text-emerald-500" />
+              <LegalShieldCheck size={14} className="text-emerald-500" />
             </div>
           </div>
           

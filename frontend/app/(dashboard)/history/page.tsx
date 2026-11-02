@@ -28,7 +28,7 @@ import {
   DialogFooter,
   DialogClose,
 } from "@/components/ui/dialog";
-import { BACKEND_URL } from "@/lib/config";
+import { apiUrl } from "@/lib/config";
 import { Skeleton } from "@/components/ui/skeleton";
 import { supabase } from "@/lib/supabase";
 
@@ -104,14 +104,24 @@ export default function HistoryPage() {
           return;
         }
 
-        const res = await fetch(`${BACKEND_URL}/api/sessions`, {
+        const listUrl = apiUrl("/api/sessions");
+        let res = await fetch(listUrl, {
           headers: {
             Authorization: `Bearer ${session.access_token}`,
           },
           cache: "no-store",
-        });
+        }).catch(() => null);
 
-        if (res.ok) {
+        if (!res?.ok && listUrl !== "/api/sessions") {
+          res = await fetch("/api/sessions", {
+            headers: {
+              Authorization: `Bearer ${session.access_token}`,
+            },
+            cache: "no-store",
+          }).catch(() => null);
+        }
+
+        if (res && res.ok) {
           const data = await res.json();
           if (Array.isArray(data)) {
             const userSessions = data.filter((s: Session & { user_id?: string }) => !s.user_id || s.user_id === session.user.id);
@@ -139,16 +149,28 @@ export default function HistoryPage() {
       } = await supabase.auth.getSession();
       if (!session) return;
 
-      const res = await fetch(`${BACKEND_URL}/api/sessions/${renamingSession.id}`, {
+      const renameUrl = apiUrl(`/api/sessions/${renamingSession.id}`);
+      let res = await fetch(renameUrl, {
         method: "PATCH",
         headers: {
           Authorization: `Bearer ${session.access_token}`,
           "Content-Type": "application/json",
         },
         body: JSON.stringify({ title: newTitle.trim() }),
-      });
+      }).catch(() => null);
 
-      if (res.ok) {
+      if (!res?.ok && renameUrl !== `/api/sessions/${renamingSession.id}`) {
+        res = await fetch(`/api/sessions/${renamingSession.id}`, {
+          method: "PATCH",
+          headers: {
+            Authorization: `Bearer ${session.access_token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ title: newTitle.trim() }),
+        }).catch(() => null);
+      }
+
+      if (res && res.ok) {
         const updated = await res.json();
         setSessions((prev) =>
           prev.map((s) => (s.id === renamingSession.id ? { ...s, title: updated.title || newTitle.trim() } : s))
@@ -175,14 +197,24 @@ export default function HistoryPage() {
       } = await supabase.auth.getSession();
       if (!session) return;
 
-      const res = await fetch(`${BACKEND_URL}/api/sessions/${deletingSession.id}`, {
+      const deleteUrl = apiUrl(`/api/sessions/${deletingSession.id}`);
+      let res = await fetch(deleteUrl, {
         method: "DELETE",
         headers: {
           Authorization: `Bearer ${session.access_token}`,
         },
-      });
+      }).catch(() => null);
 
-      if (res.ok) {
+      if (!res?.ok && deleteUrl !== `/api/sessions/${deletingSession.id}`) {
+        res = await fetch(`/api/sessions/${deletingSession.id}`, {
+          method: "DELETE",
+          headers: {
+            Authorization: `Bearer ${session.access_token}`,
+          },
+        }).catch(() => null);
+      }
+
+      if (res && res.ok) {
         setSessions((prev) => prev.filter((s) => s.id !== deletingSession.id));
         setDeletingSession(null);
       } else {

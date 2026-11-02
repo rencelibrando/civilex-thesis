@@ -2474,27 +2474,29 @@ export default function ResearchPage() {
                         />
                       )}
 
-                      <div
-                        className={`break-words ${isUser
-                          ? 'w-fit inline-block px-3 py-1.5 sm:px-3.5 sm:py-2 rounded-2xl rounded-tr-xs text-xs sm:text-sm leading-relaxed bg-[#100771] text-white shadow-sm shadow-[#100771]/15 dark:bg-blue-600 dark:text-white dark:border-0 dark:shadow-md dark:shadow-blue-900/30 font-medium'
-                          : 'w-full px-3 py-2 sm:px-3.5 sm:py-2.5 text-xs sm:text-sm rounded-2xl rounded-tl-xs bg-card dark:bg-[#131317] border border-border/80 dark:border-white/[0.08] text-foreground dark:text-zinc-100 shadow-xs'
-                          }`}
-                      >
-                        {msg.role === 'assistant' ? (
-                          (msg.id === 1 || idx === 0) ? (
-                            <StartingTypewriterMessage key={msg.content} content={msg.content} />
-                          ) : msg.content ? (
-                            <AssistantMarkdown content={msg.content} />
-                          ) : isGenerating && isLatestAssistant ? (
-                            <div className="flex items-center gap-2 text-xs text-muted-foreground py-1">
-                              <Loader2 className="w-3.5 h-3.5 animate-spin text-primary" />
-                              <span>Formulating legal analysis...</span>
-                            </div>
-                          ) : null
-                        ) : (
-                          msg.content
-                        )}
-                      </div>
+                      {(msg.content || (isGenerating && isLatestAssistant) || isUser) && (
+                        <div
+                          className={`break-words ${isUser
+                            ? 'w-fit inline-block px-3 py-1.5 sm:px-3.5 sm:py-2 rounded-2xl rounded-tr-xs text-xs sm:text-sm leading-relaxed bg-[#100771] text-white shadow-sm shadow-[#100771]/15 dark:bg-blue-600 dark:text-white dark:border-0 dark:shadow-md dark:shadow-blue-900/30 font-medium'
+                            : 'w-full px-3 py-2 sm:px-3.5 sm:py-2.5 text-xs sm:text-sm rounded-2xl rounded-tl-xs bg-card dark:bg-[#131317] border border-border/80 dark:border-white/[0.08] text-foreground dark:text-zinc-100 shadow-xs'
+                            }`}
+                        >
+                          {msg.role === 'assistant' ? (
+                            (msg.id === 1 || idx === 0) ? (
+                              <StartingTypewriterMessage key={msg.content} content={msg.content} />
+                            ) : msg.content ? (
+                              <AssistantMarkdown content={msg.content} />
+                            ) : isGenerating && isLatestAssistant ? (
+                              <div className="flex items-center gap-2 text-xs text-muted-foreground py-1">
+                                <Loader2 className="w-3.5 h-3.5 animate-spin text-primary" />
+                                <span>Formulating legal analysis...</span>
+                              </div>
+                            ) : null
+                          ) : (
+                            msg.content
+                          )}
+                        </div>
+                      )}
                       {/* Copy text for model responses */}
                       {msg.role === 'assistant' && msg.content && (
                         <CopyMessageButton

@@ -1,4 +1,5 @@
-import { Scale, CheckCircle2, ShieldCheck, BookOpen, Sparkles } from "lucide-react";
+import { CheckCircle2 } from "lucide-react";
+import { CivilexLogo, LegalShieldCheck, CivilCodeCodex } from "@/components/icons";
 import Link from "next/link";
 
 export default function AuthLayout({
@@ -11,7 +12,7 @@ export default function AuthLayout({
       {/* Left Branding Panel (Editorial & Authority) */}
       <div className="hidden lg:flex flex-col justify-between w-5/12 xl:w-1/2 bg-[#0A0D14] p-6 lg:p-8 xl:p-14 text-slate-100 border-r border-border/40 relative overflow-hidden">
         {/* Subtle geometric grid background */}
-        <div 
+        <div
           className="absolute inset-0 opacity-[0.03] pointer-events-none"
           style={{
             backgroundImage: `radial-gradient(circle at 1px 1px, #ffffff 1px, transparent 0)`,
@@ -21,11 +22,11 @@ export default function AuthLayout({
 
         {/* Top Branding */}
         <div className="relative z-10">
-          <Link href="/" className="inline-flex items-center gap-3 group focus:outline-none">
-            <Scale className="w-7 h-7 text-indigo-400 shrink-0" />
+          <Link href="/" className="inline-flex items-center gap-2.5 group focus:outline-none">
+            <CivilexLogo size={24} className="text-primary shrink-0" />
             <div>
               <div className="flex items-center gap-2">
-                <span className="font-bold text-xl tracking-tight text-white">CIVIL-LEX</span>
+                <span className="font-bold text-xl tracking-tight text-white group-hover:text-primary transition-colors">CIVIL-LEX</span>
               </div>
               <p className="text-xs text-slate-400">Philippine Civil Law Intelligence Platform</p>
             </div>
@@ -35,10 +36,6 @@ export default function AuthLayout({
         {/* Middle Core Capabilities */}
         <div className="relative z-10 max-w-xl my-auto py-6 xl:py-10 space-y-5 xl:space-y-8">
           <div>
-            <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-indigo-950/60 border border-indigo-800/40 text-indigo-300 text-xs font-medium mb-4">
-              <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
-              <span>Supreme Court RAG Grounded Architecture</span>
-            </div>
             <h1 className="text-3xl xl:text-4xl font-semibold text-white tracking-tight leading-tight">
               Verifiable statutory research for Philippine legal professionals.
             </h1>
@@ -49,7 +46,7 @@ export default function AuthLayout({
 
           <div className="space-y-4 pt-2 border-t border-slate-800/80">
             <div className="flex items-start gap-3">
-              <CheckCircle2 className="w-4.5 h-4.5 text-emerald-400 shrink-0 mt-0.5" />
+              <CheckCircle2 strokeWidth={1.75} className="w-4.5 h-4.5 text-emerald-400 shrink-0 mt-0.5" aria-hidden="true" />
               <div>
                 <h2 className="text-sm font-medium text-slate-200">Exhaustive Civil Code Embeddings</h2>
                 <p className="text-xs text-slate-400">Persons, Property, Succession, Obligations &amp; Contracts, and Special Contracts.</p>
@@ -57,7 +54,7 @@ export default function AuthLayout({
             </div>
 
             <div className="flex items-start gap-3">
-              <BookOpen className="w-4.5 h-4.5 text-indigo-400 shrink-0 mt-0.5" />
+              <CivilCodeCodex size={18} className="text-indigo-400 shrink-0 mt-0.5" />
               <div>
                 <h2 className="text-sm font-medium text-slate-200">Reciprocal Rank Fusion Retrieval</h2>
                 <p className="text-xs text-slate-400">Hybrid semantic vector similarity merged with native full-text legal search.</p>
@@ -65,7 +62,7 @@ export default function AuthLayout({
             </div>
 
             <div className="flex items-start gap-3">
-              <ShieldCheck className="w-4.5 h-4.5 text-blue-400 shrink-0 mt-0.5" />
+              <LegalShieldCheck size={18} className="text-blue-400 shrink-0 mt-0.5" />
               <div>
                 <h2 className="text-sm font-medium text-slate-200">Strict Pinpoint Verification</h2>
                 <p className="text-xs text-slate-400">Guaranteed citations linked directly to official gazette and Supreme Court rulings.</p>
@@ -85,12 +82,9 @@ export default function AuthLayout({
         {/* Mobile Header */}
         <div className="lg:hidden flex items-center justify-between pb-6 border-b border-border mb-6">
           <Link href="/" className="flex items-center gap-2.5">
-            <Scale className="w-5 h-5 text-primary shrink-0" />
+            <CivilexLogo size={22} className="text-primary shrink-0" />
             <span className="font-bold text-lg text-foreground">CIVIL-LEX</span>
           </Link>
-          <span className="text-[10px] font-medium text-muted-foreground bg-muted px-2 py-0.5 rounded-full">
-            Legal Intelligence
-          </span>
         </div>
 
         {/* Content Container */}

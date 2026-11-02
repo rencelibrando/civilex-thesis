@@ -31,10 +31,18 @@ function VerifyEmailContent() {
   const [errorMsg, setErrorMsg] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
   const [isVerifying, setIsVerifying] = useState(false);
+  const [isVerifiedSuccess, setIsVerifiedSuccess] = useState(false);
   const [resendCooldown, setResendCooldown] = useState(60);
   const [isResending, setIsResending] = useState(false);
 
   const inputRefs = useRef<(HTMLInputElement | null)[]>([]);
+  const pasteTimersRef = useRef<NodeJS.Timeout[]>([]);
+
+  useEffect(() => {
+    return () => {
+      pasteTimersRef.current.forEach(clearTimeout);
+    };
+  }, []);
 
   // If already authenticated, redirect to dashboard
   useEffect(() => {
@@ -87,18 +95,31 @@ function VerifyEmailContent() {
     const pasted = e.clipboardData.getData("text").replace(/[^0-9]/g, "").slice(0, 6);
     if (!pasted) return;
 
-    const newDigits = [...digits];
-    for (let i = 0; i < 6; i++) {
-      newDigits[i] = pasted[i] || "";
-    }
-    setDigits(newDigits);
+    pasteTimersRef.current.forEach(clearTimeout);
+    pasteTimersRef.current = [];
+
     setErrorMsg("");
+    setDigits(["", "", "", "", "", ""]);
 
-    const lastIndex = Math.min(pasted.length, 5);
-    inputRefs.current[lastIndex]?.focus();
+    const staggerMs = 70;
+    for (let i = 0; i < pasted.length; i++) {
+      const timer = setTimeout(() => {
+        setDigits((prev) => {
+          const next = [...prev];
+          next[i] = pasted[i];
+          return next;
+        });
+        inputRefs.current[i]?.focus();
 
-    if (pasted.length === 6) {
-      triggerVerification(pasted);
+        if (i === pasted.length - 1 && pasted.length === 6) {
+          const settleTimer = setTimeout(() => {
+            triggerVerification(pasted);
+          }, 180);
+          pasteTimersRef.current.push(settleTimer);
+        }
+      }, i * staggerMs);
+
+      pasteTimersRef.current.push(timer);
     }
   };
 
@@ -127,6 +148,7 @@ function VerifyEmailContent() {
       return;
     }
 
+    setIsVerifiedSuccess(true);
     setSuccessMsg("Email successfully verified! Redirecting to sign in...");
     setTimeout(() => {
       router.replace(`/login?verified=true&email=${encodeURIComponent(cleanEmail)}`);
@@ -162,9 +184,7 @@ function VerifyEmailContent() {
   return (
     <div className="w-full max-w-md mx-auto space-y-6 animate-fade-in py-2">
       <div className="space-y-2 text-center">
-        <div className="w-12 h-12 bg-primary/10 rounded-2xl flex items-center justify-center mx-auto mb-2 text-primary border border-primary/20">
-          <KeyRound className="w-6 h-6" />
-        </div>
+        <KeyRound className="w-8 h-8 text-primary mx-auto mb-2" />
         <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-foreground">
           Enter Verification Code
         </h1>
@@ -213,13 +233,15 @@ function VerifyEmailContent() {
               pattern="[0-9]*"
               maxLength={1}
               value={digit}
-              disabled={isVerifying}
+              disabled={isVerifying || isVerifiedSuccess}
               onChange={(e) => handleDigitChange(idx, e.target.value)}
               onKeyDown={(e) => handleKeyDown(idx, e)}
-              className={`w-11 h-13 sm:w-12 sm:h-14 text-center text-xl font-bold rounded-xl border transition-all text-foreground ${
-                digit
-                  ? "border-primary bg-primary/5 ring-1 ring-primary/30"
-                  : "border-border bg-muted/20 hover:border-border/80"
+              className={`w-11 h-13 sm:w-12 sm:h-14 text-center text-xl font-bold rounded-xl border transition-all duration-200 text-foreground transform ${
+                isVerifiedSuccess
+                  ? "border-emerald-500 bg-emerald-500/10 text-emerald-600 ring-2 ring-emerald-500/30 scale-105"
+                  : digit
+                    ? "border-primary bg-primary/5 ring-1 ring-primary/30 scale-[1.02]"
+                    : "border-border bg-muted/20 hover:border-border/80 scale-100"
               } focus:border-primary focus:ring-2 focus:ring-primary/20 focus:outline-none`}
             />
           ))}
@@ -229,17 +251,17 @@ function VerifyEmailContent() {
         <Button
           type="button"
           onClick={() => triggerVerification()}
-          disabled={isVerifying || digits.some((d) => !d)}
+          disabled={isVerifying || isVerifiedSuccess || digits.some((d) => !d)}
           className="w-full h-11 text-sm font-semibold rounded-xl"
         >
-          {isVerifying ? (
+          {isVerifying || isVerifiedSuccess ? (
             <>
               <Loader2 className="w-4 h-4 animate-spin mr-2" />
-              Verifying Code...
+              {isVerifiedSuccess ? "Verified! Redirecting..." : "Verifying Code..."}
             </>
           ) : (
             <>
-              Verify & Enter CIVIL-LEX
+              Verify &amp; Enter CIVIL-LEX
               <ArrowRight className="w-4 h-4 ml-2" />
             </>
           )}

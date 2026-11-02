@@ -14,7 +14,7 @@ import { BACKEND_URL } from "@/lib/config";
 import { getCachedProfile, getInitialCachedProfile } from "@/lib/auth-storage";
 import { getPersonalizedDocGreeting } from "@/lib/user-persona";
 import { useAuth } from "./auth-context";
-import { RagStatus, RagStage, mergeCitations, getCitationKey, LegalAnalytics, generateFollowUpPrompts } from "./chat-context";
+import { RagStatus, RagStage, mergeCitations, getCitationKey, LegalAnalytics, generateFollowUpPrompts, settleNliAnalytics } from "./chat-context";
 import { runResumableStream, StreamEvent } from "@/lib/resumable-stream";
 
 export function generateDocFollowUpPrompts(lastAnswer: string, citations: any[] = [], filename?: string): string[] {
@@ -434,6 +434,7 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
         let fullAccumulator = "";
         let receivedCits: Record<string, unknown>[] = [];
         let receivedFollowUps = false;
+        let hasStreamError = false;
 
         const outcome = await runResumableStream({
           backendUrl: BACKEND_URL,
@@ -512,6 +513,33 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
             } else if (data.type === "text" && data.text) {
               fullAccumulator += data.text;
               enqueueText(data.text);
+            } else if (data.type === "error") {
+              const errorMsg = data.message || "An error occurred while generating the legal response.";
+              fullAccumulator = `> **Service Notice**\n>\n> ${errorMsg}`;
+              hasStreamError = true;
+              stopCharStream();
+              setDocChats((prev) => {
+                const cur = prev[docId] || INITIAL_STATE;
+                return {
+                  ...prev,
+                  [docId]: {
+                    ...cur,
+                    isTyping: false,
+                    currentCitations: [],
+                    ragStatus: { stage: "error", message: errorMsg },
+                    messages: cur.messages.map((m) =>
+                      m.id === assistantId
+                        ? {
+                            ...m,
+                            content: fullAccumulator,
+                            citations: [],
+                            ragStatus: { stage: "error", message: errorMsg },
+                          }
+                        : m
+                    ),
+                  },
+                };
+              });
             } else if (data.type === "done") {
               const fallbackFollowUps = receivedFollowUps
                 ? null
@@ -524,10 +552,12 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
                     ...cur,
                     ...(fallbackFollowUps ? { followUpPrompts: fallbackFollowUps } : {}),
                     ragStatus: { stage: "completed", message: "Analysis complete" },
+                    legalAnalytics: settleNliAnalytics(cur.legalAnalytics),
                     messages: cur.messages.map((m) =>
                       m.id === assistantId
                         ? {
                             ...m,
+                            legalAnalytics: settleNliAnalytics(m.legalAnalytics ?? null),
                             ragStatus: { stage: "completed", message: "Analysis complete" },
                           }
                         : m
@@ -542,11 +572,45 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
 
         flushCharQueueInstantly();
         stopCharStream();
+        if (outcome === "error" && !hasStreamError) {
+          const errorMsg = "An error occurred while generating the legal response.";
+          fullAccumulator = fullAccumulator || `> **Service Notice**\n>\n> ${errorMsg}`;
+          hasStreamError = true;
+          setDocChats((prev) => {
+            const cur = prev[docId] || INITIAL_STATE;
+            return {
+              ...prev,
+              [docId]: {
+                ...cur,
+                isTyping: false,
+                currentCitations: [],
+                ragStatus: { stage: "error", message: errorMsg },
+                messages: cur.messages.map((m) =>
+                  m.id === assistantId
+                    ? {
+                        ...m,
+                        content: fullAccumulator,
+                        citations: [],
+                        ragStatus: { stage: "error", message: errorMsg },
+                      }
+                    : m
+                ),
+              },
+            };
+          });
+        }
+
         setDocChats((prev) => {
           const cur = prev[docId] || INITIAL_STATE;
           return {
             ...prev,
-            [docId]: { ...cur, isTyping: false },
+            [docId]: {
+              ...cur,
+              isTyping: false,
+              ...(!hasStreamError
+                ? { ragStatus: { stage: "completed", message: "Analysis complete" } }
+                : {}),
+            },
           };
         });
         if (outcome === "expired") {
@@ -952,6 +1016,7 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
         let fullResponseAccumulator = "";
         let receivedCitations: Record<string, unknown>[] = [];
         let receivedFollowUps = false;
+        let hasStreamError = false;
 
         const streamExecution = async () => {
           return await runResumableStream({
@@ -1068,6 +1133,36 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
                   activeDocStreamContextRef.current[docId]!.fullResponse = fullResponseAccumulator;
                 }
                 enqueueText(data.text);
+              } else if (data.type === "error") {
+                const errorMsg = data.message || "An error occurred while generating the legal response.";
+                fullResponseAccumulator = `> **Service Notice**\n>\n> ${errorMsg}`;
+                hasStreamError = true;
+                stopCharStream();
+                setDocChats((prev) => {
+                  const cur = prev[docId] || INITIAL_STATE;
+                  return {
+                    ...prev,
+                    [docId]: {
+                      ...cur,
+                      isTyping: false,
+                      currentCitations: [],
+                      ragStatus: {
+                        stage: "error",
+                        message: errorMsg,
+                      },
+                      messages: cur.messages.map((msg) =>
+                        msg.id === assistantId
+                          ? {
+                              ...msg,
+                              content: fullResponseAccumulator,
+                              citations: [],
+                              ragStatus: { stage: "error", message: errorMsg },
+                            }
+                          : msg
+                      ),
+                    },
+                  };
+                });
               } else if (data.type === "done") {
                 setDocChats((prev) => {
                   const cur = prev[docId] || INITIAL_STATE;
@@ -1076,6 +1171,16 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
                     [docId]: {
                       ...cur,
                       ragStatus: { stage: "completed", message: "Analysis complete" },
+                      legalAnalytics: settleNliAnalytics(cur.legalAnalytics),
+                      messages: cur.messages.map((m) =>
+                        m.id === assistantId
+                          ? {
+                              ...m,
+                              legalAnalytics: settleNliAnalytics(m.legalAnalytics ?? null),
+                              ragStatus: { stage: "completed", message: "Analysis complete" },
+                            }
+                          : m
+                      ),
                     },
                   };
                 });
@@ -1089,6 +1194,37 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
 
         if (outcome === "expired" && activeSessionId) {
           await reconcileDocWithServer(docId, activeSessionId, assistantId, token, filename);
+        }
+
+        if (outcome === "error" && !hasStreamError) {
+          const errorMsg = "An error occurred while generating the legal response.";
+          fullResponseAccumulator = fullResponseAccumulator || `> **Service Notice**\n>\n> ${errorMsg}`;
+          hasStreamError = true;
+          setDocChats((prev) => {
+            const cur = prev[docId] || INITIAL_STATE;
+            return {
+              ...prev,
+              [docId]: {
+                ...cur,
+                isTyping: false,
+                currentCitations: [],
+                ragStatus: {
+                  stage: "error",
+                  message: errorMsg,
+                },
+                messages: cur.messages.map((msg) =>
+                  msg.id === assistantId
+                    ? {
+                        ...msg,
+                        content: fullResponseAccumulator,
+                        citations: [],
+                        ragStatus: { stage: "error", message: errorMsg },
+                      }
+                    : msg
+                ),
+              },
+            };
+          });
         }
 
         const waitForDrain = () =>
@@ -1114,30 +1250,32 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
         await waitForDrain();
         stopCharStream();
 
-        setDocChats((prev) => {
-          const cur = prev[docId] || INITIAL_STATE;
-          return {
-            ...prev,
-            [docId]: {
-              ...cur,
-              isTyping: false,
-              ragStatus: { stage: "completed", message: "Analysis complete" },
-            },
-          };
-        });
-
-        if (!receivedFollowUps) {
-          const followUps = generateDocFollowUpPrompts(fullResponseAccumulator, receivedCitations, filename);
+        if (!hasStreamError) {
           setDocChats((prev) => {
             const cur = prev[docId] || INITIAL_STATE;
             return {
               ...prev,
               [docId]: {
                 ...cur,
-                followUpPrompts: followUps,
+                isTyping: false,
+                ragStatus: { stage: "completed", message: "Analysis complete" },
               },
             };
           });
+
+          if (!receivedFollowUps) {
+            const followUps = generateDocFollowUpPrompts(fullResponseAccumulator, receivedCitations, filename);
+            setDocChats((prev) => {
+              const cur = prev[docId] || INITIAL_STATE;
+              return {
+                ...prev,
+                [docId]: {
+                  ...cur,
+                  followUpPrompts: followUps,
+                },
+              };
+            });
+          }
         }
       } catch (err: any) {
         stopCharStream();
@@ -1162,6 +1300,8 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
             };
           });
         } else {
+          const connectionNotice =
+            "> **Connection Notice**\n>\n> Unable to connect to the legal service. The model service (LM Studio) may be offline. Please verify that LM Studio is running and try again.";
           setDocChats((prev) => {
             const cur = prev[docId] || INITIAL_STATE;
             return {
@@ -1177,9 +1317,7 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
                         ...m,
                         citations: [],
                         ragStatus: { stage: "error", message: "Service connection error" },
-                        content:
-                          m.content ||
-                          "> **Analysis Notice**\n>\n> Unable to connect to the legal analysis service. The model service (LM Studio) may be offline. Please verify that the service is running and try again.",
+                        content: m.content ? `${m.content}\n\n${connectionNotice}` : connectionNotice,
                       }
                     : m
                 ),

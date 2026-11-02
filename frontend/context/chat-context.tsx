@@ -925,6 +925,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     let fullResponseAccumulator = "";
     let receivedCitations: any[] = [];
     let receivedFollowUps = false;
+    let hasStreamError = false;
     let activeSessionId: string | null = sessionId;
     let token = "";
 
@@ -1089,6 +1090,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
             } else if (data.type === "error") {
               const errorMsg = data.message || "An error occurred while generating the legal response.";
               fullResponseAccumulator = `> **Service Notice**\n>\n> ${errorMsg}`;
+              hasStreamError = true;
               stopCharStream();
               setIsTyping(false);
               setRagStatus({
@@ -1136,6 +1138,31 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         await reconcileWithServer(activeSessionId, assistantId, token);
       }
 
+      if (outcome === "error" && !hasStreamError) {
+        const errorMsg = "An error occurred while generating the legal response.";
+        fullResponseAccumulator = fullResponseAccumulator || `> **Service Notice**\n>\n> ${errorMsg}`;
+        hasStreamError = true;
+        stopCharStream();
+        setIsTyping(false);
+        setRagStatus({
+          stage: "error",
+          message: errorMsg,
+        });
+        setCurrentCitations([]);
+        setMessages((prev) =>
+          prev.map((msg) =>
+            msg.id === assistantId
+              ? {
+                  ...msg,
+                  content: fullResponseAccumulator,
+                  citations: [],
+                  ragStatus: { stage: "error", message: errorMsg },
+                }
+              : msg
+          )
+        );
+      }
+
       // Wait for character queue to drain smoothly
       const waitForDrain = () =>
         new Promise<void>((resolve) => {
@@ -1161,14 +1188,16 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       stopCharStream();
 
       setIsTyping(false);
-      setRagStatus({
-        stage: "completed",
-        message: "Analysis complete",
-      });
+      if (!hasStreamError) {
+        setRagStatus({
+          stage: "completed",
+          message: "Analysis complete",
+        });
 
-      if (!receivedFollowUps) {
-        const followUps = generateFollowUpPrompts(fullResponseAccumulator, receivedCitations);
-        setFollowUpPrompts(followUps);
+        if (!receivedFollowUps) {
+          const followUps = generateFollowUpPrompts(fullResponseAccumulator, receivedCitations);
+          setFollowUpPrompts(followUps);
+        }
       }
     } catch (error: any) {
       const isAbort =
@@ -1260,6 +1289,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     let fullResponseAccumulator = "";
     let receivedCitations: any[] = [];
     let receivedFollowUps = false;
+    let hasStreamError = false;
     let token = "";
 
     try {
@@ -1384,6 +1414,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
             } else if (data.type === "error") {
               const errorMsg = data.message || "An error occurred while generating the legal response.";
               fullResponseAccumulator = `> **Service Notice**\n>\n> ${errorMsg}`;
+              hasStreamError = true;
               stopCharStream();
               setIsTyping(false);
               setRagStatus({
@@ -1430,6 +1461,31 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         await reconcileWithServer(sessionId, assistantId, token);
       }
 
+      if (outcome === "error" && !hasStreamError) {
+        const errorMsg = "An error occurred while generating the legal response.";
+        fullResponseAccumulator = fullResponseAccumulator || `> **Service Notice**\n>\n> ${errorMsg}`;
+        hasStreamError = true;
+        stopCharStream();
+        setIsTyping(false);
+        setRagStatus({
+          stage: "error",
+          message: errorMsg,
+        });
+        setCurrentCitations([]);
+        setMessages((prev) =>
+          prev.map((msg) =>
+            msg.id === assistantId
+              ? {
+                  ...msg,
+                  content: fullResponseAccumulator,
+                  citations: [],
+                  ragStatus: { stage: "error", message: errorMsg },
+                }
+              : msg
+          )
+        );
+      }
+
       const waitForDrain = () =>
         new Promise<void>((resolve) => {
           if (typeof document !== "undefined" && document.visibilityState === "hidden") {
@@ -1454,14 +1510,16 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       stopCharStream();
 
       setIsTyping(false);
-      setRagStatus({
-        stage: "completed",
-        message: "Analysis complete",
-      });
+      if (!hasStreamError) {
+        setRagStatus({
+          stage: "completed",
+          message: "Analysis complete",
+        });
 
-      if (!receivedFollowUps) {
-        const followUps = generateFollowUpPrompts(fullResponseAccumulator, receivedCitations);
-        setFollowUpPrompts(followUps);
+        if (!receivedFollowUps) {
+          const followUps = generateFollowUpPrompts(fullResponseAccumulator, receivedCitations);
+          setFollowUpPrompts(followUps);
+        }
       }
     } catch (error: any) {
       const isAbort =
@@ -1547,6 +1605,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
         let fullAccumulator = "";
         let receivedCits: Record<string, unknown>[] = [];
+        let hasStreamError = false;
 
         const outcome = await runResumableStream({
           backendUrl: BACKEND_URL,
@@ -1583,6 +1642,26 @@ export function ChatProvider({ children }: { children: ReactNode }) {
             } else if (data.type === "text" && data.text) {
               fullAccumulator += data.text;
               enqueueText(data.text);
+            } else if (data.type === "error") {
+              const errorMsg = data.message || "An error occurred while generating the legal response.";
+              fullAccumulator = `> **Service Notice**\n>\n> ${errorMsg}`;
+              hasStreamError = true;
+              stopCharStream();
+              setIsTyping(false);
+              setRagStatus({ stage: "error", message: errorMsg });
+              setCurrentCitations([]);
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === assistantId
+                    ? {
+                        ...m,
+                        content: fullAccumulator,
+                        citations: [],
+                        ragStatus: { stage: "error", message: errorMsg },
+                      }
+                    : m
+                )
+              );
             } else if (data.type === "done") {
               const followUps = generateFollowUpPrompts(fullAccumulator, receivedCits);
               setFollowUpPrompts(followUps);
@@ -1601,6 +1680,25 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
         stopCharStream();
         setIsTyping(false);
+        if (outcome === "error" && !hasStreamError) {
+          const errorMsg = "An error occurred while generating the legal response.";
+          fullAccumulator = fullAccumulator || `> **Service Notice**\n>\n> ${errorMsg}`;
+          hasStreamError = true;
+          setRagStatus({ stage: "error", message: errorMsg });
+          setCurrentCitations([]);
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === assistantId
+                ? {
+                    ...m,
+                    content: fullAccumulator,
+                    citations: [],
+                    ragStatus: { stage: "error", message: errorMsg },
+                  }
+                : m
+            )
+          );
+        }
         if (outcome === "expired") {
           await reconcileWithServer(targetSessionId, assistantId, token);
         }

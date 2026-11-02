@@ -12,6 +12,7 @@ import {
   EyeOff,
   Loader2,
   AlertCircle,
+  CheckCircle2,
   ShieldCheck,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -45,7 +46,9 @@ export default function SignupPage() {
     }
   }, [isAuthenticated, isAuthLoading, router]);
 
-  const passwordsMismatch = confirmPassword.length > 0 && password !== confirmPassword;
+  const isConfirmTyped = confirmPassword.length > 0;
+  const isPasswordMatch = isConfirmTyped && password.length > 0 && password === confirmPassword;
+  const isPasswordMismatch = isConfirmTyped && password !== confirmPassword;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -108,7 +111,7 @@ export default function SignupPage() {
           <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-foreground">
             Create your account
           </h1>
-          <span className="text-[10px] font-semibold bg-primary/10 text-primary border border-primary/20 px-2 py-0.5 rounded-full flex items-center gap-1">
+          <span className="text-[10px] font-semibold bg-primary/10 text-primary px-2 py-0.5 rounded-full flex items-center gap-1">
             <ShieldCheck className="w-3 h-3" />
             Verified Portal
           </span>
@@ -182,7 +185,10 @@ export default function SignupPage() {
               autoComplete="new-password"
               required
               value={password}
-              onChange={(e) => setPassword(e.target.value)}
+              onChange={(e) => {
+                setPassword(e.target.value);
+                if (errorMsg) setErrorMsg("");
+              }}
               onFocus={() => setIsPasswordFocused(true)}
               onBlur={(e) => {
                 if (!e.currentTarget.parentElement?.contains(e.relatedTarget as Node)) {
@@ -211,9 +217,23 @@ export default function SignupPage() {
         </div>
 
         <div className="space-y-1.5">
-          <label htmlFor="confirmPassword" className="text-xs font-medium text-foreground">
-            Confirm Password <span className="text-destructive">*</span>
-          </label>
+          <div className="flex items-center justify-between">
+            <label htmlFor="confirmPassword" className="text-xs font-medium text-foreground">
+              Confirm Password <span className="text-destructive">*</span>
+            </label>
+            {isPasswordMatch && (
+              <span className="text-[11px] text-emerald-600 dark:text-emerald-400 font-medium flex items-center gap-1 animate-fade-in">
+                <CheckCircle2 className="w-3 h-3" />
+                Passwords match
+              </span>
+            )}
+            {isPasswordMismatch && (
+              <span className="text-[11px] text-destructive font-medium flex items-center gap-1 animate-fade-in">
+                <AlertCircle className="w-3 h-3" />
+                Passwords do not match
+              </span>
+            )}
+          </div>
           <div className="relative">
             <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
             <Input
@@ -223,10 +243,19 @@ export default function SignupPage() {
               autoComplete="new-password"
               required
               value={confirmPassword}
-              onChange={(e) => setConfirmPassword(e.target.value)}
+              onChange={(e) => {
+                setConfirmPassword(e.target.value);
+                if (errorMsg) setErrorMsg("");
+              }}
               placeholder="Re-enter your password"
-              aria-invalid={passwordsMismatch}
-              className={`${INPUT_CLASS} pr-10 ${passwordsMismatch ? "border-destructive" : ""}`}
+              aria-invalid={isPasswordMismatch}
+              className={`${INPUT_CLASS} pr-10 transition-colors ${
+                isPasswordMatch
+                  ? "border-emerald-500/60 focus-visible:ring-emerald-500/30 focus-visible:border-emerald-500"
+                  : isPasswordMismatch
+                    ? "border-destructive/60 focus-visible:ring-destructive/30 focus-visible:border-destructive"
+                    : "border-border focus-visible:ring-primary/30 focus-visible:border-primary"
+              }`}
             />
             <button
               type="button"
@@ -237,14 +266,11 @@ export default function SignupPage() {
               {showConfirmPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
             </button>
           </div>
-          {passwordsMismatch && (
-            <p className="text-[11px] text-destructive">Passwords do not match.</p>
-          )}
         </div>
 
         <Button
           type="submit"
-          disabled={isLoading}
+          disabled={isLoading || isPasswordMismatch}
           className="w-full h-11 bg-primary hover:bg-primary/90 text-primary-foreground font-medium rounded-xl shadow-xs hover:shadow-sm transition-all active:scale-[0.99] cursor-pointer mt-2"
         >
           {isLoading ? (

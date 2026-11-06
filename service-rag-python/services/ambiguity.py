@@ -173,13 +173,21 @@ def _parse_llm_json(raw: str) -> Optional[dict]:
     if not raw:
         return None
     cleaned = raw.strip()
-    cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
-    cleaned = re.sub(r"\s*```$", "", cleaned)
-    match = re.search(r"\{[\s\S]*\}", cleaned)
-    if not match:
-        logger.warning(f"LLM ambiguity response contained no JSON object: {cleaned[:150]}")
-        return None
-    json_str = match.group()
+    cleaned = re.sub(r"<(?:thought|think)>[\s\S]*?</(?:thought|think)>", "", cleaned).strip()
+
+    # Try extracting markdown json code block first
+    code_block = re.search(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", cleaned)
+    if code_block:
+        json_str = code_block.group(1).strip()
+    else:
+        cleaned_no_fence = re.sub(r"^```(?:json)?\s*", "", cleaned)
+        cleaned_no_fence = re.sub(r"\s*```$", "", cleaned_no_fence)
+        match = re.search(r"\{[\s\S]*\}", cleaned_no_fence)
+        if not match:
+            logger.warning(f"LLM ambiguity response contained no JSON object: {cleaned[:150]}")
+            return None
+        json_str = match.group()
+
     # Attempt 1: direct parse
     try:
         return json.loads(json_str, strict=False)
@@ -244,23 +252,7 @@ async def detect_ambiguity(
     if len(q_clean.split()) <= 2:
         return AmbiguityResult(original_query=q_clean)
 
-    # 1.5 Fast bypass: informational queries asking what articles, laws, or remedies apply to a described situation
-    # (e.g., "ano ano ang mga article na nakakasakop...", "what articles apply if...", "anong mga batas o kaso ang pwede kung...")
-    article_inquiry_cue = bool(re.search(
-        r'\b(?:ano[- ]?ano|anong|what|which)\s+(?:ang\s+)?(?:mga\s+)?(?:article|articles|batas|kaso|artikulo|pananagutan)\b',
-        q_clean,
-        re.IGNORECASE
-    ))
-    if article_inquiry_cue and len(q_clean.split()) >= 6:
-        return AmbiguityResult(
-            is_ambiguous=False,
-            confidence=0.0,
-            category="",
-            original_query=q_clean,
-            reasoning="Informational inquiry asking which statutory articles or remedies apply to the described situation."
-        )
-
-    # 1.6 Fast bypass: statutory article queries or false-premise lookups are never ambiguous
+    # 1.1 Fast bypass: statutory article queries or false-premise lookups are never ambiguous
     has_specific_article = bool(parse_article_numbers(q_clean))
     dispute_cues = bool(re.search(r'\b(sue|breach|accident|nasaktan|danyos|utang|idemanda|kaso)\b', q_clean, re.IGNORECASE))
     if has_specific_article and (len(q_clean.split()) <= 20 or not dispute_cues):
@@ -272,7 +264,7 @@ async def detect_ambiguity(
             reasoning="Specific statutory article inquiry or codal lookup."
         )
 
-    # 1.7 Fast bypass: commercial price inquiries or general shopping are non-legal and never ambiguous
+    # 1.2 Fast bypass: commercial price inquiries or general shopping are non-legal and never ambiguous
     commercial_price_cue = bool(re.search(
         r'\b(?:(?:what(?:\'s|\s+is)\s+(?:the\s+)?(?:price|cost|rate))|magkano\s+(?:ang\s+)?(?:presyo|kotse|sasakyan|benta)|price\s+of|how\s+much\s+is\s+(?:a\s+|an\s+|the\s+)?(?:car|vehicle|toyota|product)|just\s+want\s+to\s+know\s+the\s+price)\b',
         q_clean,
@@ -380,8 +372,8 @@ async def detect_ambiguity(
         raw_content = await call_chat_completion_async(
             messages=messages,
             temperature=0.1,
-            max_tokens=600,
-            timeout_sec=30.0,
+            max_tokens=3000,
+            timeout_sec=60.0,
         )
         if not raw_content:
             logger.warning("LLM ambiguity check returned empty; defaulting to clear.")
@@ -394,7 +386,7 @@ async def detect_ambiguity(
         is_ambig = bool(parsed.get("is_ambiguous", False))
         confidence = float(parsed.get("confidence", 0.8 if is_ambig else 0.0))
 
-        if not is_ambig or confidence < 0.65:
+        if not is_ambig or confidence < 0.55:
             return AmbiguityResult(
                 is_ambiguous=False,
                 confidence=confidence,

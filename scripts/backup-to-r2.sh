@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -e
+set -eo pipefail
 
 # CIVIL-LEX Automated Database & Storage Backup to Cloudflare R2
 # Includes: Gzip compression, Cloudflare R2 upload, and Auto-prune of oldest backup
@@ -17,20 +17,18 @@ BACKUP_DIR="$PROJECT_ROOT/backups/$TIMESTAMP"
 
 mkdir -p "$BACKUP_DIR"
 
-
 echo "Starting CIVIL-LEX Backup: $TIMESTAMP"
 echo "Retention Policy: Max $MAX_BACKUPS backups in Cloudflare R2"
 
-
 # Step 1: Export Database Schema & Compress
 echo "[1/4] Exporting database schema..."
-(cd "$PROJECT_ROOT" && npx supabase db dump --local --schema public,auth,storage -f "$BACKUP_DIR/supabase_schema.sql")
+(cd "$PROJECT_ROOT" && npx supabase db dump --schema public,auth,storage -f "$BACKUP_DIR/supabase_schema.sql")
 gzip -f "$BACKUP_DIR/supabase_schema.sql"
 echo "       Schema compressed: supabase_schema.sql.gz"
 
 # Step 2: Export Database Records & Vectors & Compress
 echo "[2/4] Exporting database records and vectors..."
-(cd "$PROJECT_ROOT" && npx supabase db dump --local --data-only --use-copy --schema public,auth,storage -f "$BACKUP_DIR/supabase_data.sql")
+(cd "$PROJECT_ROOT" && npx supabase db dump --data-only --use-copy --schema public,auth,storage -f "$BACKUP_DIR/supabase_data.sql")
 echo "       Compressing database dump (saves ~75% storage)..."
 gzip -f -4 "$BACKUP_DIR/supabase_data.sql"
 echo "       Data dump compressed: supabase_data.sql.gz"
@@ -80,10 +78,8 @@ else
   echo "Retention check passed. No backups need to be pruned."
 fi
 
-# Clean up older local backups to save Fedora disk space (keep only current)
-find "$PROJECT_ROOT/backups" -mindepth 1 -maxdepth 1 -type d ! -name "$TIMESTAMP" -exec rm -rf {} + 2>/dev/null || true
-
+# Clean up older local routine backups to save Fedora disk space (keep only current)
+find "$PROJECT_ROOT/backups" -mindepth 1 -maxdepth 1 -type d -name "20*" ! -name "$TIMESTAMP" -exec rm -rf {} + 2>/dev/null || true
 
 echo "Backup & Retention Pipeline Finished Successfully!"
 echo "Total Backups Remaining in Cloudflare R2: $(aws s3 ls "s3://$BUCKET_NAME/" --profile r2 | awk '{print $2}' | grep '/' | wc -l)"
-

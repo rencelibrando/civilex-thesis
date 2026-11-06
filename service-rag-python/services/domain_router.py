@@ -42,8 +42,12 @@ CIVIL_ANCHORS: List[str] = [
     "query: Donation inter vivos and revocation of donation under Philippine Civil Code",
     "query: Hidden defects in sales and warranty against eviction redhibitory action",
     "query: Ano ang pwede ikaso sakin sa batas sibil pananagutan danyos perwisyo",
+    "query: Ano ang pwede kong ikaso sakin",
+    "query: Ano ang pwede ikaso sakin",
     "query: Can I be sued for damages civil liability breach of contract or quasi-delict",
+    "query: Can I be sued or face liability under civil law",
     "query: Ano ang mga kaso o pananagutan sa civil law kapag may nagawang pagkukulang o pinsala",
+    "query: Anong kaso ang pwede isampa sa akin danyos pananagutan",
     "query: Civil liability and damages for death or physical injuries caused by crime or negligence Article 2206 Article 33",
     "query: Bayad sa danyos at sibil na pananagutan sa pagkamatay o pagkasugat sa ilalim ng Civil Code",
     "query: Independent civil action for damages arising from death physical injury or altercation Article 33 Article 2177",
@@ -215,6 +219,22 @@ class DomainRouter:
                 "category": "in_domain_civil",
                 "target_domain": None,
                 "reason": "Active legal document analysis session."
+            }
+
+        # Fast path 4: Philippine civil litigation, liability, dispute, or lawsuit terms
+        legal_dispute_cue = bool(re.search(
+            r'\b(?:ikaso|ikasuhan|makaso|makasuhan|kaso|demanda|idemanda|mademanda|pananagutan|habulin|danyos|bayad-pinsala|sue|sued|suing|lawsuit|liable|liability|breach|quasi[- ]delict|tort|kontrata|kasunduan|upa|utang|lupa|mana|testamento)\b',
+            q_lower
+        ))
+        external_legal_indicators = bool(re.search(
+            r'\b(?:pulis|police|blotter|kulong|makulong|arrest|aresto|inquest|piskal|prosecutor|homicide|murder|robbery|theft|magnanakaw|estafa|shabu|droga|dole|nlrc|bir|tax|sec|npc)\b',
+            q_lower
+        ))
+        if legal_dispute_cue and not external_legal_indicators:
+            return {
+                "category": "in_domain_civil",
+                "target_domain": None,
+                "reason": "Civil litigation, dispute, or legal liability inquiry detected."
             }
 
         model_name = os.getenv("EMBEDDING_MODEL_NAME", "intfloat/multilingual-e5-base").lower()

@@ -21,7 +21,7 @@ function Avatar({
       data-slot="avatar"
       data-size={size}
       className={cn(
-        "group/avatar relative flex shrink-0 rounded-full select-none overflow-hidden border border-border/80 bg-muted",
+        "group/avatar relative flex shrink-0 rounded-full select-none overflow-hidden bg-muted",
         !hasCustomSize && "size-8",
         !hasCustomSize && "data-[size=lg]:size-10 data-[size=sm]:size-6",
         className

@@ -20,10 +20,35 @@ dotenv.config({ quiet: true });
 const app = express();
 const port = process.env.PORT || 4000;
 
+if (!process.env.TZ) {
+  process.env.TZ = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Manila';
+}
+
+// Format local timestamp as YYYY-MM-DD HH:mm:ss matching the real current time
+export function getLocalTimestamp(date = new Date()) {
+  const pad = (n) => (n < 10 ? '0' + n : '' + n);
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+const originalLog = console.log;
+const originalWarn = console.warn;
+const originalError = console.error;
+
+function prependTimestamp(args) {
+  if (args.length === 0) return args;
+  if (typeof args[0] === 'string' && /^\[?\d{4}-\d{2}-\d{2}/.test(args[0])) {
+    return args;
+  }
+  return [getLocalTimestamp(), ...args];
+}
+
+console.log = (...args) => originalLog(...prependTimestamp(args));
+console.warn = (...args) => originalWarn(...prependTimestamp(args));
+console.error = (...args) => originalError(...prependTimestamp(args));
+
 // Lightweight high-signal HTTP request logger
 app.use((req, res, next) => {
   const start = Date.now();
-  const dateStr = new Date().toISOString().replace('T', ' ').substring(0, 19);
   res.on('finish', () => {
     const duration = Date.now() - start;
     const url = req.originalUrl || req.url;
@@ -44,9 +69,10 @@ app.use((req, res, next) => {
       return;
     }
 
+    const timestamp = getLocalTimestamp();
     const method = req.method;
     const userTag = req.user ? ` [${req.user.email || req.user.id}]` : '';
-    console.log(`${dateStr} [HTTP] ${method} ${url} ${status} in ${duration}ms${userTag}`);
+    console.log(`${timestamp} [HTTP] ${method} ${url} ${status} in ${duration}ms${userTag}`);
   });
   next();
 });
@@ -79,6 +105,17 @@ app.use('/api/profiles', profileRoutes);
 app.use('/api/sessions', sessionRoutes);
 app.use('/api/system', systemRoutes);
 
+// Fallback alias for direct docx and pdf export
+app.post('/export-docx', (req, res, next) => {
+  req.url = '/export-docx';
+  documentRoutes(req, res, next);
+});
+
+app.post('/export-pdf', (req, res, next) => {
+  req.url = '/export-pdf';
+  documentRoutes(req, res, next);
+});
+
 // Serve uploads statically
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
@@ -91,7 +128,7 @@ app.get('/health', (req, res) => {
 });
 
 const server = app.listen(port, () => {
-  console.log(`Backend Node Gateway running on port ${port}`);
+  console.log(`${getLocalTimestamp()} [SYSTEM] Backend Node Gateway running on port ${port} (${process.env.TZ})`);
 });
 
 // Configure robust HTTP socket timeouts for reverse proxies and tunnels

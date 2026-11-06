@@ -27,7 +27,7 @@ if ! command -v devtunnel >/dev/null 2>&1; then
 fi
 
 echo -e "${GREEN}[✔] Using Microsoft Dev Tunnels ('devtunnel')${RESET}"
-echo -e "${CYAN}[i] Creating or connecting persistent tunnel 'civilex-tunnel-2'...${RESET}"
+echo -e "${CYAN}[i] Creating or connecting persistent tunnel 'civilex-tunnel'...${RESET}"
 
 # Ensure user is logged in
 if ! devtunnel user show >/dev/null 2>&1; then
@@ -36,22 +36,22 @@ if ! devtunnel user show >/dev/null 2>&1; then
 fi
 
 # Create tunnel if not existing
-devtunnel show civilex-tunnel-2 >/dev/null 2>&1 || devtunnel create civilex-tunnel-2 -a --allow-anonymous
+devtunnel show civilex-tunnel >/dev/null 2>&1 || devtunnel create civilex-tunnel -a --allow-anonymous
 
 # Add ports if not added (configured with http protocol to prevent raw TCP window stalls)
-devtunnel port create civilex-tunnel-2 -p 4000 --protocol http >/dev/null 2>&1 || true
-devtunnel port create civilex-tunnel-2 -p 54321 --protocol http >/dev/null 2>&1 || true
+devtunnel port create civilex-tunnel -p 4000 --protocol http >/dev/null 2>&1 || true
+devtunnel port create civilex-tunnel -p 54321 --protocol http >/dev/null 2>&1 || true
 
 echo -e "${GREEN}[✔] Ports configured:${RESET}"
 echo -e "  - Port 4000  (Node.js Backend Gateway)"
 echo -e "  - Port 54321 (Local Supabase API Gateway)"
 echo -e "\n${BOLD}${YELLOW}Your Dev Tunnel URLs:${RESET}"
-echo -e "  - Backend API:  https://ps7cvfbz-4000.asse.devtunnels.ms"
-echo -e "  - Supabase API: https://ps7cvfbz-54321.asse.devtunnels.ms"
+echo -e "  - Backend API:  https://w21xbn22-4000.asse.devtunnels.ms"
+echo -e "  - Supabase API: https://w21xbn22-54321.asse.devtunnels.ms"
 
 while true; do
-  echo -e "${CYAN}[i] Hosting tunnel 'civilex-tunnel-2'...${RESET}"
-  devtunnel host civilex-tunnel-2 || true
+  echo -e "${CYAN}[i] Hosting tunnel 'civilex-tunnel'...${RESET}"
+  devtunnel host civilex-tunnel || true
   echo -e "${YELLOW}[!] Dev Tunnel disconnected or encountered an error. Reconnecting in 3 seconds...${RESET}"
   sleep 3
 done

@@ -147,7 +147,7 @@ interface DocChatContextType {
   setDocInputValue: (docId: string, val: string) => void;
   loadDocSession: (docId: string, sessionId: string) => Promise<void>;
   ensureDocSession: (docId: string, filename: string) => Promise<string | null>;
-  handleSendDocMessage: (docId: string, filename: string, overrideText?: string) => Promise<void>;
+  handleSendDocMessage: (docId: string, filename: string, overrideText?: string, selectedText?: string) => Promise<void>;
   handleStopDocMessage: (docId: string) => void;
   resumeActiveDocJob: (docId: string, sessionId: string, filename?: string) => Promise<boolean>;
   userFirstName: string;
@@ -932,7 +932,7 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
   }, [stopCharStream]);
 
   const handleSendDocMessage = useCallback(
-    async (docId: string, filename: string, overrideText?: string) => {
+    async (docId: string, filename: string, overrideText?: string, selectedText?: string) => {
       const currentState =
         docChats[docId] ||
         buildInitialDocState(
@@ -1038,6 +1038,8 @@ export function DocChatProvider({ children }: { children: ReactNode }) {
                   document_name: filename,
                   history: currentHistory.slice(0, -1).map((m) => ({ role: m.role, content: m.content })),
                   prior_citations: currentState.retainedCitations || [],
+                  selected_text: selectedText || undefined,
+                  canvas_mode: Boolean(selectedText),
                 }),
               }),
             getToken: async () => {

@@ -101,7 +101,7 @@ async def generate_response_stream(
     system_prompt: str,
     user_query: str,
     history: list = None,
-    max_tokens: int = 2048,
+    max_tokens: int = 3000,
     repetition_penalty: float = 1.15,
     finish_info: dict | None = None,
 ):
@@ -197,7 +197,7 @@ async def generate_response_stream(
 async def call_chat_completion_async(
     messages: list,
     temperature: float = 0.1,
-    max_tokens: int = 2500,
+    max_tokens: int = 3000,
     timeout_sec: float = 60.0,
     repetition_penalty: float = 1.15,
 ) -> str | None:
@@ -231,7 +231,7 @@ async def call_chat_completion_async(
 def call_chat_completion_sync(
     messages: list,
     temperature: float = 0.0,
-    max_tokens: int = 2500,
+    max_tokens: int = 3000,
     timeout_sec: float = 60.0,
     repetition_penalty: float = 1.15,
 ) -> str | None:

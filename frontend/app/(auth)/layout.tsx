@@ -37,7 +37,7 @@ export default function AuthLayout({
         <div className="relative z-10 max-w-xl my-auto py-6 xl:py-10 space-y-5 xl:space-y-8">
           <div>
             <h1 className="text-3xl xl:text-4xl font-semibold text-white tracking-tight leading-tight">
-              Verifiable statutory research for Philippine legal professionals.
+              Verifiable statutory research for ordinary citizens.
             </h1>
             <p className="text-slate-400 text-base mt-4 leading-relaxed">
               Accelerate case synthesis, article concordance, and jurisprudence discovery across all 2,275 articles of Republic Act 386 with deterministic citation traceability.

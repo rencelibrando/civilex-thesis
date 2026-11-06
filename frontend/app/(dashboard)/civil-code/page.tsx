@@ -2,12 +2,11 @@
 
 import { useState, useEffect, useMemo, useRef, useCallback, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
-import { BookOpen, ChevronRight, ChevronDown, Search, ArrowRight, Bookmark, Loader2, ChevronsUpDown, ChevronsDownUp, FileText, AlertCircle, List, X } from "lucide-react";
+import { BookOpen, ChevronRight, ChevronDown, Search, ArrowRight, Loader2, ChevronsUpDown, ChevronsDownUp, FileText, AlertCircle, List, X } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from "@/components/ui/tooltip";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
@@ -498,93 +497,93 @@ function CivilCodeContent() {
 
             {/* Table of Contents - Mobile Sheet */}
             <Sheet open={isTocSheetOpen} onOpenChange={setIsTocSheetOpen}>
-              <SheetContent side="left" className="w-[88vw] sm:w-84 sm:max-w-md p-0 flex flex-col">
-                <SheetHeader className="p-4 border-b border-border bg-card/50">
-                  <SheetTitle className="flex items-center gap-2 text-base">
-                    <BookOpen className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
-                    Table of Contents
-                  </SheetTitle>
-                </SheetHeader>
-                <div className="flex-1 overflow-hidden flex flex-col">
-                  {/* Reuse the same TOC panel content */}
-                  <div className="p-3 border-b border-border">
-                    <div className="relative">
-                      <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                      <Input
-                        placeholder="Search chapters, articles..."
-                        className="pl-9 bg-background/50 border-border focus-visible:ring-indigo-500 shadow-sm"
-                        value={searchQuery}
-                        onChange={(e) => setSearchQuery(e.target.value)}
-                      />
+                <SheetContent side="left" className="w-[88vw] sm:w-84 sm:max-w-md p-0 flex flex-col">
+                    <SheetHeader className="p-4 border-b border-border bg-card/50">
+                        <SheetTitle className="flex items-center gap-2 text-base">
+                            <BookOpen className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
+                            Table of Contents
+                        </SheetTitle>
+                    </SheetHeader>
+                    <div className="flex-1 overflow-hidden flex flex-col">
+                        {/* Reuse the same TOC panel content */}
+                        <div className="p-3 border-b border-border">
+                            <div className="relative">
+                                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                                <Input
+                                    placeholder="Search chapters, articles..."
+                                    className="pl-9 bg-background/50 border-border focus-visible:ring-indigo-500 shadow-sm"
+                                    value={searchQuery}
+                                    onChange={(e) => setSearchQuery(e.target.value)}
+                                />
+                            </div>
+                        </div>
+                        <div className="flex-1 overflow-y-auto p-2 min-h-0 custom-scrollbar">
+                            {loadingToc ? (
+                                <div className="space-y-4 p-2">
+                                    <Skeleton className="h-6 w-3/4 rounded-md" />
+                                    <Skeleton className="h-4 w-5/6 ml-4 rounded-md" />
+                                    <Skeleton className="h-4 w-4/6 ml-4 rounded-md" />
+                                </div>
+                            ) : flatRows.map((row) => {
+                                const isSelected = selectedArticleId === row.id;
+                                return (
+                                    <button
+                                        key={row.id}
+                                        className={`w-full flex items-start py-1.5 px-2 rounded-lg transition-colors duration-150 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 cursor-pointer ${isSelected ? "bg-indigo-500/10 dark:bg-indigo-500/20 text-indigo-700 dark:text-indigo-300 font-semibold border-l-2 border-indigo-600 dark:border-indigo-400 shadow-2xs" : "hover:bg-accent"}`}
+                                        style={{ paddingLeft: `${row.depth * 1.1 + 0.35}rem` }}
+                                        onClick={() => {
+                                            if (row.isLeaf) {
+                                                fetchArticle(row.id);
+                                                setIsTocSheetOpen(false);
+                                            } else {
+                                                toggleNode(row.id);
+                                            }
+                                        }}
+                                        aria-expanded={!row.isLeaf ? row.isExpanded : undefined}
+                                    >
+                                        {!row.isLeaf ? (
+                                            row.isExpanded ? (
+                                                <ChevronDown className="w-3.5 h-3.5 mr-1.5 mt-0.5 text-muted-foreground flex-shrink-0" />
+                                            ) : (
+                                                <ChevronRight className="w-3.5 h-3.5 mr-1.5 mt-0.5 text-muted-foreground flex-shrink-0" />
+                                            )
+                                        ) : (
+                                            <FileText className={`w-3 h-3 mr-1.5 mt-0.5 flex-shrink-0 ${isSelected ? "text-indigo-600 dark:text-indigo-400" : "text-muted-foreground/60"}`} />
+                                        )}
+                                        <span className={`flex-1 min-w-0 break-words text-xs sm:text-sm leading-snug ${row.depth === 0 ? "font-semibold text-foreground" : isSelected ? "text-indigo-700 dark:text-indigo-300 font-semibold" : "text-muted-foreground"}`}>
+                                            {row.title}
+                                        </span>
+                                        {row.isLeaf && row.id.startsWith("EO209-") && (
+                                            <Badge variant="outline" className="ml-1 text-[9px] px-1 py-0 border-rose-500/30 text-rose-600 dark:text-rose-400 font-normal shrink-0">
+                                                EO 209
+                                            </Badge>
+                                        )}
+                                    </button>
+                                );
+                            })}
+                        </div>
                     </div>
-                  </div>
-                  <div className="flex-1 overflow-y-auto p-2 min-h-0 custom-scrollbar">
-                    {loadingToc ? (
-                      <div className="space-y-4 p-2">
-                        <Skeleton className="h-6 w-3/4 rounded-md" />
-                        <Skeleton className="h-4 w-5/6 ml-4 rounded-md" />
-                        <Skeleton className="h-4 w-4/6 ml-4 rounded-md" />
-                      </div>
-                    ) : flatRows.map((row) => {
-                      const isSelected = selectedArticleId === row.id;
-                      return (
-                        <button
-                          key={row.id}
-                          className={`w-full flex items-start py-1.5 px-2 rounded-lg transition-colors duration-150 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 cursor-pointer ${isSelected ? "bg-indigo-500/10 dark:bg-indigo-500/20 text-indigo-700 dark:text-indigo-300 font-semibold border-l-2 border-indigo-600 dark:border-indigo-400 shadow-2xs" : "hover:bg-accent"}`}
-                          style={{ paddingLeft: `${row.depth * 1.1 + 0.35}rem` }}
-                          onClick={() => {
-                            if (row.isLeaf) {
-                              fetchArticle(row.id);
-                              setIsTocSheetOpen(false);
-                            } else {
-                              toggleNode(row.id);
-                            }
-                          }}
-                          aria-expanded={!row.isLeaf ? row.isExpanded : undefined}
-                        >
-                          {!row.isLeaf ? (
-                            row.isExpanded ? (
-                              <ChevronDown className="w-3.5 h-3.5 mr-1.5 mt-0.5 text-muted-foreground flex-shrink-0" />
-                            ) : (
-                              <ChevronRight className="w-3.5 h-3.5 mr-1.5 mt-0.5 text-muted-foreground flex-shrink-0" />
-                            )
-                          ) : (
-                            <FileText className={`w-3 h-3 mr-1.5 mt-0.5 flex-shrink-0 ${isSelected ? "text-indigo-600 dark:text-indigo-400" : "text-muted-foreground/60"}`} />
-                          )}
-                          <span className={`flex-1 min-w-0 break-words text-xs sm:text-sm leading-snug ${row.depth === 0 ? "font-semibold text-foreground" : isSelected ? "text-indigo-700 dark:text-indigo-300 font-semibold" : "text-muted-foreground"}`}>
-                            {row.title}
-                          </span>
-                          {row.isLeaf && row.id.startsWith("EO209-") && (
-                            <Badge variant="outline" className="ml-1 text-[9px] px-1 py-0 border-rose-500/30 text-rose-600 dark:text-rose-400 font-normal shrink-0">
-                              EO 209
-                            </Badge>
-                          )}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              </SheetContent>
+                </SheetContent>
             </Sheet>
 
             {/* Provision Viewer - Right Pane */}
             <div className="flex-1 flex flex-col bg-card/80 backdrop-blur-xl rounded-2xl border border-border shadow-sm overflow-hidden relative">
                 {/* Mobile & Tablet TOC trigger - visible on all screens below lg */}
                 <div className="flex lg:hidden items-center gap-2 px-3 sm:px-4 py-2 border-b border-border bg-card/50">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="text-xs h-8 rounded-lg"
-                    onClick={() => setIsTocSheetOpen(true)}
-                  >
-                    <List className="w-4 h-4 mr-1.5" />
-                    Browse Articles
-                  </Button>
-                  {selectedArticleId && (
-                    <span className="text-xs text-muted-foreground truncate">
-                      {articleData?.hierarchy.title_name || "Article selected"}
-                    </span>
-                  )}
+                    <Button
+                        variant="outline"
+                        size="sm"
+                        className="text-xs h-8 rounded-lg"
+                        onClick={() => setIsTocSheetOpen(true)}
+                    >
+                        <List className="w-4 h-4 mr-1.5" />
+                        Browse Articles
+                    </Button>
+                    {selectedArticleId && (
+                        <span className="text-xs text-muted-foreground truncate">
+                            {articleData?.hierarchy.title_name || "Article selected"}
+                        </span>
+                    )}
                 </div>
                 {loadingArticle && (
                     <div className="absolute inset-0 z-10 bg-background/50 backdrop-blur-sm flex items-center justify-center">
@@ -608,7 +607,7 @@ function CivilCodeContent() {
                     </div>
                 ) : (
                     <>
-                        <div className="p-3 sm:p-4 2xl:p-5 border-b border-border flex items-start justify-between bg-card/50">
+                        <div className="p-3 sm:p-4 2xl:p-5 border-b border-border bg-card/50">
                             {(() => {
                                 const isFC = articleData.article_id.startsWith("EO209-");
                                 return (
@@ -637,16 +636,6 @@ function CivilCodeContent() {
                                     </div>
                                 );
                             })()}
-                            <TooltipProvider>
-                                <Tooltip>
-                                    <TooltipTrigger className="p-2 sm:p-2.5 text-muted-foreground hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-accent rounded-xl transition-colors focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:outline-none active:scale-95 shadow-sm border border-transparent hover:border-border cursor-pointer">
-                                        <Bookmark className="w-4 h-4 sm:w-5 sm:h-5" />
-                                    </TooltipTrigger>
-                                    <TooltipContent>
-                                        <p>Bookmark Article</p>
-                                    </TooltipContent>
-                                </Tooltip>
-                            </TooltipProvider>
                         </div>
 
                         <div className="flex-1 overflow-y-auto p-3.5 sm:p-5 2xl:p-7 min-h-0 custom-scrollbar">

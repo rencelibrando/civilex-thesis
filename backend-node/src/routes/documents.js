@@ -5,11 +5,12 @@ import path from 'path';
 import { createClient } from '@supabase/supabase-js';
 import dotenv from 'dotenv';
 import { requireAuth } from '../middleware/auth.js';
+import { generateUniqueDocumentFilename } from '../utils/filename-utils.js';
 
 dotenv.config({ quiet: true });
 
 // Re-use native fetch if available, else import
-const globalFetch = typeof fetch !== 'undefined' ? fetch : (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
+const globalFetch = typeof fetch !== 'undefined' ? fetch : (...args) => import('node-fetch').then(({ default: fetch }) => fetch(...args));
 
 const router = express.Router();
 
@@ -132,7 +133,7 @@ router.post('/upload', requireAuth, upload.single('file'), async (req, res) => {
       return res.status(401).json({ error: "Unauthorized" });
     }
 
-    const docId = uuidv4(); 
+    const docId = uuidv4();
     const ext = path.extname(req.file.originalname);
     const storagePath = `${userId}/${docId}${ext}`;
 
@@ -302,10 +303,10 @@ router.get(['/:id/file', '/:id/preview'], async (req, res) => {
         if (user && user.id !== doc.user_id) {
           return res.status(403).json({ error: 'Access forbidden: unauthorized user' });
         }
-      } catch (_) {}
+      } catch (_) { }
     }
 
-    const ext = path.extname(doc.filename);
+    const ext = path.extname(doc.filename) || '.txt';
     const storagePath = `${doc.user_id}/${doc.id}${ext}`;
 
     let buffer = null;
@@ -341,7 +342,7 @@ router.get(['/:id/file', '/:id/preview'], async (req, res) => {
               buffer = Buffer.from(arrayBuffer);
               mimeType = altBlob.type;
             }
-          } catch (_) {}
+          } catch (_) { }
         }
       }
 
@@ -382,8 +383,9 @@ router.get(['/:id/file', '/:id/preview'], async (req, res) => {
     const isDownload = req.query.download === '1' || req.query.download === 'true';
     const disposition = isDownload ? 'attachment' : 'inline';
 
+    const downloadName = path.extname(doc.filename) ? doc.filename : `${doc.filename}.txt`;
     res.setHeader('Content-Type', resolvedMime);
-    res.setHeader('Content-Disposition', `${disposition}; filename="${encodeURIComponent(doc.filename)}"`);
+    res.setHeader('Content-Disposition', `${disposition}; filename="${encodeURIComponent(downloadName)}"`);
     res.setHeader('Content-Length', buffer.length);
     res.setHeader('Cache-Control', 'public, max-age=3600');
     res.setHeader('Accept-Ranges', 'bytes');
@@ -391,6 +393,519 @@ router.get(['/:id/file', '/:id/preview'], async (req, res) => {
   } catch (err) {
     console.error('[Document Serving] Unexpected error:', err);
     return res.status(500).json({ error: 'Internal server error while retrieving document' });
+  }
+});
+
+// Get canvas content for a document
+router.get('/:id/canvas', requireAuth, async (req, res) => {
+  try {
+    const docId = req.params.id;
+    const userId = req.user?.id;
+
+    if (!userId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const { data: doc, error } = await req.supabase
+      .from('user_documents')
+      .select('id, filename, file_url, extracted_text, canvas_content, canvas_html, canvas_updated_at')
+      .eq('id', docId)
+      .eq('user_id', userId)
+      .single();
+
+    if (error || !doc) {
+      return res.status(404).json({ error: "Document not found" });
+    }
+
+    const activeContent = doc.canvas_content || doc.extracted_text || '';
+
+    res.json({
+      id: doc.id,
+      filename: doc.filename,
+      file_url: toPublicFileUrl(doc.file_url, doc.id),
+      extracted_text: doc.extracted_text || '',
+      canvas_content: activeContent,
+      canvas_html: doc.canvas_html || null,
+      canvas_updated_at: doc.canvas_updated_at,
+    });
+  } catch (err) {
+    console.error("Error fetching canvas content:", err);
+    res.status(500).json({ error: "Failed to fetch document canvas content" });
+  }
+});
+
+// Update document content / canvas content
+router.put(['/:id/content', '/:id/canvas'], requireAuth, async (req, res) => {
+  try {
+    const docId = req.params.id;
+    const userId = req.user?.id;
+    const { content, html, filename: newFilename } = req.body;
+
+    if (!userId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    if (typeof content !== 'string') {
+      return res.status(400).json({ error: "Content must be a string" });
+    }
+
+    const nowIso = new Date().toISOString();
+    const updatePayload = {
+      canvas_content: content,
+      extracted_text: content,
+      canvas_updated_at: nowIso,
+    };
+    if (typeof html === 'string') {
+      updatePayload.canvas_html = html;
+    }
+
+    // Verify document existence and authorization
+    const { data: doc, error: fetchError } = await supabaseStorage
+      .from('user_documents')
+      .select('id, user_id, filename, extracted_text, canvas_content')
+      .eq('id', docId)
+      .maybeSingle();
+
+    if (fetchError || !doc) {
+      return res.status(404).json({ error: "Document not found" });
+    }
+
+    if (doc.user_id && doc.user_id !== userId) {
+      return res.status(403).json({ error: "Unauthorized" });
+    }
+
+    // Handle document renaming with duplicate avoidance
+    if (typeof newFilename === 'string' && newFilename.trim() && newFilename.trim() !== doc.filename) {
+      const { data: otherDocs } = await supabaseStorage
+        .from('user_documents')
+        .select('filename')
+        .eq('user_id', userId)
+        .neq('id', docId);
+
+      const existingFilenames = (otherDocs || []).map((d) => d.filename);
+      const cleanCandidate = (newFilename || '').trim().replace(/\.txt$/i, '');
+      const resolvedFilename = generateUniqueDocumentFilename(cleanCandidate, existingFilenames, '');
+      updatePayload.filename = resolvedFilename;
+    }
+
+    // Check if text content actually changed to avoid frequent redundant RAG re-embeddings
+    const textChanged =
+      doc.extracted_text !== content || doc.canvas_content !== content;
+
+    const { data, error } = await supabaseStorage
+      .from('user_documents')
+      .update(updatePayload)
+      .eq('id', docId)
+      .select('*')
+      .single();
+
+    if (error) throw error;
+
+    // Overwrite storage text file if it exists
+    const storagePath = `${userId}/${docId}.txt`;
+    supabaseStorage.storage
+      .from('documents')
+      .upload(storagePath, Buffer.from(content, 'utf-8'), {
+        contentType: 'text/plain; charset=utf-8',
+        upsert: true,
+      })
+      .catch((e) => console.warn('[Storage] Overwrite warning:', e.message));
+
+    // Only reindex in background for RAG chat when document text actually changed
+    if (textChanged) {
+      const ragServiceUrl = (process.env.RAG_SERVICE_URL || 'http://localhost:8000').replace(/\/$/, '');
+      globalFetch(`${ragServiceUrl}/reindex`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ document_id: docId, text: content }),
+      }).catch((e) => console.warn('[Reindex] Document update reindex failed:', e.message));
+    }
+
+    res.json({ success: true, document: data, updated_at: nowIso });
+  } catch (err) {
+    console.error("Error saving canvas content:", err);
+    res.status(500).json({ error: "Failed to update canvas content" });
+  }
+});
+
+// Reset canvas content to original extracted text
+router.post('/:id/reset', requireAuth, async (req, res) => {
+  try {
+    const docId = req.params.id;
+    const userId = req.user?.id;
+
+    if (!userId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const { data: doc, error: fetchErr } = await req.supabase
+      .from('user_documents')
+      .select('id, extracted_text')
+      .eq('id', docId)
+      .eq('user_id', userId)
+      .single();
+
+    if (fetchErr || !doc) {
+      return res.status(404).json({ error: "Document not found" });
+    }
+
+    const originalText = doc.extracted_text || '';
+    const nowIso = new Date().toISOString();
+
+    const { error: updateErr } = await req.supabase
+      .from('user_documents')
+      .update({
+        canvas_content: originalText,
+        canvas_html: null,
+        canvas_updated_at: nowIso,
+      })
+      .eq('id', docId)
+      .eq('user_id', userId);
+
+    if (updateErr) throw updateErr;
+
+    const ragServiceUrl = (process.env.RAG_SERVICE_URL || 'http://localhost:8000').replace(/\/$/, '');
+    globalFetch(`${ragServiceUrl}/reindex`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ document_id: docId, text: originalText }),
+    }).catch((e) => console.warn('[Reindex] Reset trigger failed:', e.message));
+
+    res.json({ success: true, canvas_content: originalText, updated_at: nowIso });
+  } catch (err) {
+    console.error("Error resetting canvas content:", err);
+    res.status(500).json({ error: "Failed to reset canvas content" });
+  }
+});
+
+// Trigger background re-indexing of canvas text into vector chunks
+router.post('/:id/reindex', requireAuth, async (req, res) => {
+  try {
+    const docId = req.params.id;
+    const userId = req.user?.id;
+
+    if (!userId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const { data: doc, error } = await req.supabase
+      .from('user_documents')
+      .select('id, canvas_content, extracted_text')
+      .eq('id', docId)
+      .eq('user_id', userId)
+      .single();
+
+    if (error || !doc) {
+      return res.status(404).json({ error: "Document not found" });
+    }
+
+    const textToReindex = doc.canvas_content || doc.extracted_text || '';
+    const ragServiceUrl = (process.env.RAG_SERVICE_URL || 'http://localhost:8000').replace(/\/$/, '');
+
+    globalFetch(`${ragServiceUrl}/reindex`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ document_id: docId, text: textToReindex }),
+    }).catch((e) => console.warn('[Reindex] Trigger failed:', e.message));
+
+    res.json({ success: true, message: "Reindexing queued" });
+  } catch (err) {
+    console.error("Error queueing reindex:", err);
+    res.status(500).json({ error: "Failed to queue reindexing" });
+  }
+});
+
+// Export document canvas as .docx or .txt
+router.get('/:id/export', requireAuth, async (req, res) => {
+  try {
+    const docId = req.params.id;
+    const userId = req.user?.id;
+    const format = (req.query.format || 'txt').toString().toLowerCase();
+
+    if (!userId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const { data: doc, error } = await req.supabase
+      .from('user_documents')
+      .select('id, filename, canvas_content, extracted_text')
+      .eq('id', docId)
+      .eq('user_id', userId)
+      .single();
+
+    if (error || !doc) {
+      return res.status(404).json({ error: "Document not found" });
+    }
+
+    const content = doc.canvas_content || doc.extracted_text || '';
+    const baseName = doc.filename ? doc.filename.replace(/\.[^/.]+$/, "") : "document";
+
+    if (format === 'pdf') {
+      const ragServiceUrl = (process.env.RAG_SERVICE_URL || 'http://localhost:8000').replace(/\/$/, '');
+      try {
+        const pdfRes = await globalFetch(`${ragServiceUrl}/export-pdf`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ filename: `${baseName}.pdf`, content, html: doc.canvas_html || '' }),
+        });
+        if (pdfRes.ok) {
+          const pdfBuf = Buffer.from(await pdfRes.arrayBuffer());
+          res.setHeader('Content-Type', 'application/pdf');
+          res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(baseName)}_revised.pdf"`);
+          return res.send(pdfBuf);
+        }
+      } catch (e) {
+        console.warn('[Export] PDF generation service failed, falling back to TXT:', e.message);
+      }
+    }
+
+    if (format === 'docx') {
+      const ragServiceUrl = (process.env.RAG_SERVICE_URL || 'http://localhost:8000').replace(/\/$/, '');
+      try {
+        const docxRes = await globalFetch(`${ragServiceUrl}/export-docx`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ filename: `${baseName}.docx`, content }),
+        });
+        if (docxRes.ok) {
+          const docxBuf = Buffer.from(await docxRes.arrayBuffer());
+          res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+          res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(baseName)}_revised.docx"`);
+          return res.send(docxBuf);
+        }
+      } catch (e) {
+        console.warn('[Export] DOCX generation service failed, falling back to TXT:', e.message);
+      }
+    }
+
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(baseName)}_revised.txt"`);
+    return res.send(Buffer.from(content, 'utf-8'));
+  } catch (err) {
+    console.error("Error exporting canvas document:", err);
+    res.status(500).json({ error: "Failed to export document" });
+  }
+});
+
+// Export document directly to Word docx
+router.post('/export-docx', async (req, res) => {
+  try {
+    const { filename, content, signatures } = req.body;
+    if (!content) {
+      return res.status(400).json({ error: "Content is required" });
+    }
+    const safeFilename = filename || "document.docx";
+    const ragServiceUrl = (process.env.RAG_SERVICE_URL || 'http://localhost:8000').replace(/\/$/, '');
+    try {
+      const docxRes = await globalFetch(`${ragServiceUrl}/export-docx`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filename: safeFilename, content, signatures }),
+      });
+      if (docxRes.ok) {
+        const docxBuf = Buffer.from(await docxRes.arrayBuffer());
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+        res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(safeFilename)}"`);
+        return res.send(docxBuf);
+      }
+    } catch (e) {
+      console.warn('[Export] Direct DOCX generation service failed:', e.message);
+    }
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(safeFilename.replace(/\.docx$/, '.txt'))}"`);
+    return res.send(Buffer.from(content, 'utf-8'));
+  } catch (err) {
+    console.error("Error exporting docx:", err);
+    res.status(500).json({ error: "Failed to export document" });
+  }
+});
+
+// Export document directly to PDF
+router.post('/export-pdf', async (req, res) => {
+  try {
+    const { filename, content, html, signatures, margin_preset, font_size } = req.body;
+    if (!content && !html) {
+      return res.status(400).json({ error: "Content or HTML is required" });
+    }
+    const safeFilename = filename || "document.pdf";
+    const ragServiceUrl = (process.env.RAG_SERVICE_URL || 'http://localhost:8000').replace(/\/$/, '');
+    try {
+      const pdfRes = await globalFetch(`${ragServiceUrl}/export-pdf`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          filename: safeFilename,
+          content: content || '',
+          html: html || '',
+          signatures: signatures || {},
+          margin_preset: margin_preset || 'sc_standard',
+          font_size: font_size || '12pt',
+        }),
+      });
+      if (pdfRes.ok) {
+        const pdfBuf = Buffer.from(await pdfRes.arrayBuffer());
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(safeFilename)}"`);
+        return res.send(pdfBuf);
+      }
+    } catch (e) {
+      console.warn('[Export] Direct PDF generation service failed:', e.message);
+    }
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(safeFilename.replace(/\.pdf$/, '.txt'))}"`);
+    return res.send(Buffer.from(content || '', 'utf-8'));
+  } catch (err) {
+    console.error("Error exporting pdf:", err);
+    res.status(500).json({ error: "Failed to export document" });
+  }
+});
+
+// Create a new document from a legal template build
+router.post('/create-from-template', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const { template_id, title, filename: requestedFilename, content, fields, signatures } = req.body;
+    if (!content || typeof content !== 'string') {
+      return res.status(400).json({ error: "Document content is required" });
+    }
+
+    const docId = uuidv4();
+
+    // Query existing documents for this user to avoid duplicate filenames
+    const { data: userDocs } = await supabaseStorage
+      .from('user_documents')
+      .select('filename')
+      .eq('user_id', userId);
+    const existingFilenames = (userDocs || []).map((d) => d.filename);
+
+    const baseCandidate = (requestedFilename && requestedFilename.trim()) || title || template_id || "Legal Document";
+    const cleanCandidate = baseCandidate.replace(/\.txt$/i, "");
+    const filename = generateUniqueDocumentFilename(cleanCandidate, existingFilenames, "");
+    const ext = path.extname(filename) || '.txt';
+    const storagePath = `${userId}/${docId}${ext}`;
+    const buffer = Buffer.from(content, 'utf-8');
+
+    // Upload to Supabase Storage bucket
+    const { error: uploadError } = await supabaseStorage.storage
+      .from('documents')
+      .upload(storagePath, buffer, {
+        contentType: 'text/plain; charset=utf-8',
+        upsert: true,
+      });
+
+    if (uploadError) {
+      console.warn("Storage upload warning, continuing with DB insert:", uploadError.message);
+    }
+
+    const fileUrl = toPublicFileUrl(`/api/documents/${docId}/file`, docId);
+    const nowIso = new Date().toISOString();
+
+    const metadataJson = JSON.stringify({
+      template_id: template_id || '',
+      title: title || '',
+      fields: fields || {},
+      signatures: signatures || {},
+      is_builder_document: true,
+      created_from_builder: true,
+    });
+
+    const insertPayload = {
+      id: docId,
+      user_id: userId,
+      filename,
+      file_url: fileUrl,
+      status: 'completed',
+      extracted_text: content,
+      canvas_content: content,
+      canvas_html: metadataJson,
+      canvas_updated_at: nowIso,
+    };
+
+    const { data: newDoc, error: insertError } = await supabaseStorage
+      .from('user_documents')
+      .insert(insertPayload)
+      .select('*')
+      .single();
+
+    if (insertError) throw insertError;
+
+    // Asynchronously notify Python service to vectorize and index document for chat
+    const ragServiceUrl = (process.env.RAG_SERVICE_URL || 'http://localhost:8000').replace(/\/$/, '');
+    globalFetch(`${ragServiceUrl}/reindex`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ document_id: docId, text: content }),
+    }).catch((e) => console.warn('[Reindex] Template creation reindex failed:', e.message));
+
+    res.status(201).json({
+      ...newDoc,
+      file_url: fileUrl,
+    });
+  } catch (err) {
+    console.error("Error creating document from template:", err);
+    res.status(500).json({ error: "Failed to create document from template" });
+  }
+});
+
+// Explicit rename endpoint with server-side duplicate deduplication
+router.patch('/:id/rename', requireAuth, async (req, res) => {
+  try {
+    const docId = req.params.id;
+    const userId = req.user?.id;
+    const { filename } = req.body;
+
+    if (!userId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    if (!filename || typeof filename !== 'string' || !filename.trim()) {
+      return res.status(400).json({ error: "Document filename is required" });
+    }
+
+    const { data: doc, error: fetchError } = await supabaseStorage
+      .from('user_documents')
+      .select('id, user_id, filename')
+      .eq('id', docId)
+      .maybeSingle();
+
+    if (fetchError || !doc) {
+      return res.status(404).json({ error: "Document not found" });
+    }
+    if (doc.user_id && doc.user_id !== userId) {
+      return res.status(403).json({ error: "Unauthorized" });
+    }
+
+    const { data: otherDocs } = await supabaseStorage
+      .from('user_documents')
+      .select('filename')
+      .eq('user_id', userId)
+      .neq('id', docId);
+
+    const existingFilenames = (otherDocs || []).map((d) => d.filename);
+    const rawExt = path.extname(doc.filename || '');
+    const currentExt = rawExt.toLowerCase() === '.txt' ? '' : rawExt;
+    const cleanCandidate = filename.trim().replace(/\.txt$/i, "");
+    const resolvedFilename = generateUniqueDocumentFilename(cleanCandidate, existingFilenames, currentExt);
+
+    const { data: updatedDoc, error: updateError } = await supabaseStorage
+      .from('user_documents')
+      .update({ filename: resolvedFilename })
+      .eq('id', docId)
+      .select('*')
+      .single();
+
+    if (updateError) throw updateError;
+
+    res.json({
+      success: true,
+      document: updatedDoc,
+      filename: resolvedFilename,
+    });
+  } catch (err) {
+    console.error("Error renaming document:", err);
+    res.status(500).json({ error: "Failed to rename document" });
   }
 });
 

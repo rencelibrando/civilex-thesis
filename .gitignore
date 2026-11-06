@@ -66,4 +66,8 @@ supabase_storage_files/
 # load testing credentials cache
 scripts/stress-users.json
 
+# local document templates & samples
+Document format/
+
+
 

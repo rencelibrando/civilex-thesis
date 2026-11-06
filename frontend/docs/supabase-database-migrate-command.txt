@@ -23,13 +23,13 @@ aws s3 cp s3://civilex-db-backups/<TIMESTAMP>/ ./restore/ --profile r2 --recursi
 
 1. Export database schema (public tables, auth schemas, storage schemas, vector extensions):
 ```bash
-npx supabase db dump --local --schema public,auth,storage -f supabase_schema.sql
+npx supabase db dump --schema public,auth,storage -f supabase_schema.sql
 gzip -f supabase_schema.sql
 ```
 
 2. Export database records (table data, vectors, auth users, and storage metadata):
 ```bash
-npx supabase db dump --local --data-only --use-copy --schema public,auth,storage -f supabase_data.sql
+npx supabase db dump --data-only --use-copy --schema public,auth,storage -f supabase_data.sql
 gzip -f supabase_data.sql
 ```
 
@@ -52,7 +52,13 @@ To automatically download the latest (or specified) compressed backup from Cloud
 ./scripts/restore-from-r2.sh
 
 # Or restore from a specific snapshot timestamp:
-./scripts/restore-from-r2.sh 20261026_233701
+./scripts/restore-from-r2.sh 20261107_210938
+
+# Or restore legal corpus only (articles, jurisprudence, chunks) preserving local users and chats:
+./scripts/restore-from-r2.sh --corpus-only
+
+# Unattended restore (skip confirmation prompts):
+./scripts/restore-from-r2.sh -y
 ```
 
 ---

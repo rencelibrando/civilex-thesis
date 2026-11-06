@@ -128,7 +128,7 @@ function LoginFormContent() {
     const clean = resetEmail.trim().toLowerCase();
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!clean || !emailRegex.test(clean)) {
-      setResetError("Please enter a valid professional email address.");
+      setResetError("Please enter a valid email address.");
       return;
     }
 
@@ -370,7 +370,7 @@ function LoginFormContent() {
     }
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(trimmedEmail)) {
-      setFormError("Please enter a valid professional email address.", null);
+      setFormError("Please enter a valid email address.", null);
       return false;
     }
     if (!password) {
@@ -595,7 +595,7 @@ function LoginFormContent() {
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="space-y-1.5">
               <label htmlFor="email" className="text-xs font-medium text-foreground">
-                Professional Email Address
+                Email Address
               </label>
               <div className="relative">
                 <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
@@ -608,7 +608,7 @@ function LoginFormContent() {
                   disabled={isFormLocked}
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  placeholder="attorney@lawfirm.ph"
+                  placeholder="you@example.com"
                   className="pl-10 h-11 bg-background border-border focus-visible:ring-primary/30 focus-visible:border-primary rounded-xl text-sm"
                 />
               </div>
@@ -777,7 +777,7 @@ function LoginFormContent() {
                     disabled={isResetLoading}
                     value={resetEmail}
                     onChange={(e) => setResetEmail(e.target.value)}
-                    placeholder="attorney@lawfirm.ph"
+                    placeholder="you@example.com"
                     className="pl-10 h-11 bg-background border-border focus-visible:ring-primary/30 focus-visible:border-primary rounded-xl text-sm"
                   />
                 </div>

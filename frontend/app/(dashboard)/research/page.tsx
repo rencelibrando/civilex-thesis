@@ -1,15 +1,15 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback, isValidElement } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback, isValidElement, memo } from "react";
 import {
   Send,
   Download,
-  Maximize2,
   ShieldCheck,
   File,
   Upload,
   Loader2,
   FileText,
+  FileCheck,
   CheckCircle2,
   Trash2,
   BookOpen,
@@ -40,11 +40,12 @@ import {
   MessageSquare,
   Copy,
   Check,
+  Sliders,
+  ExternalLink,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Accordion, AccordionItem, AccordionTrigger, AccordionContent } from "@/components/ui/accordion";
 import {
@@ -64,10 +65,20 @@ import { getDocPanelCopy, getDocStarters } from "@/lib/user-persona";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { cn } from "@/lib/utils";
+import { DocumentFormatPickerModal } from "@/components/document-builder/document-format-picker-modal";
+import { DocumentBuilderModal } from "@/components/document-builder/document-builder-modal";
+import { LegalDocumentPaper } from "@/components/document-builder/legal-document-paper";
+import { LegalTemplate } from "@/lib/legal-templates/types";
+import { LEGAL_TEMPLATES, isBuilderDocument, findTemplateForDocument } from "@/lib/legal-templates/catalog";
 
 function cleanCaseSummary(text?: string): string {
   if (!text) return "No summary available for this case.";
   return text.replace(/^\[(?:Supporting Case Doctrine|Jurisprudence Doctrine)[^\]]*\]\s*/i, "").trim();
+}
+
+function formatDocDisplayName(text?: string): string {
+  if (!text) return "Untitled Document";
+  return text.replace(/\.txt$/i, "");
 }
 
 type DocumentStatus = 'uploading' | 'extracting' | 'completed' | 'rejected_unrelated' | 'error';
@@ -81,6 +92,10 @@ interface UserDocument {
   progress?: number;
   created_at: string;
   error_message?: string;
+  extracted_text?: string;
+  canvas_content?: string;
+  canvas_updated_at?: string;
+  canvas_html?: string;
 }
 
 interface DocPromptStarter {
@@ -472,7 +487,7 @@ function RagPipelineStepper({ status, isLive }: { status: RagStatus | null; isLi
                   {step.name}
                 </span>
                 <span className="text-[10px] font-mono text-emerald-500 font-medium">
-                  {state === "completed" ? "✓ Verified" : state === "active" ? "● Active" : "Pending"}
+                  {state === "completed" ? "Verified" : state === "active" ? "Active" : "Pending"}
                 </span>
               </div>
             );
@@ -632,6 +647,205 @@ const CircularProgress = ({ progress = 0 }: { progress?: number }) => {
   );
 };
 
+interface DocCitationItem {
+  parent_type?: string;
+  parent_id?: string;
+  chunk_id?: string;
+  content?: string;
+  rank?: number;
+  rank_status?: string;
+  is_in_context?: boolean;
+  suitability_percent?: number;
+  metadata?: {
+    title?: string;
+    gr_number?: string;
+    decision_date?: string;
+    source_url?: string;
+    content_summary?: string;
+    hierarchy?: {
+      book_name?: string;
+      title_name?: string;
+      chapter_name?: string;
+    };
+    [key: string]: unknown;
+  };
+  [key: string]: unknown;
+}
+
+interface DocCitationCardProps {
+  citation: DocCitationItem;
+  rank?: number;
+  onSelect: (cit: DocCitationItem) => void;
+}
+
+const DocCitationCard = memo(function DocCitationCard({
+  citation: cit,
+  rank,
+  onSelect,
+}: DocCitationCardProps) {
+  const isCase =
+    cit.parent_type === "case" ||
+    cit.parent_type === "jurisprudence" ||
+    Boolean(cit.metadata?.gr_number) ||
+    String(cit.parent_id || "").startsWith("GR_");
+  const isOutOfRank = cit.is_in_context === false || cit.rank_status === "out_of_rank";
+  const displayRank = cit.rank ?? rank;
+
+  if (isCase) {
+    const year = cit.metadata?.decision_date ? cit.metadata.decision_date.split(" ").pop() : null;
+    const title = cit.metadata?.title || cit.metadata?.gr_number || cit.parent_id;
+    const gr = cit.metadata?.gr_number || (String(cit.parent_id || "").startsWith("GR_") ? cit.parent_id : null);
+    const summary = cleanCaseSummary(cit.metadata?.content_summary || cit.content);
+
+    return (
+      <div
+        className={`p-3 bg-card rounded-xl border shadow-2xs hover:shadow-sm cursor-pointer transition-all duration-200 group flex flex-col justify-between w-full max-w-full overflow-hidden break-words touch-pan-y shrink-0 min-h-fit ${isOutOfRank
+          ? "border-border/60 opacity-90 hover:opacity-100 hover:border-border"
+          : "border-border/80 hover:border-primary/40"
+          }`}
+        onClick={() => onSelect(cit)}
+      >
+        <div className="w-full min-w-0">
+          <div className="flex items-center justify-between mb-1.5 gap-1.5 flex-wrap">
+            <div className="flex items-center gap-1.5 min-w-0 flex-wrap">
+              {displayRank && (
+                <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-muted/80 text-foreground border border-border/70 shrink-0 leading-normal">
+                  #{displayRank}
+                </span>
+              )}
+              <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20 shrink-0 leading-normal">
+                <Scale className="w-3 h-3" />
+                Jurisprudence
+              </span>
+              {isOutOfRank ? (
+                <span className="inline-flex items-center gap-1 text-[10px] font-mono font-medium px-1.5 py-0.5 rounded bg-muted text-muted-foreground border border-border/80 shrink-0 leading-normal">
+                  Out of Rank
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1 text-[10px] font-mono font-medium px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 shrink-0 leading-normal">
+                  Active
+                </span>
+              )}
+              {year && (
+                <Badge variant="outline" className="text-[10px] whitespace-nowrap bg-background font-mono px-1.5 py-0.5">
+                  {year}
+                </Badge>
+              )}
+            </div>
+
+            {cit.suitability_percent !== undefined && (
+              <span
+                className={`text-[11px] font-semibold px-1.5 py-0.5 rounded-md border tabular-nums shrink-0 leading-normal ${cit.suitability_percent >= 85
+                  ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
+                  : cit.suitability_percent >= 70
+                    ? "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60"
+                    : "text-muted-foreground bg-muted border-border"
+                  }`}
+              >
+                {cit.suitability_percent}%
+              </span>
+            )}
+          </div>
+
+          <div className="mb-1.5 min-w-0">
+            <h4 className="font-semibold text-xs text-foreground group-hover:text-primary transition-colors leading-snug line-clamp-2 break-words">
+              {title}
+            </h4>
+            {gr && (
+              <span className="text-[10px] font-mono text-muted-foreground block mt-0.5 break-all">
+                {gr}
+              </span>
+            )}
+          </div>
+
+          <p className="text-xs text-muted-foreground leading-relaxed line-clamp-2 mb-2 break-words">
+            {summary}
+          </p>
+        </div>
+
+        <div className="flex items-center justify-between pt-1.5 border-t border-border/50 text-[11px] font-semibold text-primary mt-auto">
+          <span className="flex items-center sm:group-hover:translate-x-1 transition-transform">
+            Read full case <ArrowRight className="w-3 h-3 ml-1" />
+          </span>
+          {cit.metadata?.source_url && (
+            <span className="text-[10px] font-normal text-muted-foreground">
+              LawPhil
+            </span>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      onClick={() => onSelect(cit)}
+      className={`p-2.5 sm:p-3 rounded-xl bg-card border shadow-2xs hover:shadow-sm cursor-pointer transition-all duration-200 group flex flex-col justify-between w-full max-w-full overflow-hidden break-words touch-pan-y shrink-0 min-h-fit ${isOutOfRank
+        ? "border-border/60 opacity-90 hover:opacity-100 hover:border-border"
+        : "border-border/80 hover:border-primary/40"
+        }`}
+    >
+      <div className="w-full min-w-0">
+        <div className="flex items-center justify-between gap-1.5 flex-nowrap mb-1">
+          <div className="min-w-0 flex items-center gap-1 sm:gap-1.5 flex-wrap">
+            {displayRank && (
+              <span className="text-[9.5px] sm:text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-muted/80 text-foreground border border-border/70 shrink-0 leading-normal">
+                #{displayRank}
+              </span>
+            )}
+            <span className="font-bold text-primary text-[10.5px] sm:text-[11px] uppercase truncate max-w-[130px] sm:max-w-none leading-normal">
+              {cit.parent_type === "civil_code" || cit.parent_type === "article"
+                ? cit.parent_id
+                : `${cit.parent_type?.toUpperCase?.() ?? "EXCERPT"} : ${cit.parent_id || (cit.chunk_id ? `Chunk #${parseInt(cit.chunk_id.split('_c').pop() || '0', 10) + 1}` : "Document")}`}
+            </span>
+            {isOutOfRank ? (
+              <span className="hidden xs:inline-flex items-center gap-1 text-[9.5px] sm:text-[10px] font-mono font-medium px-1.5 py-0.5 rounded bg-muted text-muted-foreground border border-border/80 shrink-0 leading-normal">
+                Out of Rank
+              </span>
+            ) : (
+              <span className="hidden xs:inline-flex items-center gap-1 text-[9.5px] sm:text-[10px] font-mono font-medium px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 shrink-0 leading-normal">
+                Active Grounding
+              </span>
+            )}
+          </div>
+          {cit.suitability_percent !== undefined && (
+            <span
+              className={`text-[10px] sm:text-[11px] font-semibold px-1.5 py-0.5 rounded-md border tabular-nums shrink-0 leading-normal ${cit.suitability_percent >= 85
+                ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
+                : cit.suitability_percent >= 70
+                  ? "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60"
+                  : "text-muted-foreground bg-muted border-border"
+                }`}
+            >
+              {cit.suitability_percent}%
+            </span>
+          )}
+        </div>
+        {cit.metadata?.title && (
+          <span className="font-semibold text-foreground text-[11px] sm:text-xs mb-1 line-clamp-1 break-words block group-hover:text-primary transition-colors">
+            {cit.metadata.title} {cit.metadata.gr_number ? `(GR ${cit.metadata.gr_number})` : ""}
+          </span>
+        )}
+        <span className="text-muted-foreground text-[11px] sm:text-xs line-clamp-2 leading-snug sm:leading-relaxed break-words block mb-2">
+          {cit.content}
+        </span>
+      </div>
+
+      <div className="flex items-center justify-between pt-1.5 border-t border-border/50 text-[11px] font-semibold text-primary mt-auto">
+        <span className="flex items-center sm:group-hover:translate-x-1 transition-transform">
+          {cit.parent_type === "civil_code" || cit.parent_type === "article"
+            ? "View statutory provision"
+            : "View document excerpt"}
+          <ArrowRight className="w-3 h-3 ml-1" />
+        </span>
+        <span className="text-[10px] font-normal text-muted-foreground">
+          {cit.parent_type === "civil_code" || cit.parent_type === "article" ? "Civil Code" : "Document"}
+        </span>
+      </div>
+    </div>
+  );
+});
+
 export default function ResearchPage() {
   const {
     getDocChat,
@@ -673,10 +887,209 @@ export default function ResearchPage() {
   const [isDraggingDocList, setIsDraggingDocList] = useState(false);
   const [isDraggingChat, setIsDraggingChat] = useState(false);
   const [isNliModalOpen, setIsNliModalOpen] = useState(false);
+  const [selectedCitation, setSelectedCitation] = useState<any | null>(null);
+  const [copiedCitation, setCopiedCitation] = useState(false);
   const [selectedCaseModal, setSelectedCaseModal] = useState<{
     caseData: JurisprudenceCase;
     suitabilityPercent?: number;
   } | null>(null);
+
+  const handleCopyCitation = async (text: string) => {
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedCitation(true);
+      setTimeout(() => setCopiedCitation(false), 2000);
+    } catch (e) {
+      console.warn("Failed to copy citation:", e);
+    }
+  };
+
+  const isSelectedCase = Boolean(
+    selectedCitation &&
+    (selectedCitation.parent_type === "case" ||
+      selectedCitation.parent_type === "jurisprudence" ||
+      Boolean(selectedCitation.metadata?.gr_number) ||
+      String(selectedCitation.parent_id || "").startsWith("GR_"))
+  );
+
+  const caseModalData: JurisprudenceCase | null = isSelectedCase && selectedCitation
+    ? {
+      case_uid: selectedCitation.metadata?.case_uid || selectedCitation.parent_id,
+      title: selectedCitation.metadata?.title || selectedCitation.parent_id,
+      gr_number: selectedCitation.metadata?.gr_number || selectedCitation.parent_id,
+      decision_date: selectedCitation.metadata?.decision_date || "",
+      content_summary: selectedCitation.metadata?.content_summary || cleanCaseSummary(selectedCitation.content),
+      source_url: selectedCitation.metadata?.source_url || "",
+      full_text: selectedCitation.metadata?.full_text,
+    }
+    : null;
+
+  // Document Format Picker and Builder states
+  const [isFormatPickerOpen, setIsFormatPickerOpen] = useState(false);
+  const [isBuilderOpen, setIsBuilderOpen] = useState(false);
+  const [selectedTemplate, setSelectedTemplate] = useState<LegalTemplate | null>(null);
+
+  // Document Text & Legal Paper Preview state
+  const [docTextContent, setDocTextContent] = useState<string>("");
+  const [isLoadingDocText, setIsLoadingDocText] = useState(false);
+  const [isSavingDocText, setIsSavingDocText] = useState(false);
+  const [saveStatusMessage, setSaveStatusMessage] = useState<string | null>(null);
+  const [isPreviewLoading, setIsPreviewLoading] = useState(false);
+
+  // Extract electronic signatures attached to builder document
+  const activeDocumentSignatures = useMemo(() => {
+    if (!activeDocument?.canvas_html) return {};
+    try {
+      const parsed = typeof activeDocument.canvas_html === "string"
+        ? JSON.parse(activeDocument.canvas_html)
+        : activeDocument.canvas_html;
+      return parsed && typeof parsed.signatures === "object" && parsed.signatures !== null
+        ? parsed.signatures
+        : {};
+    } catch {
+      return {};
+    }
+  }, [activeDocument?.canvas_html]);
+
+  // Synchronize document text content when activeDocument changes
+  useEffect(() => {
+    if (!activeDocument) {
+      setDocTextContent("");
+      setIsPreviewLoading(false);
+      return;
+    }
+
+    setIsPreviewLoading(true);
+
+    const isBuilderDoc = isBuilderDocument(activeDocument);
+
+    if (isBuilderDoc) {
+      if (activeDocument.canvas_content || activeDocument.extracted_text) {
+        setDocTextContent(activeDocument.canvas_content || activeDocument.extracted_text || "");
+        setIsLoadingDocText(false);
+        setIsPreviewLoading(false);
+        return;
+      }
+
+      // If text is not loaded yet in document record, fetch content
+      let isCancelled = false;
+      setIsLoadingDocText(true);
+      (async () => {
+        try {
+          const { data: { session } } = await supabase.auth.getSession();
+          const token = session?.access_token || "";
+          const res = await fetch(`${BACKEND_URL}/api/documents/${activeDocument.id}/content`, {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          if (res.ok && !isCancelled) {
+            const json = await res.json();
+            const text = json.canvas_content || json.extracted_text || "";
+            setDocTextContent(text);
+            setActiveDocument((prev: any) => (prev ? { ...prev, canvas_content: text, canvas_html: json.canvas_html || prev.canvas_html } : null));
+          }
+        } catch (e) {
+          console.warn("Could not fetch document content:", e);
+        } finally {
+          if (!isCancelled) {
+            setIsLoadingDocText(false);
+            setIsPreviewLoading(false);
+          }
+        }
+      })();
+
+      return () => {
+        isCancelled = true;
+      };
+    } else {
+      // For non-txt documents (PDF, DOCX, images), skeleton display briefly while iframe loads
+      const timer = setTimeout(() => setIsPreviewLoading(false), 450);
+      return () => clearTimeout(timer);
+    }
+  }, [activeDocument?.id]);
+
+  // Save changes to database and reindex in RAG microservice
+  const handleSaveDocTextToDatabase = async () => {
+    if (!activeDocument) return;
+    try {
+      setIsSavingDocText(true);
+      setSaveStatusMessage(null);
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = session?.access_token || "";
+
+      const res = await fetch(`${BACKEND_URL}/api/documents/${activeDocument.id}/content`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+          "X-Tunnel-Skip-AntiPhishing-Page": "true",
+        },
+        body: JSON.stringify({ content: docTextContent }),
+      });
+
+      if (res.ok) {
+        setActiveDocument((prev: any) =>
+          prev
+            ? {
+              ...prev,
+              canvas_content: docTextContent,
+              extracted_text: docTextContent,
+            }
+            : null
+        );
+        setDocuments((prev) =>
+          prev.map((d) =>
+            d.id === activeDocument.id
+              ? { ...d, canvas_content: docTextContent, extracted_text: docTextContent }
+              : d
+          )
+        );
+        setSaveStatusMessage("Saved to Database & Reindexed");
+        setTimeout(() => setSaveStatusMessage(null), 4000);
+      } else {
+        const errJson = await res.json().catch(() => ({}));
+        alert(errJson.error || "Failed to save document changes.");
+      }
+    } catch (e: any) {
+      console.error("Save doc text error:", e);
+      alert("Error saving document: " + (e?.message || "Unknown error"));
+    } finally {
+      setIsSavingDocText(false);
+    }
+  };
+
+  const [editingDocument, setEditingDocument] = useState<UserDocument | null>(null);
+  const [initialBuilderFilename, setInitialBuilderFilename] = useState<string>("");
+
+  const handleOpenInBuilder = (doc: UserDocument) => {
+    if (!isBuilderDocument(doc)) return;
+    const tmpl = findTemplateForDocument(doc);
+    if (!tmpl) return;
+    setSelectedTemplate(tmpl);
+    setEditingDocument(doc);
+    setInitialBuilderFilename(formatDocDisplayName(doc.filename));
+    setIsBuilderOpen(true);
+  };
+
+  const handleSelectTemplate = (tmpl: LegalTemplate, customFilename?: string) => {
+    setSelectedTemplate(tmpl);
+    setEditingDocument(null);
+    setInitialBuilderFilename(customFilename || "");
+    setIsFormatPickerOpen(false);
+    setIsBuilderOpen(true);
+  };
+
+  const handleDocumentCreated = (newDoc: any) => {
+    setDocuments((prev) => [newDoc, ...prev.filter((d) => d.id !== newDoc.id)]);
+    setActiveDocument(newDoc);
+    if (newDoc.canvas_content || newDoc.extracted_text) {
+      setDocTextContent(newDoc.canvas_content || newDoc.extracted_text);
+    }
+    if (typeof window !== "undefined") {
+      window.history.replaceState({}, "", `/research?doc=${newDoc.id}`);
+    }
+    ensureDocSession(newDoc.id, newDoc.filename);
+  };
 
   const containerRef = useRef<HTMLDivElement>(null);
   const isDraggingDocListRef = useRef(false);
@@ -862,12 +1275,18 @@ export default function ResearchPage() {
   const [docStarters, setDocStarters] = useState<DocPromptStarter[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Load session from URL
+  // Load session or document from URL
   useEffect(() => {
     const loadSessionFromUrl = async () => {
       if (typeof window === 'undefined') return;
       const params = new URLSearchParams(window.location.search);
       const sessionId = params.get('session');
+      const docId = params.get('doc');
+
+      if (docId) {
+        setPendingDocId(docId);
+      }
+
       if (!sessionId) return;
 
       try {
@@ -1226,6 +1645,19 @@ export default function ResearchPage() {
                 <UploadCloud className="w-3.5 h-3.5" />
                 <span>Upload New Document</span>
               </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setIsDocSheetOpen(false);
+                  setIsFormatPickerOpen(true);
+                }}
+                className="w-full mt-1.5 gap-2 text-xs h-8.5 rounded-xl border-0 bg-primary/10 text-primary hover:bg-primary/15 shadow-none font-semibold cursor-pointer"
+              >
+                <FileText className="w-3.5 h-3.5 text-primary" />
+                <span>Format Picker &amp; Builder</span>
+              </Button>
             </div>
             <ScrollArea className="flex-1 p-2">
               {isLoadingDocs ? (
@@ -1275,10 +1707,17 @@ export default function ResearchPage() {
                         }`}
                     >
                       <p className={`text-sm font-medium line-clamp-2 ${activeDocument?.id === doc.id ? 'text-primary' : 'text-foreground'}`}>
-                        {doc.filename}
+                        {formatDocDisplayName(doc.filename)}
                       </p>
                       <div className="flex items-center justify-between mt-2">
-                        {getStatusBadge(doc)}
+                        <div className="flex items-center gap-1 shrink-0">
+                          {getStatusBadge(doc)}
+                          {isBuilderDocument(doc) && (
+                            <Badge variant="outline" className="text-[9px] px-1 py-0 text-blue-600 dark:text-blue-400 border-blue-500/30 font-medium">
+                              Builder
+                            </Badge>
+                          )}
+                        </div>
                         <span className="text-[10px] text-muted-foreground">
                           {new Date(doc.created_at).toLocaleDateString()}
                         </span>
@@ -1346,6 +1785,16 @@ export default function ResearchPage() {
                 <Plus className={`w-3.5 h-3.5 ${!activeDocument ? 'text-white' : 'text-blue-600 dark:text-blue-400'}`} />
                 <span>+ New Blank Analysis</span>
               </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => setIsFormatPickerOpen(true)}
+                className="w-full gap-2 text-xs font-semibold cursor-pointer border-0 bg-primary/10 text-primary hover:bg-primary/15 transition-colors shadow-none rounded-xl"
+              >
+                <FileText className="w-3.5 h-3.5 text-primary" />
+                <span>Format Picker &amp; Builder</span>
+              </Button>
             </div>
             <input
               type="file"
@@ -1406,7 +1855,7 @@ export default function ResearchPage() {
                   >
                     <div className="flex items-start justify-between gap-2 mb-1 min-w-0">
                       <p className={`text-sm font-medium line-clamp-1 pr-2 min-w-0 flex-1 ${activeDocument?.id === doc.id ? 'text-primary' : 'text-foreground'}`}>
-                        {doc.filename}
+                        {formatDocDisplayName(doc.filename)}
                       </p>
                       <button
                         onClick={(e) => handleDeleteDocument(e, doc.id)}
@@ -1417,7 +1866,14 @@ export default function ResearchPage() {
                       </button>
                     </div>
                     <div className="flex items-center justify-between mt-2 gap-2 min-w-0">
-                      <div className="shrink-0">{getStatusBadge(doc)}</div>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        {getStatusBadge(doc)}
+                        {isBuilderDocument(doc) && (
+                          <Badge variant="outline" className="text-[9px] px-1.5 py-0 text-blue-600 dark:text-blue-400 border-blue-500/30 font-medium">
+                            Builder
+                          </Badge>
+                        )}
+                      </div>
                       <span className="text-[10px] text-muted-foreground shrink-0">
                         {new Date(doc.created_at).toLocaleDateString()}
                       </span>
@@ -1469,7 +1925,7 @@ export default function ResearchPage() {
           <>
             {/* Toolbar */}
             <div className="p-2 sm:p-3 border-b border-border bg-muted/50 flex items-center justify-between shrink-0 gap-1.5 sm:gap-2 overflow-hidden">
-              <div className="flex items-center gap-1.5 sm:gap-2 min-w-0">
+              <div className="flex items-center gap-1.5 sm:gap-2 flex-1 min-w-0 overflow-hidden">
                 {/* Mobile & Tablet: open doc sheet */}
                 <Button
                   type="button"
@@ -1501,7 +1957,7 @@ export default function ResearchPage() {
                     <>
                       <PanelLeftOpen className="w-3.5 h-3.5 text-primary shrink-0" />
                       <span className="hidden sm:inline">Documents</span>
-                      <span className="text-[10px] font-mono px-1.5 py-0.2 rounded-full bg-primary/10 text-primary">
+                      <span className="text-[10px] font-mono px-1.5 py-0.5 rounded-full bg-primary/10 text-primary">
                         {documents.length}
                       </span>
                     </>
@@ -1515,16 +1971,26 @@ export default function ResearchPage() {
 
                 <div className="h-4 w-[1px] bg-border/70 mx-0.5 hidden sm:block shrink-0" />
 
-                <Badge variant="outline" className="bg-card text-xs border-border font-medium truncate max-w-[100px] xs:max-w-[150px] sm:max-w-[280px]">
-                  {activeDocument.filename}
+                <Badge
+                  variant="outline"
+                  title={formatDocDisplayName(activeDocument.filename)}
+                  className="bg-card text-xs border-border font-medium shrink min-w-0 max-w-[120px] xs:max-w-[150px] sm:max-w-[200px] md:max-w-[240px]"
+                >
+                  <span className="truncate">{formatDocDisplayName(activeDocument.filename)}</span>
                 </Badge>
                 <div className="hidden xs:inline-flex shrink-0">
                   {getStatusBadge(activeDocument)}
                 </div>
+                {saveStatusMessage && (
+                  <Badge className="bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/30 text-[10px] gap-1 animate-fade-in font-medium shrink-0">
+                    <Check className="w-3 h-3" />
+                    <span>{saveStatusMessage}</span>
+                  </Badge>
+                )}
               </div>
 
               {/* Center / Right controls */}
-              <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
+              <div className="flex items-center gap-1 sm:gap-1.5 shrink-0 ml-2">
                 {/* Mobile View Toggle: Doc Preview vs AI Chat */}
                 <div className="flex lg:hidden items-center bg-card p-0.5 rounded-xl border border-border/80 shadow-2xs">
                   <button
@@ -1556,38 +2022,22 @@ export default function ResearchPage() {
                   </button>
                 </div>
 
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => {
-                    setActiveDocument(null);
-                    if (typeof window !== 'undefined') {
-                      window.history.replaceState({}, '', '/research');
-                    }
-                  }}
-                  className="h-8 gap-1 px-2 sm:px-2.5 text-xs text-muted-foreground hover:text-foreground hover:bg-accent border-border cursor-pointer shadow-2xs"
-                  title="Return to blank analysis to upload a new document"
-                >
-                  <Plus className="w-3.5 h-3.5 text-primary" />
-                  <span className="hidden sm:inline">New</span>
-                </Button>
-
-                {getFilePreviewUrl(activeDocument) && (
-                  <a
-                    href={getFilePreviewUrl(activeDocument)}
-                    download={activeDocument.filename}
-                    target="_blank"
-                    rel="noopener noreferrer"
+                {/* Open in Document Builder Button - strictly for documents created via the document format picker */}
+                {Boolean(isBuilderDocument(activeDocument) && findTemplateForDocument(activeDocument)) && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleOpenInBuilder(activeDocument)}
+                    className="h-8 gap-1.5 px-2.5 sm:px-3 text-xs font-semibold bg-primary/10 hover:bg-primary/20 text-primary border-primary/30 cursor-pointer shadow-2xs whitespace-nowrap shrink-0"
+                    title="Open this statutory instrument in the structured Document Builder"
                   >
-                    <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-foreground" title="Download Document">
-                      <Download className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
-                    </Button>
-                  </a>
+                    <Sliders className="w-3.5 h-3.5 text-primary shrink-0" />
+                    <span className="hidden sm:inline">Open in Document Builder</span>
+                    <span className="sm:hidden">Builder</span>
+                  </Button>
                 )}
-                <Button variant="ghost" size="icon" className="hidden xl:inline-flex h-8 w-8 text-muted-foreground hover:text-foreground shrink-0">
-                  <Maximize2 className="w-4 h-4" />
-                </Button>
+
                 {/* Desktop: Toggle button to collapse/expand the AI Assistant chat panel */}
                 <Button
                   type="button"
@@ -1671,13 +2121,62 @@ export default function ResearchPage() {
                 </div>
               )}
 
-              <div className="flex-1 min-h-0 min-w-0 w-full relative overflow-hidden">
-                {getFilePreviewUrl(activeDocument) ? (
-                  (activeDocument.filename || '').match(/\.(jpeg|jpg|png)$/i) ? (
+              <div className="flex-1 min-h-0 min-w-0 w-full relative overflow-hidden flex flex-col">
+                {/* Zero-CLS Fast Skeleton Loader Overlay */}
+                {isPreviewLoading && (
+                  <div className="absolute inset-0 bg-background/80 backdrop-blur-xs z-20 flex items-center justify-center p-3 sm:p-6 transition-opacity duration-200">
+                    <div className="w-full max-w-[700px] min-h-[460px] bg-white text-zinc-950 border border-zinc-200 shadow-xl rounded-xs p-6 sm:p-10 animate-pulse flex flex-col gap-4 font-serif">
+                      <div className="w-48 h-5 bg-zinc-200 rounded mx-auto mb-2" />
+                      <div className="w-36 h-3 bg-zinc-100 rounded mx-auto mb-6" />
+                      <div className="space-y-2.5">
+                        <div className="w-full h-3 bg-zinc-100 rounded" />
+                        <div className="w-11/12 h-3 bg-zinc-100 rounded" />
+                        <div className="w-full h-3 bg-zinc-100 rounded" />
+                        <div className="w-4/5 h-3 bg-zinc-100 rounded" />
+                      </div>
+                      <div className="space-y-2.5 pt-3">
+                        <div className="w-full h-3 bg-zinc-100 rounded" />
+                        <div className="w-10/12 h-3 bg-zinc-100 rounded" />
+                        <div className="w-full h-3 bg-zinc-100 rounded" />
+                      </div>
+                      <div className="mt-auto pt-8 grid grid-cols-2 gap-8">
+                        <div className="flex flex-col items-center gap-2">
+                          <div className="w-32 h-0.5 bg-zinc-300" />
+                          <div className="w-24 h-2.5 bg-zinc-200 rounded" />
+                        </div>
+                        <div className="flex flex-col items-center gap-2">
+                          <div className="w-32 h-0.5 bg-zinc-300" />
+                          <div className="w-24 h-2.5 bg-zinc-200 rounded" />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {isBuilderDocument(activeDocument) ? (
+                  <div className="w-full h-full flex flex-col min-h-0 overflow-hidden">
+                    {isLoadingDocText ? (
+                      <div className="flex-1 flex flex-col items-center justify-center p-6 text-center">
+                        <Loader2 className="w-6 h-6 animate-spin text-primary mb-2" />
+                        <p className="text-xs text-muted-foreground">Loading statutory document paper...</p>
+                      </div>
+                    ) : (
+                      <LegalDocumentPaper
+                        content={docTextContent}
+                        onContentChange={(updated) => setDocTextContent(updated)}
+                        documentTitle={formatDocDisplayName(activeDocument.filename)}
+                        signatures={activeDocumentSignatures}
+                        hideToolbar={true}
+                      />
+                    )}
+                  </div>
+                ) : getFilePreviewUrl(activeDocument) ? (
+                  (activeDocument.filename || '').match(/\.(jpeg|jpg|png|webp)$/i) ? (
                     <div className="w-full h-full min-w-0 flex items-center justify-center bg-card shadow-sm border border-border rounded-xl overflow-hidden p-2 sm:p-4">
                       <img
                         src={getFilePreviewUrl(activeDocument)}
-                        alt={activeDocument.filename}
+                        alt={formatDocDisplayName(activeDocument.filename)}
+                        onLoad={() => setIsPreviewLoading(false)}
                         className="max-w-full max-h-full object-contain"
                       />
                     </div>
@@ -1685,10 +2184,12 @@ export default function ResearchPage() {
                     <DocxViewer fileUrl={getFilePreviewUrl(activeDocument)} fileName={activeDocument.filename} />
                   ) : (
                     <iframe
-                      src={getFilePreviewUrl(activeDocument)}
+                      key={activeDocument.id || activeDocument.filename}
+                      src={`${getFilePreviewUrl(activeDocument).split('#')[0]}#toolbar=0&navpanes=0`}
+                      onLoad={() => setIsPreviewLoading(false)}
                       className={`w-full h-full rounded-xl bg-card shadow-sm border border-border ${isDraggingDocList || isDraggingChat ? "pointer-events-none" : ""
                         }`}
-                      title={activeDocument.filename}
+                      title={formatDocDisplayName(activeDocument.filename)}
                     />
                   )
                 ) : (
@@ -1742,7 +2243,7 @@ export default function ResearchPage() {
                   >
                     <PanelLeftOpen className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400 shrink-0" />
                     <span className="hidden sm:inline">Documents</span>
-                    <span className="text-[10px] font-mono px-1.5 py-0.2 rounded-full bg-blue-500/10 dark:bg-blue-500/20 text-blue-600 dark:text-blue-400 font-semibold">
+                    <span className="text-[10px] font-mono px-1.5 py-0.5 rounded-full bg-blue-500/10 dark:bg-blue-500/20 text-blue-600 dark:text-blue-400 font-semibold">
                       {documents.length}
                     </span>
                   </Button>
@@ -1903,6 +2404,30 @@ export default function ResearchPage() {
                   </Button>
                 </div>
 
+                {/* Legal Document Format Picker & Builder Banner */}
+                <div className="w-full mt-3 p-3.5 sm:p-4 rounded-2xl bg-card dark:bg-zinc-900/90 border border-border/80 dark:border-zinc-800 hover:border-primary/40 dark:hover:border-blue-500/40 flex flex-col sm:flex-row items-center justify-between gap-3 text-left shadow-xs transition-colors">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <FileCheck className="w-5 h-5 text-blue-600 dark:text-blue-400 shrink-0" />
+                    <div className="min-w-0">
+                      <h4 className="text-xs sm:text-sm font-bold text-foreground">
+                        Philippine Legal Document Builder
+                      </h4>
+                      <p className="text-[11px] sm:text-xs text-muted-foreground leading-relaxed mt-0.5">
+                        Build and customize 25 authentic statutory formats (Deeds, Leases, Affidavits, Wills, MOAs) with AI auto-fill and instant document compilation.
+                      </p>
+                    </div>
+                  </div>
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={() => setIsFormatPickerOpen(true)}
+                    className="w-full sm:w-auto h-8.5 text-xs bg-[#100771] hover:bg-[#100771]/90 text-white dark:bg-blue-600 dark:hover:bg-blue-500 dark:text-white font-semibold px-3.5 rounded-xl shrink-0 cursor-pointer shadow-xs gap-1.5 flex items-center justify-center"
+                  >
+                    <FileText className="w-3.5 h-3.5" />
+                    <span>Choose Document Format</span>
+                  </Button>
+                </div>
+
                 {/* 3 Capabilities Highlights */}
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 sm:gap-2.5 w-full mt-3 sm:mt-4 text-left">
                   <div className="p-2 sm:p-2.5 rounded-xl bg-card border border-border/80 hover:border-amber-500/40 hover:bg-amber-500/5 transition-all shadow-2xs flex flex-col gap-1">
@@ -1949,10 +2474,10 @@ export default function ResearchPage() {
                             await ensureDocSession(doc.id, doc.filename);
                           }}
                           className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-card hover:bg-accent border border-border text-xs text-foreground hover:text-primary transition-all cursor-pointer shadow-2xs group"
-                          title={`Open ${doc.filename}`}
+                          title={`Open ${formatDocDisplayName(doc.filename)}`}
                         >
                           <FileText className="w-3.5 h-3.5 text-muted-foreground group-hover:text-primary transition-colors shrink-0" />
-                          <span className="truncate max-w-[140px] font-medium">{doc.filename}</span>
+                          <span className="truncate max-w-[140px] font-medium">{formatDocDisplayName(doc.filename)}</span>
                           <ArrowRight className="w-3 h-3 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
                         </button>
                       ))}
@@ -2053,9 +2578,19 @@ export default function ResearchPage() {
             </div>
 
             {retainedCitations.length > 0 && (
-              <span className="text-[10px] font-mono font-medium px-2 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20 shrink-0">
+              <button
+                type="button"
+                onClick={() => {
+                  const el = document.getElementById("retained-sources-accordion");
+                  if (el) {
+                    el.scrollIntoView({ behavior: "smooth", block: "start" });
+                  }
+                }}
+                className="text-[10px] font-mono font-medium px-2 py-0.5 rounded-full bg-primary/10 hover:bg-primary/20 text-primary border border-primary/20 shrink-0 cursor-pointer transition-colors"
+                title="Scroll to retained citations in chat"
+              >
                 {retainedCitations.length} Sources
-              </span>
+              </button>
             )}
             <button
               type="button"
@@ -2110,7 +2645,7 @@ export default function ResearchPage() {
                       <span className="text-xs font-semibold text-foreground group-hover:text-primary transition-colors">
                         NLI Grounding
                       </span>
-                      <span className="text-[10px] font-mono font-medium px-1.5 py-0.2 rounded bg-muted text-muted-foreground border border-border/70 shrink-0">
+                      <span className="text-[10px] font-mono font-medium px-1.5 py-0.5 rounded bg-muted text-muted-foreground border border-border/70 shrink-0">
                         {legalAnalytics?.is_out_of_domain
                           ? legalAnalytics?.domain_category === "other_legal"
                             ? "Jurisdiction Redirect"
@@ -2233,7 +2768,7 @@ export default function ResearchPage() {
           <div className="flex flex-col gap-4">
             {/* Retained Citations Section for Active Document Chat */}
             {retainedCitations.length > 0 && (
-              <div className="mb-1">
+              <div id="retained-sources-accordion" className="mb-1 scroll-mt-2">
                 <Accordion className="w-full">
                   <AccordionItem value="all-retained-citations" className="border border-primary/20 rounded-xl bg-accent/20">
                     <AccordionTrigger className="py-2 px-3 text-xs text-primary font-semibold hover:no-underline">
@@ -2242,168 +2777,17 @@ export default function ResearchPage() {
                         <span>Retained Sources ({retainedCitations.length})</span>
                       </div>
                     </AccordionTrigger>
-                    <AccordionContent className="px-2.5 sm:px-3 pb-3 text-xs flex flex-col gap-2 max-h-72 overflow-y-auto overflow-x-hidden overscroll-contain touch-pan-y custom-scrollbar w-full max-w-full">
-                      {sortCitations(retainedCitations)
-                        .map((cit: any, idx: number) => {
-                          const isCase =
-                            cit.parent_type === "case" ||
-                            cit.parent_type === "jurisprudence" ||
-                            Boolean(cit.metadata?.gr_number) ||
-                            String(cit.parent_id || "").startsWith("GR_");
-                          const isOutOfRank = cit.is_in_context === false || cit.rank_status === "out_of_rank";
-                          const rank = cit.rank ?? idx + 1;
-
-                          if (isCase) {
-                            const year = cit.metadata?.decision_date ? cit.metadata.decision_date.split(" ").pop() : null;
-                            const title = cit.metadata?.title || cit.metadata?.gr_number || cit.parent_id;
-                            const gr = cit.metadata?.gr_number || (String(cit.parent_id || "").startsWith("GR_") ? cit.parent_id : null);
-                            const summary = cleanCaseSummary(cit.metadata?.content_summary || cit.content);
-
-                            const handleOpen = () => {
-                              setSelectedCaseModal({
-                                caseData: {
-                                  case_uid: cit.metadata?.case_uid || cit.parent_id,
-                                  title: cit.metadata?.title || cit.parent_id,
-                                  gr_number: cit.metadata?.gr_number || cit.parent_id,
-                                  decision_date: cit.metadata?.decision_date || "",
-                                  content_summary: cit.metadata?.content_summary || summary,
-                                  source_url: cit.metadata?.source_url || "",
-                                  full_text: cit.metadata?.full_text,
-                                },
-                                suitabilityPercent: cit.suitability_percent,
-                              });
-                            };
-
-                            return (
-                              <div
-                                key={idx}
-                                className={`p-3 bg-card rounded-xl border shadow-2xs hover:shadow-sm cursor-pointer transition-all duration-200 group flex flex-col justify-between w-full max-w-full overflow-hidden break-words touch-pan-y ${isOutOfRank ? "border-border/60 opacity-90 hover:opacity-100" : "border-border/80 hover:border-primary/40"
-                                  }`}
-                                onClick={handleOpen}
-                              >
-                                <div className="w-full min-w-0">
-                                  <div className="flex items-center justify-between mb-1.5 gap-1.5 flex-wrap">
-                                    <div className="flex items-center gap-1.5 min-w-0 flex-wrap">
-                                      {rank && (
-                                        <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-muted/80 text-foreground border border-border/70 shrink-0">
-                                          #{rank}
-                                        </span>
-                                      )}
-                                      <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20 shrink-0">
-                                        <Scale className="w-3 h-3" />
-                                        Jurisprudence
-                                      </span>
-                                      {isOutOfRank ? (
-                                        <span className="inline-flex items-center gap-1 text-[10px] font-mono font-medium px-1.5 py-0.5 rounded bg-muted text-muted-foreground border border-border/80 shrink-0">
-                                          Out of Rank
-                                        </span>
-                                      ) : (
-                                        <span className="inline-flex items-center gap-1 text-[10px] font-mono font-medium px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 shrink-0">
-                                          Active
-                                        </span>
-                                      )}
-                                      {year && (
-                                        <Badge variant="outline" className="text-[10px] whitespace-nowrap bg-background font-mono">
-                                          {year}
-                                        </Badge>
-                                      )}
-                                    </div>
-
-                                    {cit.suitability_percent !== undefined && (
-                                      <span
-                                        className={`text-[11px] font-semibold px-1.5 py-0.5 rounded-md border tabular-nums shrink-0 ${cit.suitability_percent >= 85
-                                          ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
-                                          : cit.suitability_percent >= 70
-                                            ? "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60"
-                                            : "text-muted-foreground bg-muted border-border"
-                                          }`}
-                                      >
-                                        {cit.suitability_percent}%
-                                      </span>
-                                    )}
-                                  </div>
-
-                                  <div className="mb-1.5 min-w-0">
-                                    <h4 className="font-semibold text-xs text-foreground group-hover:text-primary transition-colors leading-snug line-clamp-2 break-words">
-                                      {title}
-                                    </h4>
-                                    {gr && (
-                                      <span className="text-[10px] font-mono text-muted-foreground block mt-0.5 break-all">
-                                        {gr}
-                                      </span>
-                                    )}
-                                  </div>
-
-                                  <p className="text-xs text-muted-foreground leading-relaxed line-clamp-2 mb-2 break-words">
-                                    {summary}
-                                  </p>
-                                </div>
-
-                                <div className="flex items-center justify-between pt-1.5 border-t border-border/50 text-[11px] font-semibold text-primary mt-auto">
-                                  <span className="flex items-center sm:group-hover:translate-x-1 transition-transform">
-                                    Read full case <ArrowRight className="w-3 h-3 ml-1" />
-                                  </span>
-                                  {cit.metadata?.source_url && (
-                                    <span className="text-[10px] font-normal text-muted-foreground">
-                                      LawPhil
-                                    </span>
-                                  )}
-                                </div>
-                              </div>
-                            );
-                          }
-
-                          return (
-                            <div key={idx} className={`p-2 sm:p-2.5 rounded-lg bg-card border shadow-2xs w-full max-w-full overflow-hidden break-words touch-pan-y ${isOutOfRank ? "border-border/60 opacity-90 hover:opacity-100" : "border-border/60"}`}>
-                              <div className="flex items-center justify-between mb-1 sm:mb-1.5 gap-1.5 flex-nowrap">
-                                <div className="min-w-0 flex items-center gap-1 sm:gap-1.5 flex-wrap">
-                                  {rank && (
-                                    <span className="text-[9.5px] sm:text-[10px] font-mono font-bold px-1.5 py-0.2 sm:py-0.5 rounded bg-muted/80 text-foreground border border-border/70 shrink-0">
-                                      #{rank}
-                                    </span>
-                                  )}
-                                  <span className="font-bold text-primary text-[10.5px] sm:text-[11px] uppercase truncate max-w-[130px] sm:max-w-none">
-                                    {cit.parent_type === "civil_code" || cit.parent_type === "article"
-                                      ? cit.parent_id
-                                      : `Document Excerpt ${cit.chunk_id ? `(#${parseInt(cit.chunk_id.split('_c').pop() || '0', 10) + 1})` : ''}`}
-                                  </span>
-                                  {isOutOfRank ? (
-                                    <span className="hidden xs:inline-flex items-center gap-1 text-[9.5px] sm:text-[10px] font-mono font-medium px-1.5 py-0.2 sm:py-0.5 rounded bg-muted text-muted-foreground border border-border/80 shrink-0">
-                                      Out of Rank
-                                    </span>
-                                  ) : (
-                                    <span className="hidden xs:inline-flex items-center gap-1 text-[9.5px] sm:text-[10px] font-mono font-medium px-1.5 py-0.2 sm:py-0.5 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 shrink-0">
-                                      Active Grounding
-                                    </span>
-                                  )}
-                                </div>
-                                {cit.suitability_percent !== undefined && (
-                                  <span
-                                    className={`text-[10px] sm:text-[11px] font-semibold px-1.5 py-0.2 sm:py-0.5 rounded-md border tabular-nums shrink-0 ${cit.suitability_percent >= 85
-                                      ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
-                                      : cit.suitability_percent >= 70
-                                        ? "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60"
-                                        : "text-muted-foreground bg-muted border-border"
-                                      }`}
-                                  >
-                                    {cit.suitability_percent}%
-                                  </span>
-                                )}
-                              </div>
-                              {cit.metadata?.title && (
-                                <p className="font-semibold text-foreground text-[11px] sm:text-xs mb-0.5 line-clamp-1 break-words">
-                                  {cit.metadata.title} {cit.metadata.gr_number ? `(GR ${cit.metadata.gr_number})` : ""}
-                                </p>
-                              )}
-                              <p className="text-muted-foreground text-[11px] sm:text-xs line-clamp-2 leading-snug sm:leading-relaxed break-words">{cit.content}</p>
-                              {cit.metadata?.source_url && (
-                                <a href={cit.metadata.source_url} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline text-[10px] sm:text-[11px] mt-0.5 sm:mt-1 inline-block font-medium">
-                                  View full document
-                                </a>
-                              )}
-                            </div>
-                          );
-                        })}
+                    <AccordionContent className="bg-accent/10 p-2 sm:p-2.5 rounded-b-lg border border-t-0 border-border">
+                      <div className="flex flex-col gap-2 max-h-72 overflow-y-auto overflow-x-hidden overscroll-contain touch-pan-y custom-scrollbar w-full pr-1">
+                        {sortCitations(retainedCitations).map((cit: DocCitationItem, idx: number) => (
+                          <DocCitationCard
+                            key={cit.chunk_id || cit.parent_id || idx}
+                            citation={cit}
+                            rank={cit.rank ?? idx + 1}
+                            onSelect={setSelectedCitation}
+                          />
+                        ))}
+                      </div>
                     </AccordionContent>
                   </AccordionItem>
                 </Accordion>
@@ -2448,17 +2832,12 @@ export default function ResearchPage() {
                             : 'mt-0'
                       }`}
                   >
-                    <Avatar className="w-7 h-7 mt-0.5 border border-border/80 shrink-0 rounded-full sm:rounded-lg overflow-hidden shadow-xs">
-                      {msg.role === 'assistant' ? (
-                        <div className="bg-blue-500/10 dark:bg-blue-500/20 text-blue-600 dark:text-blue-400 w-full h-full flex items-center justify-center">
-                          <Scale className="w-3.5 h-3.5" />
-                        </div>
-                      ) : (
-                        <AvatarFallback className="bg-muted flex items-center justify-center">
-                          <User className="w-3.5 h-3.5 text-muted-foreground" />
-                        </AvatarFallback>
-                      )}
-                    </Avatar>
+                    {/* Clean Message Icon without border or container */}
+                    {msg.role === 'assistant' ? (
+                      <Scale className="w-5 h-5 text-blue-600 dark:text-blue-400 mt-1 shrink-0" />
+                    ) : (
+                      <User className="w-5 h-5 text-muted-foreground mt-1 shrink-0" />
+                    )}
 
                     <div
                       className={`flex flex-col min-w-0 ${isUser
@@ -2512,164 +2891,17 @@ export default function ResearchPage() {
                                 <BookOpen className="w-3 h-3" />
                                 View Sources ({msg.citations.length})
                               </AccordionTrigger>
-                              <AccordionContent className="text-xs text-muted-foreground bg-accent/10 p-2.5 sm:p-3 rounded-b-lg border border-t-0 border-border flex flex-col gap-2 max-h-72 overflow-y-auto overflow-x-hidden overscroll-contain touch-pan-y custom-scrollbar w-full max-w-full">
-                                {sortCitations(msg.citations)
-                                  .map((cit: any, cIdx: number) => {
-                                    const isCase =
-                                      cit.parent_type === "case" ||
-                                      cit.parent_type === "jurisprudence" ||
-                                      Boolean(cit.metadata?.gr_number) ||
-                                      String(cit.parent_id || "").startsWith("GR_");
-                                    const isOutOfRank = cit.is_in_context === false || cit.rank_status === "out_of_rank";
-                                    const rank = cit.rank ?? cIdx + 1;
-
-                                    if (isCase) {
-                                      const year = cit.metadata?.decision_date ? cit.metadata.decision_date.split(" ").pop() : null;
-                                      const title = cit.metadata?.title || cit.metadata?.gr_number || cit.parent_id;
-                                      const gr = cit.metadata?.gr_number || (String(cit.parent_id || "").startsWith("GR_") ? cit.parent_id : null);
-                                      const summary = cleanCaseSummary(cit.metadata?.content_summary || cit.content);
-
-                                      const handleOpen = () => {
-                                        setSelectedCaseModal({
-                                          caseData: {
-                                            case_uid: cit.metadata?.case_uid || cit.parent_id,
-                                            title: cit.metadata?.title || cit.parent_id,
-                                            gr_number: cit.metadata?.gr_number || cit.parent_id,
-                                            decision_date: cit.metadata?.decision_date || "",
-                                            content_summary: cit.metadata?.content_summary || summary,
-                                            source_url: cit.metadata?.source_url || "",
-                                            full_text: cit.metadata?.full_text,
-                                          },
-                                          suitabilityPercent: cit.suitability_percent,
-                                        });
-                                      };
-
-                                      return (
-                                        <div
-                                          key={cIdx}
-                                          className={`p-3 bg-card rounded-xl border shadow-2xs hover:shadow-sm cursor-pointer transition-all duration-200 group flex flex-col justify-between w-full max-w-full overflow-hidden break-words touch-pan-y ${isOutOfRank ? "border-border/60 opacity-90 hover:opacity-100" : "border-border/80 hover:border-primary/40"
-                                            }`}
-                                          onClick={handleOpen}
-                                        >
-                                          <div className="w-full min-w-0">
-                                            <div className="flex items-center justify-between mb-1.5 gap-1.5 flex-wrap">
-                                              <div className="flex items-center gap-1.5 min-w-0 flex-wrap">
-                                                {rank && (
-                                                  <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-muted/80 text-foreground border border-border/70 shrink-0">
-                                                    #{rank}
-                                                  </span>
-                                                )}
-                                                <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20 shrink-0">
-                                                  <Scale className="w-3 h-3" />
-                                                  Jurisprudence
-                                                </span>
-                                                {isOutOfRank ? (
-                                                  <span className="inline-flex items-center gap-1 text-[10px] font-mono font-medium px-1.5 py-0.5 rounded bg-muted text-muted-foreground border border-border/80 shrink-0">
-                                                    Out of Rank
-                                                  </span>
-                                                ) : (
-                                                  <span className="inline-flex items-center gap-1 text-[10px] font-mono font-medium px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 shrink-0">
-                                                    Active
-                                                  </span>
-                                                )}
-                                                {year && (
-                                                  <Badge variant="outline" className="text-[10px] whitespace-nowrap bg-background font-mono">
-                                                    {year}
-                                                  </Badge>
-                                                )}
-                                              </div>
-
-                                              {cit.suitability_percent !== undefined && (
-                                                <span
-                                                  className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-md border tabular-nums shrink-0 ${cit.suitability_percent >= 85
-                                                    ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
-                                                    : cit.suitability_percent >= 70
-                                                      ? "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60"
-                                                      : "text-muted-foreground bg-muted border-border"
-                                                    }`}
-                                                >
-                                                  {cit.suitability_percent}%
-                                                </span>
-                                              )}
-                                            </div>
-
-                                            <div className="mb-1.5 min-w-0">
-                                              <h4 className="font-semibold text-xs text-foreground group-hover:text-primary transition-colors leading-snug line-clamp-2 break-words">
-                                                {title}
-                                              </h4>
-                                              {gr && (
-                                                <span className="text-[10px] font-mono text-muted-foreground block mt-0.5 break-all">
-                                                  {gr}
-                                                </span>
-                                              )}
-                                            </div>
-
-                                            <p className="text-xs text-muted-foreground leading-relaxed line-clamp-2 mb-2 break-words">
-                                              {summary}
-                                            </p>
-                                          </div>
-
-                                          <div className="flex items-center justify-between pt-1.5 border-t border-border/50 text-[11px] font-semibold text-primary mt-auto">
-                                            <span className="flex items-center sm:group-hover:translate-x-1 transition-transform">
-                                              Read full case <ArrowRight className="w-3 h-3 ml-1" />
-                                            </span>
-                                            {cit.metadata?.source_url && (
-                                              <span className="text-[10px] font-normal text-muted-foreground">
-                                                LawPhil
-                                              </span>
-                                            )}
-                                          </div>
-                                        </div>
-                                      );
-                                    }
-
-                                    return (
-                                      <div key={cIdx} className={`flex flex-col gap-1 p-2 sm:p-2.5 bg-card rounded-lg border shadow-2xs w-full max-w-full overflow-hidden break-words touch-pan-y ${isOutOfRank ? "border-border/60 opacity-90 hover:opacity-100" : "border-border/60"}`}>
-                                        <div className="flex items-center justify-between gap-1.5 flex-nowrap">
-                                          <div className="min-w-0 flex items-center gap-1 sm:gap-1.5 flex-wrap">
-                                            {rank && (
-                                              <span className="text-[9.5px] sm:text-[10px] font-mono font-bold px-1.5 py-0.2 sm:py-0.5 rounded bg-muted/80 text-foreground border border-border/70 shrink-0">
-                                                #{rank}
-                                              </span>
-                                            )}
-                                            <span className="font-bold text-primary text-[10.5px] sm:text-[11px] uppercase truncate max-w-[130px] sm:max-w-none">
-                                              {cit.parent_type === "civil_code" ? cit.parent_id : `${cit.parent_type?.toUpperCase?.() ?? "SOURCE"} : ${cit.parent_id}`}
-                                            </span>
-                                            {isOutOfRank ? (
-                                              <span className="hidden xs:inline-flex items-center gap-1 text-[9.5px] sm:text-[10px] font-mono font-medium px-1.5 py-0.2 sm:py-0.5 rounded bg-muted text-muted-foreground border border-border/80 shrink-0">
-                                                Out of Rank
-                                              </span>
-                                            ) : (
-                                              <span className="hidden xs:inline-flex items-center gap-1 text-[9.5px] sm:text-[10px] font-mono font-medium px-1.5 py-0.2 sm:py-0.5 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 shrink-0">
-                                                Active Grounding
-                                              </span>
-                                            )}
-                                          </div>
-                                          {cit.suitability_percent !== undefined && (
-                                            <span
-                                              className={`text-[10px] sm:text-[11px] font-semibold px-1.5 py-0.2 sm:py-0.5 rounded-md border tabular-nums shrink-0 ${cit.suitability_percent >= 85
-                                                ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
-                                                : cit.suitability_percent >= 70
-                                                  ? "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60"
-                                                  : "text-muted-foreground bg-muted border-border"
-                                                }`}
-                                            >
-                                              {cit.suitability_percent}%
-                                            </span>
-                                          )}
-                                        </div>
-                                        {cit.metadata?.title && (
-                                          <span className="font-semibold text-foreground text-[11px] sm:text-xs mb-0.5 line-clamp-1 break-words">{cit.metadata.title}</span>
-                                        )}
-                                        <span className="text-muted-foreground text-[11px] sm:text-xs line-clamp-2 leading-snug sm:leading-relaxed break-words">{cit.content}</span>
-                                        {cit.metadata?.source_url && (
-                                          <a href={cit.metadata.source_url} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline text-[10px] sm:text-[11px] mt-0.5 sm:mt-1 inline-block font-medium">
-                                            View full document
-                                          </a>
-                                        )}
-                                      </div>
-                                    );
-                                  })}
+                              <AccordionContent className="text-xs text-muted-foreground bg-accent/10 p-2 sm:p-2.5 rounded-b-lg border border-t-0 border-border">
+                                <div className="flex flex-col gap-2 max-h-72 overflow-y-auto overflow-x-hidden overscroll-contain touch-pan-y custom-scrollbar w-full pr-1">
+                                  {sortCitations(msg.citations).map((cit: DocCitationItem, cIdx: number) => (
+                                    <DocCitationCard
+                                      key={cit.chunk_id || cit.parent_id || cIdx}
+                                      citation={cit}
+                                      rank={cit.rank ?? cIdx + 1}
+                                      onSelect={setSelectedCitation}
+                                    />
+                                  ))}
+                                </div>
                               </AccordionContent>
                             </AccordionItem>
                           </Accordion>
@@ -2750,7 +2982,7 @@ export default function ResearchPage() {
               <span>
                 {activeDocument?.status === 'extracting'
                   ? `Extracting & vectorizing document chunks (${activeDocument.progress || 0}%)... Chat will enable once complete.`
-                  : `Ingesting ${activeDocument?.filename || 'document'}... Chat will enable once complete.`}
+                  : `Ingesting ${formatDocDisplayName(activeDocument?.filename) || 'document'}... Chat will enable once complete.`}
               </span>
             </div>
           )}
@@ -2787,11 +3019,11 @@ export default function ResearchPage() {
               onKeyDown={(e) => e.key === 'Enter' && !isDocProcessing && !isDocFailed && handleSend()}
               placeholder={
                 isDocProcessing
-                  ? `Please wait while ${activeDocument?.filename || 'document'} is being processed...`
+                  ? `Please wait while ${formatDocDisplayName(activeDocument?.filename) || 'document'} is being processed...`
                   : isDocFailed
                     ? `Chat disabled: No readable text extracted from this document`
                     : activeDocument
-                      ? `Ask about ${activeDocument.filename}...`
+                      ? `Ask about ${formatDocDisplayName(activeDocument.filename)}...`
                       : "Ask a general question..."
               }
               className="flex-1 bg-transparent dark:bg-transparent border-none shadow-none outline-none focus:outline-none focus:ring-0 text-foreground placeholder:text-muted-foreground px-3 h-10 sm:h-11 text-xs sm:text-sm disabled:cursor-not-allowed"
@@ -2819,9 +3051,7 @@ export default function ResearchPage() {
         </div>
       </div>
 
-      {/* ------------------------------------------------------------------ */}
-      {/* NLI Statutory Grounding Detailed Audit Modal Dialog                */}
-      {/* ------------------------------------------------------------------ */}
+      {/* NLI Statutory Grounding Detailed Audit Modal Dialog */}
       <Dialog open={isNliModalOpen} onOpenChange={setIsNliModalOpen}>
         <DialogContent
           showCloseButton
@@ -2829,9 +3059,7 @@ export default function ResearchPage() {
         >
           <DialogHeader className="pb-3 border-b border-border">
             <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-primary/10 border border-primary/20 flex items-center justify-center text-primary shrink-0">
-                <ShieldCheck className="w-5 h-5" />
-              </div>
+              <ShieldCheck className="w-6 h-6 text-primary shrink-0" />
               <div>
                 <DialogTitle className="text-base sm:text-lg font-bold text-foreground">
                   Natural Language Inference (NLI) Audit
@@ -2967,10 +3195,172 @@ export default function ResearchPage() {
 
       {/* Supreme Court Jurisprudence Full Reader Modal */}
       <JurisprudenceModal
-        isOpen={Boolean(selectedCaseModal)}
-        onClose={() => setSelectedCaseModal(null)}
-        caseData={selectedCaseModal?.caseData || null}
-        suitabilityPercent={selectedCaseModal?.suitabilityPercent}
+        isOpen={Boolean(selectedCitation && isSelectedCase) || Boolean(selectedCaseModal)}
+        onClose={() => {
+          setSelectedCitation(null);
+          setSelectedCaseModal(null);
+        }}
+        caseData={caseModalData || selectedCaseModal?.caseData || null}
+        suitabilityPercent={selectedCitation?.suitability_percent ?? selectedCaseModal?.suitabilityPercent}
+      />
+
+      {/* Statutory / General / Document Citation Detail Modal */}
+      <Dialog
+        open={Boolean(selectedCitation && !isSelectedCase)}
+        onOpenChange={(open) => !open && setSelectedCitation(null)}
+      >
+        <DialogContent className="w-[calc(100vw-1.5rem)] sm:w-[92vw] md:w-[88vw] lg:w-[82vw] xl:w-[76vw] 2xl:w-[70vw] max-w-5xl 2xl:max-w-6xl max-h-[90dvh] overflow-y-auto overflow-x-hidden overscroll-contain touch-pan-y custom-scrollbar p-3 sm:p-5 lg:p-7 rounded-2xl min-w-0">
+          <DialogHeader className="space-y-2 sm:space-y-3 pb-2.5 sm:pb-3.5 border-b border-border/70 pr-7 sm:pr-8 min-w-0 w-full">
+            <div className="flex flex-col xs:flex-row xs:items-center justify-between gap-2 min-w-0">
+              <div className="flex items-center gap-1.5 flex-wrap min-w-0">
+                <span className="inline-flex items-center gap-1 text-[10px] sm:text-xs font-bold uppercase tracking-wider px-2 sm:px-2.5 py-0.5 sm:py-1 rounded-full bg-primary/10 text-primary border border-primary/20 shrink-0">
+                  <Scale className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
+                  {selectedCitation?.parent_type === "civil_code" || selectedCitation?.parent_type === "article"
+                    ? "Philippine Civil Code Provision"
+                    : selectedCitation?.parent_type === "document" ||
+                      selectedCitation?.parent_type === "doc" ||
+                      selectedCitation?.parent_type === "user_document" ||
+                      Boolean(selectedCitation?.chunk_id)
+                      ? "Document Excerpt"
+                      : (selectedCitation?.parent_type?.toUpperCase?.() ?? "LEGAL AUTHORITY")}
+                </span>
+                {selectedCitation?.parent_id && (
+                  <span className="text-[10px] sm:text-xs font-mono font-medium text-muted-foreground bg-accent/40 dark:bg-accent/20 px-1.5 sm:px-2 py-0.5 rounded-md border border-border/50 shrink-0">
+                    {selectedCitation.parent_id}
+                  </span>
+                )}
+                {selectedCitation?.suitability_percent !== undefined && (
+                  <div className="inline-flex items-center gap-1 text-[10px] sm:text-xs shrink-0">
+                    <span className="text-[10px] sm:text-[11px] text-muted-foreground font-medium">
+                      Suitability:
+                    </span>
+                    <span
+                      className={`text-[10px] sm:text-xs font-semibold px-1.5 sm:px-2 py-0.5 rounded-md border tabular-nums ${selectedCitation.suitability_percent >= 85
+                        ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
+                        : selectedCitation.suitability_percent >= 70
+                          ? "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60"
+                          : "text-muted-foreground bg-muted border-border"
+                        }`}
+                    >
+                      {selectedCitation.suitability_percent}%
+                    </span>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex items-center gap-1.5 shrink-0">
+                {selectedCitation?.content && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleCopyCitation(selectedCitation.content)}
+                    className="h-7 sm:h-8 px-2 sm:px-3 text-xs gap-1.5 rounded-lg border-border hover:bg-accent cursor-pointer"
+                  >
+                    {copiedCitation ? (
+                      <>
+                        <Check className="w-3.5 h-3.5 text-emerald-500" />
+                        <span className="text-emerald-600 dark:text-emerald-400 font-medium">Copied</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="w-3.5 h-3.5 text-muted-foreground" />
+                        <span>Copy Citation</span>
+                      </>
+                    )}
+                  </Button>
+                )}
+
+                {selectedCitation?.metadata?.source_url && (
+                  <a
+                    href={selectedCitation.metadata.source_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center justify-center h-7 sm:h-8 px-2 sm:px-3 text-xs gap-1.5 rounded-lg border border-primary/30 text-primary hover:bg-primary/10 transition-colors font-medium cursor-pointer"
+                  >
+                    <ExternalLink className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
+                    <span>Official Record</span>
+                  </a>
+                )}
+              </div>
+            </div>
+
+            <div className="min-w-0">
+              <DialogTitle className="text-base sm:text-xl lg:text-2xl font-bold text-foreground tracking-tight leading-snug break-words">
+                {selectedCitation?.metadata?.title || (
+                  selectedCitation?.parent_type === "civil_code" || selectedCitation?.parent_type === "article"
+                    ? `Civil Code of the Philippines : ${selectedCitation?.parent_id}`
+                    : `${selectedCitation?.parent_type?.toUpperCase?.() ?? "DOCUMENT"} : ${selectedCitation?.parent_id || activeDocument?.name || "Excerpt"}`
+                )}
+              </DialogTitle>
+              <DialogDescription className="sr-only">
+                Detailed view of legal citation and grounded source text.
+              </DialogDescription>
+              {selectedCitation?.metadata?.hierarchy && (
+                <p className="text-[11px] sm:text-xs text-muted-foreground mt-0.5 sm:mt-1 leading-normal break-words">
+                  {[
+                    selectedCitation.metadata.hierarchy.book_name,
+                    selectedCitation.metadata.hierarchy.title_name,
+                    selectedCitation.metadata.hierarchy.chapter_name,
+                  ]
+                    .filter(Boolean)
+                    .join(" • ")}
+                </p>
+              )}
+            </div>
+          </DialogHeader>
+
+          <div className="mt-3 sm:mt-4 space-y-3 sm:space-y-4">
+            <div className="p-3 sm:p-5 lg:p-6 bg-accent/20 dark:bg-accent/10 rounded-xl border border-border/70 text-foreground leading-relaxed text-xs sm:text-sm lg:text-base whitespace-pre-wrap break-words [overflow-wrap:anywhere] max-w-full selection:bg-primary/20">
+              {selectedCitation?.content}
+            </div>
+
+            {selectedCitation?.metadata?.source_url ? (
+              <div className="flex flex-col xs:flex-row xs:items-center justify-between text-[11px] sm:text-xs text-muted-foreground pt-2 border-t border-border/40 gap-1.5">
+                <span>Verified Philippine Legal Source Grounding</span>
+                <a
+                  href={selectedCitation.metadata.source_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-primary hover:underline inline-flex items-center gap-1 font-medium"
+                >
+                  View full source documentation <ExternalLink className="w-3 h-3" />
+                </a>
+              </div>
+            ) : (
+              <div className="flex items-center justify-between text-[11px] sm:text-xs text-muted-foreground pt-2 border-t border-border/40">
+                <span>
+                  {selectedCitation?.parent_type === "civil_code" || selectedCitation?.parent_type === "article"
+                    ? "Republic Act No. 386 (Civil Code of the Philippines)"
+                    : "Document excerpt grounded for legal analysis"}
+                </span>
+              </div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Document Format Picker Modal */}
+      <DocumentFormatPickerModal
+        isOpen={isFormatPickerOpen}
+        onClose={() => setIsFormatPickerOpen(false)}
+        onSelectTemplate={handleSelectTemplate}
+        existingDocuments={documents}
+      />
+
+      {/* Interactive Legal Document Builder Modal */}
+      <DocumentBuilderModal
+        isOpen={isBuilderOpen}
+        onClose={() => {
+          setIsBuilderOpen(false);
+          setEditingDocument(null);
+          setInitialBuilderFilename("");
+        }}
+        template={selectedTemplate}
+        existingDocument={editingDocument}
+        initialFilename={initialBuilderFilename}
+        existingDocuments={documents}
+        onDocumentCreated={handleDocumentCreated}
       />
     </div>
   );

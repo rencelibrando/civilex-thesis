@@ -1083,7 +1083,7 @@ def verify_claims_gemma_sync(
             raw_text = call_chat_completion_sync(
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.0,
-                max_tokens=2500,
+                max_tokens=3000,
                 timeout_sec=timeout,
             )
             if raw_text:
@@ -1121,7 +1121,7 @@ async def verify_claims_gemma_async(
             raw_text = await call_chat_completion_async(
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.0,
-                max_tokens=2500,
+                max_tokens=3000,
                 timeout_sec=timeout,
             )
             if raw_text:

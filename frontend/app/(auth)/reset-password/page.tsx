@@ -101,7 +101,7 @@ function ResetPasswordContent() {
     const cleanEmail = email.trim().toLowerCase();
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!cleanEmail || !emailRegex.test(cleanEmail)) {
-      setErrorMsg("Please enter a valid professional email address.");
+      setErrorMsg("Please enter a valid email address.");
       return;
     }
 
@@ -336,7 +336,7 @@ function ResetPasswordContent() {
         <form onSubmit={handleSendOtp} className="space-y-4">
           <div className="space-y-1.5">
             <label htmlFor="reset-email" className="text-xs font-medium text-foreground">
-              Professional Email Address
+              Email Address
             </label>
             <div className="relative">
               <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
@@ -347,7 +347,7 @@ function ResetPasswordContent() {
                 disabled={isLoading}
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="attorney@lawfirm.ph"
+                placeholder="you@example.com"
                 className="pl-10 h-11 bg-background border-border focus-visible:ring-primary/30 focus-visible:border-primary rounded-xl text-sm"
               />
             </div>

@@ -399,7 +399,7 @@ function RagPipelineStepper({ status, isLive, isOutOfDomain }: { status: RagStat
                   {step.name}
                 </span>
                 <span className="text-[10px] font-mono text-emerald-500 font-medium">
-                  {state === "completed" ? "✓ Verified" : state === "active" ? "● Active" : "Pending"}
+                  {state === "completed" ? "Verified" : state === "active" ? "Active" : "Pending"}
                 </span>
               </div>
             );
@@ -1099,7 +1099,7 @@ export default function ChatPage() {
                             <span className="text-xs font-semibold text-foreground group-hover:text-primary transition-colors">
                               NLI Grounding
                             </span>
-                            <span className="text-[10px] font-mono font-medium px-1.5 py-0.2 rounded bg-muted text-muted-foreground border border-border/70 shrink-0">
+                            <span className="text-[10px] font-mono font-medium px-1.5 py-0.5 rounded bg-muted text-muted-foreground border border-border/70 shrink-0">
                               {legalAnalytics?.is_out_of_domain
                                 ? legalAnalytics?.domain_category === "other_legal"
                                   ? "Jurisdiction Redirect"
@@ -1255,7 +1255,7 @@ export default function ChatPage() {
                             )}
                             {isCase ? (
                               <div
-                                className={`p-2.5 sm:p-3.5 rounded-xl border shadow-xs hover:shadow-md sm:hover:-translate-y-0.5 cursor-pointer transition-all duration-300 group flex flex-col justify-between w-full max-w-full overflow-hidden break-words touch-pan-y ${isOutOfRank
+                                className={`p-2.5 sm:p-3.5 rounded-xl border shadow-xs hover:shadow-md sm:hover:-translate-y-0.5 cursor-pointer transition-all duration-300 group flex flex-col justify-between w-full max-w-full overflow-hidden break-words touch-pan-y shrink-0 min-h-fit ${isOutOfRank
                                   ? "bg-card/60 dark:bg-card/40 border-border/70 opacity-90 hover:opacity-100 hover:border-border"
                                   : "bg-card/90 dark:bg-card/70 border-border/80 hover:border-primary/40"
                                   }`}
@@ -1265,25 +1265,25 @@ export default function ChatPage() {
                                   <div className="flex items-center justify-between mb-1.5 sm:mb-2 gap-1.5 flex-wrap">
                                     <div className="flex items-center gap-1.5 min-w-0 flex-wrap">
                                       {cit.rank && (
-                                        <span className="text-[9.5px] sm:text-[10px] font-mono font-bold px-1.5 py-0.2 sm:py-0.5 rounded bg-muted/80 text-foreground border border-border/70 shrink-0">
+                                        <span className="text-[9.5px] sm:text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-muted/80 text-foreground border border-border/70 shrink-0 leading-normal">
                                           #{cit.rank}
                                         </span>
                                       )}
-                                      <span className="inline-flex items-center gap-1 text-[9.5px] sm:text-[10px] font-bold uppercase tracking-wider px-2 py-0.2 sm:py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20 shrink-0">
+                                      <span className="inline-flex items-center gap-1 text-[9.5px] sm:text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20 shrink-0 leading-normal">
                                         <Scale className="w-3 h-3" />
                                         Jurisprudence
                                       </span>
                                       {isOutOfRank ? (
-                                        <span className="inline-flex items-center gap-1 text-[9.5px] sm:text-[10px] font-mono font-medium px-1.5 py-0.2 sm:py-0.5 rounded bg-muted text-muted-foreground border border-border/80 shrink-0">
+                                        <span className="inline-flex items-center gap-1 text-[9.5px] sm:text-[10px] font-mono font-medium px-1.5 py-0.5 rounded bg-muted text-muted-foreground border border-border/80 shrink-0 leading-normal">
                                           Out of Rank
                                         </span>
                                       ) : (
-                                        <span className="inline-flex items-center gap-1 text-[9.5px] sm:text-[10px] font-mono font-medium px-1.5 py-0.2 sm:py-0.5 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 shrink-0">
+                                        <span className="inline-flex items-center gap-1 text-[9.5px] sm:text-[10px] font-mono font-medium px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 shrink-0 leading-normal">
                                           Active
                                         </span>
                                       )}
                                       {year && (
-                                        <Badge variant="outline" className="text-[9.5px] sm:text-[10px] whitespace-nowrap bg-background font-mono px-1 sm:px-1.5 py-0">
+                                        <Badge variant="outline" className="text-[9.5px] sm:text-[10px] whitespace-nowrap bg-background font-mono px-1 sm:px-1.5 py-0.5">
                                           {year}
                                         </Badge>
                                       )}
@@ -1291,7 +1291,7 @@ export default function ChatPage() {
 
                                     {cit.suitability_percent !== undefined && (
                                       <span
-                                        className={`text-[10.5px] sm:text-xs font-semibold px-1.5 sm:px-2 py-0.2 sm:py-0.5 rounded-md border tabular-nums shrink-0 ${cit.suitability_percent >= 85
+                                        className={`text-[10.5px] sm:text-xs font-semibold px-1.5 sm:px-2 py-0.5 rounded-md border tabular-nums shrink-0 leading-normal ${cit.suitability_percent >= 85
                                           ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
                                           : cit.suitability_percent >= 70
                                             ? "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60"
@@ -1332,7 +1332,7 @@ export default function ChatPage() {
                               </div>
                             ) : (
                               <div
-                                className={`p-2 sm:p-2.5 md:p-3 rounded-lg border hover:bg-muted/40 cursor-pointer transition-colors shadow-2xs group w-full max-w-full overflow-hidden break-words touch-pan-y ${isOutOfRank
+                                className={`p-2 sm:p-2.5 md:p-3 rounded-lg border hover:bg-muted/40 cursor-pointer transition-colors shadow-2xs group w-full max-w-full overflow-hidden break-words touch-pan-y shrink-0 min-h-fit ${isOutOfRank
                                   ? "bg-card/60 border-border/70 opacity-90 hover:opacity-100"
                                   : "bg-card border-border hover:border-primary/40"
                                   }`}
@@ -1341,19 +1341,19 @@ export default function ChatPage() {
                                 <div className="flex items-center justify-between mb-1 sm:mb-1.5 gap-1.5 flex-nowrap">
                                   <div className="min-w-0 flex items-center gap-1 sm:gap-1.5 flex-wrap">
                                     {cit.rank && (
-                                      <span className="text-[9.5px] sm:text-[10px] font-mono font-bold px-1.5 py-0.2 sm:py-0.5 rounded bg-muted/80 text-foreground border border-border/70 shrink-0">
+                                      <span className="text-[9.5px] sm:text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-muted/80 text-foreground border border-border/70 shrink-0 leading-normal">
                                         #{cit.rank}
                                       </span>
                                     )}
-                                    <span className="text-[10.5px] sm:text-[11px] font-mono font-bold text-primary dark:text-blue-400 px-1.5 py-0.2 sm:py-0.5 rounded bg-primary/5 dark:bg-blue-500/10 border border-primary/20 shrink-0 truncate max-w-[130px] sm:max-w-none">
+                                    <span className="text-[10.5px] sm:text-[11px] font-mono font-bold text-primary dark:text-blue-400 px-1.5 py-0.5 rounded bg-primary/5 dark:bg-blue-500/10 border border-primary/20 shrink-0 truncate max-w-[130px] sm:max-w-none leading-normal">
                                       {cit.parent_id}
                                     </span>
                                     {isOutOfRank ? (
-                                      <span className="hidden xs:inline-flex items-center gap-1 text-[9.5px] sm:text-[10px] font-mono font-medium px-1.5 py-0.2 sm:py-0.5 rounded bg-muted text-muted-foreground border border-border/80 shrink-0">
+                                      <span className="hidden xs:inline-flex items-center gap-1 text-[9.5px] sm:text-[10px] font-mono font-medium px-1.5 py-0.5 rounded bg-muted text-muted-foreground border border-border/80 shrink-0 leading-normal">
                                         Out of Rank
                                       </span>
                                     ) : (
-                                      <span className="hidden xs:inline-flex items-center gap-1 text-[9.5px] sm:text-[10px] font-mono font-medium px-1.5 py-0.2 sm:py-0.5 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 shrink-0">
+                                      <span className="hidden xs:inline-flex items-center gap-1 text-[9.5px] sm:text-[10px] font-mono font-medium px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 shrink-0 leading-normal">
                                         Active Grounding
                                       </span>
                                     )}
@@ -1361,7 +1361,7 @@ export default function ChatPage() {
 
                                   {cit.suitability_percent !== undefined && (
                                     <span
-                                      className={`text-[10px] sm:text-xs font-semibold px-1.5 sm:px-2 py-0.2 sm:py-0.5 rounded-md border tabular-nums shrink-0 ${cit.suitability_percent >= 85
+                                      className={`text-[10px] sm:text-xs font-semibold px-1.5 sm:px-2 py-0.5 rounded-md border tabular-nums shrink-0 leading-normal ${cit.suitability_percent >= 85
                                         ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
                                         : cit.suitability_percent >= 70
                                           ? "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60"

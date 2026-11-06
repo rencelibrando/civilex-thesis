@@ -77,6 +77,9 @@ class DBHelper:
                     status TEXT CHECK (status IN ('uploading', 'extracting', 'completed', 'rejected_unrelated', 'error')),
                     progress INT DEFAULT 0,
                     error_message TEXT,
+                    extracted_text TEXT,
+                    canvas_content TEXT,
+                    canvas_updated_at TIMESTAMPTZ DEFAULT NOW(),
                     created_at TIMESTAMPTZ DEFAULT NOW()
                 );
             """)

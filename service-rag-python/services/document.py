@@ -47,11 +47,15 @@ def chunk_text(text: str, chunk_size: int = 300, overlap: int = 50):
     return chunks
 
 def init_document_table():
-    """Ensure user_documents table supports error_message and all status states."""
+    """Ensure user_documents table supports error_message, canvas editing, and all status states."""
     try:
         conn = psycopg2.connect(DEFAULT_DB_URL)
         with conn.cursor() as cur:
             cur.execute("ALTER TABLE user_documents ADD COLUMN IF NOT EXISTS error_message TEXT;")
+            cur.execute("ALTER TABLE user_documents ADD COLUMN IF NOT EXISTS extracted_text TEXT;")
+            cur.execute("ALTER TABLE user_documents ADD COLUMN IF NOT EXISTS canvas_content TEXT;")
+            cur.execute("ALTER TABLE user_documents ADD COLUMN IF NOT EXISTS canvas_html TEXT;")
+            cur.execute("ALTER TABLE user_documents ADD COLUMN IF NOT EXISTS canvas_updated_at TIMESTAMPTZ DEFAULT NOW();")
             cur.execute("""
                 DO $$
                 BEGIN
@@ -89,6 +93,82 @@ def update_status(document_id: str, status: str, error_message: str = None):
     except Exception as e:
         print(f"Failed to update status to {status} for {document_id}: {e}")
 
+def extract_pdf_structured_text(file_bytes: bytes) -> str:
+    """Extracts PDF text preserving paragraphs, headers, and section structure."""
+    with fitz.open(stream=file_bytes, filetype="pdf") as doc:
+        pages_text = []
+        for page in doc:
+            blocks = page.get_text("blocks")
+            page_paragraphs = []
+            for b in blocks:
+                if len(b) > 4 and b[4] and (len(b) <= 6 or b[6] == 0):
+                    raw_block = b[4].strip()
+                    if not raw_block:
+                        continue
+                    lines = [line.strip() for line in raw_block.splitlines() if line.strip()]
+                    if not lines:
+                        continue
+                    first_line = lines[0]
+                    if len(lines) == 1 and (first_line.isupper() or (len(first_line) < 70 and first_line.endswith(":"))):
+                        page_paragraphs.append(f"### {first_line}")
+                    else:
+                        joined_para = " ".join(lines)
+                        page_paragraphs.append(joined_para)
+            if page_paragraphs:
+                pages_text.append("\n\n".join(page_paragraphs))
+        return "\n\n".join(pages_text)
+
+
+def extract_docx_structured_text(file_bytes: bytes) -> str:
+    """Extracts DOCX text preserving markdown headings, bold clauses, lists, and tables."""
+    if not docx:
+        return ""
+    doc = docx.Document(io.BytesIO(file_bytes))
+    paragraphs = []
+    for para in doc.paragraphs:
+        p_text = para.text.strip()
+        if not p_text:
+            continue
+        style_name = (para.style.name or "").lower() if para.style else ""
+        if "heading 1" in style_name or "title" in style_name:
+            paragraphs.append(f"# {p_text}")
+        elif "heading 2" in style_name:
+            paragraphs.append(f"## {p_text}")
+        elif "heading 3" in style_name:
+            paragraphs.append(f"### {p_text}")
+        else:
+            has_bold = any(r.bold for r in para.runs if r.text and r.text.strip())
+            if has_bold and len(para.runs) > 1:
+                run_text = ""
+                for r in para.runs:
+                    txt = r.text
+                    if not txt:
+                        continue
+                    if r.bold and txt.strip():
+                        run_text += f"**{txt}**"
+                    else:
+                        run_text += txt
+                paragraphs.append(run_text.strip())
+            elif p_text.isupper() and len(p_text) < 70:
+                paragraphs.append(f"### {p_text}")
+            else:
+                paragraphs.append(p_text)
+
+    for table in doc.tables:
+        table_rows = []
+        for row in table.rows:
+            cells = [c.text.strip().replace("\n", " ") for c in row.cells]
+            if any(cells):
+                table_rows.append("| " + " | ".join(cells) + " |")
+        if table_rows:
+            if len(table_rows) > 1:
+                header_sep = "| " + " | ".join(["---"] * len(table.columns)) + " |"
+                table_rows.insert(1, header_sep)
+            paragraphs.append("\n".join(table_rows))
+
+    return "\n\n".join(paragraphs)
+
+
 def extract_and_process_document(file_url: str, document_id: str, filename: str):
     print(f"Starting extraction for document {document_id} ({filename}) from {file_url}")
     update_status(document_id, 'extracting')
@@ -114,22 +194,20 @@ def extract_and_process_document(file_url: str, document_id: str, filename: str)
     # 2. Extract text with format-specific handling and timeouts
     try:
         if ext == 'pdf':
-            with fitz.open(stream=file_bytes, filetype="pdf") as doc:
-                for page in doc:
-                    text += page.get_text()
-                
-                # Fallback to Tesseract OCR if extracted text is minimal (e.g. scanned image-based PDF)
-                if len(text.strip()) < 100:
-                    print("PDF text is minimal (<100 chars), running OCR fallback...")
-                    text = ""
-                    # Cap OCR to first 15 pages to guarantee reasonable turnaround
+            text = extract_pdf_structured_text(file_bytes)
+            
+            # Fallback to Tesseract OCR if extracted text is minimal (e.g. scanned image-based PDF)
+            if len(text.strip()) < 100:
+                print("PDF text is minimal (<100 chars), running OCR fallback...")
+                text = ""
+                with fitz.open(stream=file_bytes, filetype="pdf") as doc:
                     max_pages = min(len(doc), 15)
                     for i in range(max_pages):
                         try:
                             pix = doc[i].get_pixmap(dpi=150)
                             img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
                             page_text = pytesseract.image_to_string(img, timeout=20)
-                            text += page_text + "\n"
+                            text += page_text + "\n\n"
                         except pytesseract.pytesseract.TesseractTimeoutError:
                             print(f"PDF OCR page {i+1} timed out, skipping")
                         except Exception as page_err:
@@ -176,11 +254,9 @@ def extract_and_process_document(file_url: str, document_id: str, filename: str)
                 return
 
         elif ext in ['doc', 'docx']:
-            print("Extracting text from word document...")
+            print("Extracting text from word document with structured markdown...")
             if docx:
-                doc = docx.Document(io.BytesIO(file_bytes))
-                for para in doc.paragraphs:
-                    text += para.text + "\n"
+                text = extract_docx_structured_text(file_bytes)
             else:
                 print("python-docx not installed, cannot extract docx")
                 update_status(document_id, 'error', "Word document extractor is not installed on the server.")
@@ -276,8 +352,15 @@ def extract_and_process_document(file_url: str, document_id: str, filename: str)
                     last_progress = progress_percent
 
             cur.execute(
-                "UPDATE user_documents SET status = 'completed', progress = 100, error_message = NULL WHERE id = %s;",
-                (document_id,),
+                """
+                UPDATE user_documents 
+                SET status = 'completed', progress = 100, error_message = NULL,
+                    extracted_text = %s,
+                    canvas_content = COALESCE(canvas_content, %s),
+                    canvas_updated_at = NOW()
+                WHERE id = %s;
+                """,
+                (clean_text, clean_text, document_id),
             )
             conn.commit()
             print(f"Successfully processed and embedded {total_chunks} chunks for {document_id}")
@@ -287,3 +370,73 @@ def extract_and_process_document(file_url: str, document_id: str, filename: str)
     finally:
         if 'conn' in locals() and conn:
             conn.close()
+
+
+def reindex_document_text(document_id: str, new_text: str) -> dict:
+    """Re-chunks and re-embeds updated canvas document text in PostgreSQL."""
+    clean_text = (new_text or "").strip()
+    if not clean_text:
+        return {"status": "error", "message": "Document text is empty"}
+
+    chunks = chunk_text(clean_text, chunk_size=350, overlap=50)
+    if not chunks:
+        return {"status": "error", "message": "No chunks generated"}
+
+    model = get_model()
+    if not model:
+        return {"status": "error", "message": "Embedding model unavailable"}
+
+    conn = psycopg2.connect(DEFAULT_DB_URL)
+    try:
+        from psycopg2.extras import execute_values
+        with conn.cursor() as cur:
+            # Remove previous chunks for this user document
+            cur.execute("DELETE FROM document_chunks WHERE parent_id = %s AND parent_type = 'user_document';", (document_id,))
+            
+            total_chunks = len(chunks)
+            batch_size = 16
+            for batch_start in range(0, total_chunks, batch_size):
+                batch_chunks = chunks[batch_start:batch_start + batch_size]
+                passages = [
+                    f"passage: {c}" if "e5" in EMBEDDING_MODEL_NAME.lower() else c
+                    for c in batch_chunks
+                ]
+                embeddings = model.encode(passages, batch_size=batch_size, normalize_embeddings=True).tolist()
+                rows = [
+                    (
+                        f"{document_id}_c{batch_start + idx}",
+                        "user_document",
+                        document_id,
+                        batch_chunks[idx],
+                        embeddings[idx],
+                    )
+                    for idx in range(len(batch_chunks))
+                ]
+                execute_values(
+                    cur,
+                    """
+                    INSERT INTO document_chunks (chunk_id, parent_type, parent_id, content, embedding)
+                    VALUES %s
+                    ON CONFLICT (chunk_id) DO UPDATE SET content = EXCLUDED.content, embedding = EXCLUDED.embedding;
+                    """,
+                    rows,
+                    template="(%s, %s, %s, %s, %s::vector)",
+                )
+
+            # Update document canvas metadata
+            cur.execute(
+                """
+                UPDATE user_documents 
+                SET canvas_content = %s, canvas_updated_at = NOW() 
+                WHERE id = %s;
+                """,
+                (clean_text, document_id),
+            )
+            conn.commit()
+            print(f"Re-indexed {total_chunks} chunks for document {document_id}")
+            return {"status": "completed", "total_chunks": total_chunks}
+    except Exception as e:
+        print(f"Error re-indexing document {document_id}: {e}")
+        return {"status": "error", "message": str(e)}
+    finally:
+        conn.close()

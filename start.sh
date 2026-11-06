@@ -10,6 +10,16 @@ if [ -f "${ROOT_DIR}/.env" ]; then
   source "${ROOT_DIR}/.env" 2>/dev/null || true
   set +a
 fi
+
+# Ensure local timezone is configured for all child processes and logs
+if [ -z "${TZ:-}" ]; then
+  DETECTED_TZ=$(timedatectl show -p Timezone --value 2>/dev/null || readlink /etc/localtime 2>/dev/null | sed 's#.*/zoneinfo/##' || cat /etc/timezone 2>/dev/null || true)
+  if [ -n "$DETECTED_TZ" ]; then
+    export TZ="$DETECTED_TZ"
+  else
+    export TZ="Asia/Manila"
+  fi
+fi
 LOG_DIR="${ROOT_DIR}/.logs"
 mkdir -p "${LOG_DIR}"
 
@@ -227,6 +237,7 @@ start_frontend() {
   setsid bash -c "
     echo \$\$ > '${FRONTEND_PID_FILE}'
     cd '${ROOT_DIR}/frontend' || exit 1
+    export TZ='${TZ}'
     export FORCE_COLOR=1
     export COLORTERM=truecolor
     export NEXT_TELEMETRY_DISABLED=1
@@ -242,6 +253,7 @@ start_backend() {
   setsid bash -c "
     echo \$\$ > '${BACKEND_PID_FILE}'
     cd '${ROOT_DIR}/backend-node' || exit 1
+    export TZ='${TZ}'
     export FORCE_COLOR=1
     export COLORTERM=truecolor
     exec npm run dev
@@ -256,6 +268,7 @@ start_python() {
   setsid bash -c "
     echo \$\$ > '${PYTHON_PID_FILE}'
     cd '${ROOT_DIR}/service-rag-python' || exit 1
+    export TZ='${TZ}'
     if [ -d '.venv' ]; then
       source .venv/bin/activate
     elif [ -d 'venv' ]; then
@@ -284,10 +297,11 @@ start_python() {
 
 start_tunnel() {
   rotate_log_if_large "${TUNNEL_LOG}"
-  echo -e "${YELLOW}[+] Starting Azure Dev Tunnel (civilex-tunnel-2)...${RESET}"
-  echo "[$(date '+%Y-%m-%d %H:%M:%S')] [SYSTEM] Starting Azure Dev Tunnel (civilex-tunnel-2)" >> "${TUNNEL_LOG}"
+  echo -e "${YELLOW}[+] Starting Azure Dev Tunnel (civilex-tunnel)...${RESET}"
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] [SYSTEM] Starting Azure Dev Tunnel (civilex-tunnel)" >> "${TUNNEL_LOG}"
   setsid bash -c "
     echo \$\$ > '${TUNNEL_PID_FILE}'
+    export TZ='${TZ}'
     exec '${ROOT_DIR}/scripts/start-azure-tunnel.sh'
   " </dev/null >> "${TUNNEL_LOG}" 2>&1 &
 }
@@ -398,7 +412,7 @@ get_tunnel_badge() {
   fi
 
   if [ -n "$pid" ] && is_pid_alive "$pid"; then
-    echo -e "${GREEN}[ONLINE] ${DIM}(civilex-tunnel-2, PID ${pid})${RESET}"
+    echo -e "${GREEN}[ONLINE] ${DIM}(civilex-tunnel, PID ${pid})${RESET}"
   else
     echo -e "${DIM}[STOPPED]${RESET}"
   fi
@@ -472,10 +486,10 @@ print_cli_status() {
   echo -e "  Python RAG (FastAPI)  : Port 8000 | PID: ${py_pid:-OFF} | Status: $(get_status_badge "$py_st" "${PYTHON_PID_FILE}" "${PYTHON_LOG}")"
   local tu_badge
   tu_badge=$(get_tunnel_badge)
-  echo -e "  Azure Dev Tunnel      : civilex-tunnel-2 | Status: ${tu_badge}"
+  echo -e "  Azure Dev Tunnel      : civilex-tunnel | Status: ${tu_badge}"
   if [[ "$tu_badge" == *"ONLINE"* ]]; then
-    echo -e "    ↳ Backend API  (Port 4000) : https://ps7cvfbz-4000.asse.devtunnels.ms"
-    echo -e "    ↳ Supabase API (Port 54321): https://ps7cvfbz-54321.asse.devtunnels.ms"
+    echo -e "    ↳ Backend API  (Port 4000) : https://w21xbn22-4000.asse.devtunnels.ms"
+    echo -e "    ↳ Supabase API (Port 54321): https://w21xbn22-54321.asse.devtunnels.ms"
   fi
 }
 
@@ -617,7 +631,7 @@ launch_tmux() {
   [ -n "$P_FE" ] && tmux select-pane -t "$P_FE" -T "[1] Frontend (Next.js :3000)"
   [ -n "$P_BE" ] && tmux select-pane -t "$P_BE" -T "[2] Backend Gateway (Node :4000)"
   [ -n "$P_PY" ] && tmux select-pane -t "$P_PY" -T "[3] Python RAG Engine (:8000)"
-  [ -n "$P_TU" ] && tmux select-pane -t "$P_TU" -T "[4] Azure Dev Tunnel (ps7cvfbz)"
+  [ -n "$P_TU" ] && tmux select-pane -t "$P_TU" -T "[4] Azure Dev Tunnel (w21xbn22)"
   [ -n "$P_CTRL" ] && tmux select-pane -t "$P_CTRL" -T "[5] CIVIL-LEX Process Controller"
 
   # Focus the interactive controller pane
@@ -653,12 +667,12 @@ stream_log() {
     "frontend") target_log="${FRONTEND_LOG}"; title="Next.js Frontend (Port 3000)" ;;
     "backend") target_log="${BACKEND_LOG}"; title="Node.js Gateway (Port 4000)" ;;
     "python") target_log="${PYTHON_LOG}"; title="Python RAG Service (Port 8000)" ;;
-    "tunnel") target_log="${TUNNEL_LOG}"; title="Azure Dev Tunnel (ps7cvfbz)" ;;
+    "tunnel") target_log="${TUNNEL_LOG}"; title="Azure Dev Tunnel (w21xbn22)" ;;
     *) echo "Unknown service: $service"; exit 1 ;;
   esac
 
   touch "$target_log"
-  echo -e "${BOLD}${CYAN}[LOG] Streaming ${title}...${RESET}"
+  echo -e "${BOLD}${CYAN}[LOG] Streaming ${title}...${RESET} ${DIM}[Timezone: ${TZ:-$(date +%Z)}]${RESET}"
   echo -e "${DIM}[File: ${target_log} │ Alt+z: Zoom │ Alt+Arrows: Navigate]${RESET}\n"
 
   while true; do
@@ -679,8 +693,8 @@ stop_tail() {
 
 colorize_logs() {
   sed -u \
-    -e 's/\(\[[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\} [0-9]\{2\}:[0-9]\{2\}:[0-9]\{2\}\]\)/\x1b[36m\x1b[2m\1\x1b[0m/g' \
-    -e 's/\([0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\} [0-9]\{2\}:[0-9]\{2\}:[0-9]\{2\}\)/\x1b[36m\x1b[2m\1\x1b[0m/g' \
+    -e 's/\(\[[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}[ T][0-9]\{2\}:[0-9]\{2\}:[0-9]\{2\}\(\.[0-9]\{3\}\)\?[^]]*\]\)/\x1b[36m\x1b[2m\1\x1b[0m/g' \
+    -e 's/\([0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}[ T][0-9]\{2\}:[0-9]\{2\}:[0-9]\{2\}\)/\x1b[36m\x1b[2m\1\x1b[0m/g' \
     -e 's/\(▲ Next.js[^\x1b]*\)/\x1b[36m\x1b[1m\1\x1b[0m/g' \
     -e 's/\(✓ Compiled[^\x1b]*\)/\x1b[32m\x1b[1m\1\x1b[0m/g' \
     -e 's/\(✓[[:space:]]\+\)/\x1b[32m\x1b[1m\1\x1b[0m/g' \
@@ -836,10 +850,10 @@ render_status_buffer() {
   buf+=" ${BOLD}1. Frontend (Next.js)${RESET}     : http://localhost:3000 | Status: $(get_status_badge "$fe_st" "${FRONTEND_PID_FILE}" "${FRONTEND_LOG}")${CLEAR_LINE}\n"
   buf+=" ${BOLD}2. Backend (Node.js)${RESET}     : http://localhost:4000 | Status: $(get_status_badge "$be_st" "${BACKEND_PID_FILE}" "${BACKEND_LOG}")${CLEAR_LINE}\n"
   buf+=" ${BOLD}3. RAG Service (Python)${RESET}  : http://localhost:8000 | Status: $(get_status_badge "$py_st" "${PYTHON_PID_FILE}" "${PYTHON_LOG}")${CLEAR_LINE}\n"
-  buf+=" ${BOLD}4. Azure Dev Tunnel${RESET}      : civilex-tunnel-2 | Status: ${tu_badge}${CLEAR_LINE}\n"
+  buf+=" ${BOLD}4. Azure Dev Tunnel${RESET}      : civilex-tunnel | Status: ${tu_badge}${CLEAR_LINE}\n"
   if [[ "$tu_badge" == *"ONLINE"* ]]; then
-    buf+="    ${CYAN}↳ Backend API  (Port 4000) : https://ps7cvfbz-4000.asse.devtunnels.ms${RESET}${CLEAR_LINE}\n"
-    buf+="    ${GREEN}↳ Supabase API (Port 54321): https://ps7cvfbz-54321.asse.devtunnels.ms${RESET}${CLEAR_LINE}\n"
+    buf+="    ${CYAN}↳ Backend API  (Port 4000) : https://w21xbn22-4000.asse.devtunnels.ms${RESET}${CLEAR_LINE}\n"
+    buf+="    ${GREEN}↳ Supabase API (Port 54321): https://w21xbn22-54321.asse.devtunnels.ms${RESET}${CLEAR_LINE}\n"
   fi
   buf+="${BLUE}----------------------------------------------------------------------${RESET}${CLEAR_LINE}\n"
   buf+=" ${BOLD}Controls & Hotkeys:${RESET}${CLEAR_LINE}\n"
@@ -885,22 +899,22 @@ render_view() {
       tail_pid=$!
       ;;
     "backend")
-      echo -e "${BOLD}${GREEN}--- LIVE LOGS: BACKEND NODE (Press 's' for Status, 'q' to Quit) ---${RESET}${CLEAR_LINE}"
+      echo -e "${BOLD}${GREEN}--- LIVE LOGS: BACKEND NODE [${TZ:-$(date +%Z)}] (Press 's' for Status, 'q' to Quit) ---${RESET}${CLEAR_LINE}"
       tail -n 25 -F "${BACKEND_LOG}" | colorize_logs &
       tail_pid=$!
       ;;
     "python")
-      echo -e "${BOLD}${MAGENTA}--- LIVE LOGS: PYTHON RAG (Press 's' for Status, 'q' to Quit) ---${RESET}${CLEAR_LINE}"
+      echo -e "${BOLD}${MAGENTA}--- LIVE LOGS: PYTHON RAG [${TZ:-$(date +%Z)}] (Press 's' for Status, 'q' to Quit) ---${RESET}${CLEAR_LINE}"
       tail -n 25 -F "${PYTHON_LOG}" | colorize_logs &
       tail_pid=$!
       ;;
     "tunnel")
-      echo -e "${BOLD}${YELLOW}--- LIVE LOGS: AZURE DEV TUNNEL (Press 's' for Status, 'q' to Quit) ---${RESET}${CLEAR_LINE}"
+      echo -e "${BOLD}${YELLOW}--- LIVE LOGS: AZURE DEV TUNNEL [${TZ:-$(date +%Z)}] (Press 's' for Status, 'q' to Quit) ---${RESET}${CLEAR_LINE}"
       tail -n 25 -F "${TUNNEL_LOG}" | colorize_logs &
       tail_pid=$!
       ;;
     "combined")
-      echo -e "${BOLD}${YELLOW}--- LIVE COMBINED LOGS (Press 's' for Status, 'q' to Quit) ---${RESET}${CLEAR_LINE}"
+      echo -e "${BOLD}${YELLOW}--- LIVE COMBINED LOGS [${TZ:-$(date +%Z)}] (Press 's' for Status, 'q' to Quit) ---${RESET}${CLEAR_LINE}"
       tail -n 15 -F "${FRONTEND_LOG}" "${BACKEND_LOG}" "${PYTHON_LOG}" "${TUNNEL_LOG}" | colorize_logs &
       tail_pid=$!
       ;;

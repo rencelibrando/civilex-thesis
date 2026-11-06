@@ -49,7 +49,7 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 
-from services.document import extract_and_process_document
+from services.document import extract_and_process_document, reindex_document_text
 from services.llm_client import generate_response_stream, close_llm_clients, set_model_offline, check_model_readiness
 from services.nli import score_faithfulness_async as nli_score_faithfulness_async, score_faithfulness as nli_score_faithfulness_sync, _compute_lexical_coverage
 from services.ambiguity import detect_ambiguity, enrich_query_with_clarification
@@ -477,6 +477,354 @@ class SearchRequest(BaseModel):
     document_name: Optional[str] = None
     prior_citations: List[Dict] = []
     clarification_context: Optional[Dict] = None  # Carries user's answers to clarification questions
+    selected_text: Optional[str] = None
+    canvas_mode: bool = False
+
+class ReindexRequest(BaseModel):
+    document_id: str
+    text: str
+
+@app.post("/reindex")
+def reindex_document(request: ReindexRequest, background_tasks: BackgroundTasks):
+    background_tasks.add_task(reindex_document_text, request.document_id, request.text)
+    return {"status": "processing", "document_id": request.document_id}
+
+class ExportDocxRequest(BaseModel):
+    filename: str
+    content: str
+    signatures: Optional[Dict[str, Any]] = None
+
+class ExportPdfRequest(BaseModel):
+    filename: str
+    content: Optional[str] = None
+    html: Optional[str] = None
+    signatures: Optional[Dict[str, Any]] = None
+    margin_preset: Optional[str] = "sc_standard"
+    font_size: Optional[str] = "12pt"
+
+def generate_legal_pdf(
+    filename: str,
+    content: Optional[str] = None,
+    html: Optional[str] = None,
+    signatures: Optional[Dict[str, Any]] = None,
+    margin_preset: str = "sc_standard",
+    font_size: str = "12pt",
+) -> bytes:
+    import io
+    import pymupdf
+
+    left_pt = 108.0 if margin_preset == "sc_standard" else 72.0
+    top_pt = 72.0
+    right_pt = 540.0
+    bottom_pt = 720.0
+
+    rendered_html = html
+    if not rendered_html and content:
+        title = filename.rsplit('.', 1)[0] if '.' in filename else filename
+        safe_content = content.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+        paragraphs = [p.strip() for p in safe_content.split('\n\n') if p.strip()]
+        body_parts = []
+        for p in paragraphs:
+            body_parts.append(f"<p class='legal-body'>{p}</p>")
+        rendered_html = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="utf-8">
+          <style>
+            body {{ font-family: 'Times-Roman', serif; font-size: {font_size}; line-height: 1.5; color: #000; }}
+            .title {{ text-align: center; font-size: 14pt; font-weight: bold; margin-bottom: 16pt; text-transform: uppercase; }}
+            p.legal-body {{ text-align: justify; text-indent: 36pt; margin-bottom: 8pt; margin-top: 0; }}
+          </style>
+        </head>
+        <body>
+          <div class="title">{title}</div>
+          {''.join(body_parts)}
+        </body>
+        </html>
+        """
+
+    if not rendered_html:
+        rendered_html = f"<html><body><div class='title'>{filename}</div></body></html>"
+
+    rendered_html = re.sub(r'<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>', '', rendered_html, flags=re.IGNORECASE)
+
+    stream = io.BytesIO()
+    writer = pymupdf.DocumentWriter(stream)
+    story = pymupdf.Story(html=rendered_html)
+
+    def rectfn(rect_num, filled):
+        mediabox = pymupdf.Rect(0, 0, 612, 792)
+        rect = pymupdf.Rect(left_pt, top_pt, right_pt, bottom_pt)
+        return mediabox, rect, pymupdf.Matrix()
+
+    story.write(writer, rectfn)
+    writer.close()
+    return stream.getvalue()
+
+def generate_legal_docx(filename: str, content: str, signatures: Optional[Dict[str, Any]] = None):
+    import io
+    import base64
+    import docx
+    from docx.shared import Inches, Pt, RGBColor
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.enum.table import WD_TABLE_ALIGNMENT
+
+    doc = docx.Document()
+
+    # Supreme Court A.M. No. 11-9-4-SC margins: 1.5in left for binding, 1.0in others
+    for section in doc.sections:
+        section.top_margin = Inches(1.0)
+        section.bottom_margin = Inches(1.0)
+        section.left_margin = Inches(1.5)
+        section.right_margin = Inches(1.0)
+        section.page_width = Inches(8.5)
+        section.page_height = Inches(11.0)
+
+    # Standard legal serif styling
+    normal_style = doc.styles['Normal']
+    font = normal_style.font
+    font.name = 'Times New Roman'
+    font.size = Pt(12)
+    font.color.rgb = RGBColor(0, 0, 0)
+    normal_style.paragraph_format.line_spacing = 1.5
+    normal_style.paragraph_format.space_after = Pt(6)
+
+    paragraphs = [p.strip() for p in content.split('\n\n') if p.strip()]
+    if not paragraphs:
+        return doc
+
+    lead_keywords = [
+        'WHEREAS,', 'NOW THEREFORE,', 'NOW, THEREFORE,',
+        'IN WITNESS WHEREOF,', 'SUBSCRIBED AND SWORN', 'BEFORE ME,'
+    ]
+
+    for i, p in enumerate(paragraphs):
+        p_upper = p.upper()
+
+        # Document title
+        if i == 0 or (i < 3 and any(k in p_upper for k in ['DEED OF', 'AFFIDAVIT', 'CONTRACT OF', 'AGREEMENT', 'POWER OF ATTORNEY', 'LAST WILL', 'ACKNOWLEDGEMENT', 'PROMISSORY NOTE', 'OFFER TO', 'AUTHORITY TO'])):
+            p_para = doc.add_paragraph()
+            p_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            p_para.paragraph_format.space_before = Pt(4)
+            p_para.paragraph_format.space_after = Pt(12)
+            run = p_para.add_run(p)
+            run.bold = True
+            run.font.size = Pt(14)
+            continue
+
+        # Formal delimiters and section headings
+        if p_upper in ['KNOW ALL MEN BY THESE PRESENTS:', 'WITNESSETH;', 'WITNESSETH; THAT:', 'WITNESSETH:', '-AND-', '- AND -', 'ACKNOWLEDGMENT', 'JURAT']:
+            p_para = doc.add_paragraph()
+            p_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            p_para.paragraph_format.space_before = Pt(8)
+            p_para.paragraph_format.space_after = Pt(8)
+            run = p_para.add_run(p)
+            run.bold = True
+            continue
+
+        # Venue block
+        if 'REPUBLIC OF THE PHILIPPINES' in p_upper and 'S.S.' in p_upper:
+            p_para = doc.add_paragraph()
+            p_para.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            p_para.paragraph_format.first_line_indent = Inches(0)
+            run = p_para.add_run(p)
+            run.bold = True
+            continue
+
+        # Witness heading
+        if 'SIGNED IN THE PRESENCE OF:' in p_upper:
+            p_para = doc.add_paragraph()
+            p_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            p_para.paragraph_format.space_before = Pt(12)
+            p_para.paragraph_format.space_after = Pt(8)
+            run = p_para.add_run('SIGNED IN THE PRESENCE OF:')
+            run.bold = True
+            continue
+
+        # Notary Public text
+        if p.strip() == 'NOTARY PUBLIC':
+            p_para = doc.add_paragraph()
+            p_para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+            p_para.paragraph_format.first_line_indent = Inches(0)
+            run = p_para.add_run('NOTARY PUBLIC')
+            run.bold = True
+            continue
+
+        # Docket block
+        if 'DOC. NO.' in p_upper or 'DOC NO.' in p_upper:
+            p_para = doc.add_paragraph()
+            p_para.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            p_para.paragraph_format.first_line_indent = Inches(0)
+            p_para.paragraph_format.line_spacing = 1.15
+            run = p_para.add_run(p)
+            continue
+
+        # Signature and witness table layout
+        lines = [line.strip() for line in p.split('\n') if line.strip()]
+        has_horizontal_spacing = any('   ' in line or '\t' in line for line in lines)
+        has_underscores = any('____' in line for line in lines)
+
+        if has_underscores and has_horizontal_spacing and len(lines) >= 2:
+            table = doc.add_table(rows=0, cols=2)
+            table.alignment = WD_TABLE_ALIGNMENT.CENTER
+            table.autofit = False
+            for col in table.columns:
+                col.width = Inches(3.0)
+
+            def _extract_b64(sig_val: Any) -> Optional[bytes]:
+                if not sig_val:
+                    return None
+                data_url = sig_val.get('dataUrl', sig_val.get('data_url', '')) if isinstance(sig_val, dict) else sig_val
+                if isinstance(data_url, str) and data_url:
+                    raw_b64 = data_url.split(',', 1)[-1]
+                    try:
+                        return base64.b64decode(raw_b64)
+                    except Exception:
+                        return None
+                return None
+
+            # Insert e-signature image row if attached
+            if signatures and (signatures.get('party_1') or signatures.get('party_2')):
+                sig_img_row = table.add_row()
+                left_cell = sig_img_row.cells[0]
+                right_cell = sig_img_row.cells[1]
+                left_p = left_cell.paragraphs[0]
+                left_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                left_p.paragraph_format.space_after = Pt(0)
+                right_p = right_cell.paragraphs[0]
+                right_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                right_p.paragraph_format.space_after = Pt(0)
+
+                p1_bytes = _extract_b64(signatures.get('party_1'))
+                if p1_bytes:
+                    try:
+                        left_p.add_run().add_picture(io.BytesIO(p1_bytes), width=Inches(1.8))
+                    except Exception as err:
+                        logging.warning(f"Error embedding party_1 signature in docx: {err}")
+
+                p2_bytes = _extract_b64(signatures.get('party_2'))
+                if p2_bytes:
+                    try:
+                        right_p.add_run().add_picture(io.BytesIO(p2_bytes), width=Inches(1.8))
+                    except Exception as err:
+                        logging.warning(f"Error embedding party_2 signature in docx: {err}")
+
+            for line in lines:
+                parts = [part.strip() for part in re.split(r'\s{3,}|\t', line) if part.strip()]
+                row = table.add_row()
+                left_p = row.cells[0].paragraphs[0]
+                left_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                left_p.paragraph_format.space_after = Pt(2)
+                right_p = row.cells[1].paragraphs[0]
+                right_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                right_p.paragraph_format.space_after = Pt(2)
+
+                if len(parts) >= 2:
+                    r1 = left_p.add_run(parts[0])
+                    r2 = right_p.add_run(parts[1])
+                    if not parts[0].startswith('_') and not parts[0].startswith('('):
+                        r1.bold = True
+                    if not parts[1].startswith('_') and not parts[1].startswith('('):
+                        r2.bold = True
+                elif len(parts) == 1:
+                    r1 = left_p.add_run(parts[0])
+                    if not parts[0].startswith('_') and not parts[0].startswith('('):
+                        r1.bold = True
+            doc.add_paragraph()
+            continue
+
+        # Unilateral signature block
+        if has_underscores and not has_horizontal_spacing and len(lines) >= 2:
+            if signatures:
+                u_entry = signatures.get('party_1') or signatures.get('affiant') or signatures.get('principal') or (list(signatures.values())[0] if signatures else None)
+                u_bytes = _extract_b64(u_entry)
+                if u_bytes:
+                    try:
+                        p_sig_img = doc.add_paragraph()
+                        p_sig_img.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+                        p_sig_img.paragraph_format.space_after = Pt(0)
+                        p_sig_img.add_run().add_picture(io.BytesIO(u_bytes), width=Inches(1.8))
+                    except Exception as err:
+                        logging.warning(f"Error embedding unilateral signature in docx: {err}")
+
+            p_para = doc.add_paragraph()
+            p_para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+            p_para.paragraph_format.first_line_indent = Inches(0)
+            for line_idx, line in enumerate(lines):
+                run = p_para.add_run(line + ('\n' if line_idx < len(lines) - 1 else ''))
+                if not line.startswith('_') and not line.startswith('('):
+                    run.bold = True
+            continue
+
+        # Standard legal paragraph with justified text
+        p_para = doc.add_paragraph()
+        p_para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+        p_para.paragraph_format.first_line_indent = Inches(0.5)
+
+        matched_lead = None
+        for kw in lead_keywords:
+            if p.startswith(kw):
+                matched_lead = kw
+                break
+
+        if matched_lead:
+            r_lead = p_para.add_run(matched_lead + ' ')
+            r_lead.bold = True
+            p_para.add_run(p[len(matched_lead):].strip())
+        else:
+            p_para.add_run(p)
+
+    return doc
+
+@app.post("/export-docx")
+def export_docx(req: ExportDocxRequest):
+    import io
+    from fastapi.responses import Response
+
+    try:
+        import docx  # noqa: F401
+    except ImportError:
+        return Response(content=req.content.encode('utf-8'), media_type="text/plain; charset=utf-8")
+
+    title = req.filename.rsplit('.', 1)[0] if '.' in req.filename else req.filename
+    doc = generate_legal_docx(title, req.content, signatures=req.signatures)
+
+    file_stream = io.BytesIO()
+    doc.save(file_stream)
+    file_stream.seek(0)
+
+    safe_filename = f"{title}.docx"
+    return Response(
+        content=file_stream.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f'attachment; filename="{safe_filename}"'}
+    )
+
+@app.post("/export-pdf")
+def export_pdf(req: ExportPdfRequest):
+    from fastapi.responses import Response
+
+    try:
+        pdf_bytes = generate_legal_pdf(
+            filename=req.filename,
+            content=req.content,
+            html=req.html,
+            signatures=req.signatures,
+            margin_preset=req.margin_preset or "sc_standard",
+            font_size=req.font_size or "12pt",
+        )
+    except Exception as e:
+        logging.error(f"Error generating legal PDF: {e}")
+        return Response(status_code=500, content=f"Failed to generate PDF: {str(e)}")
+
+    title = req.filename.rsplit('.', 1)[0] if '.' in req.filename else req.filename
+    safe_filename = f"{title}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{safe_filename}"'}
+    )
 
 class CancelRequest(BaseModel):
     session_id: str
@@ -3579,6 +3927,20 @@ Document ID: {request.document_id}
 
 CONTEXT:
 {context_str}
+"""
+                    if request.selected_text or request.canvas_mode:
+                        selected_clause_str = f'\nTARGET CLAUSE TO REVISE:\n"{request.selected_text}"\n' if request.selected_text else ""
+                        system_prompt += f"""
+DOCUMENT CANVAS REVISION & EDITING PROTOCOL:
+The user wants to revise, correct, or draft an amendment for text in "{doc_display_name}".
+{selected_clause_str}
+MANDATORY CANVAS EDIT INSTRUCTION:
+1. Provide your conversational legal evaluation and Civil Code grounding as usual.
+2. Provide the exact revised or replacement clause inside a dedicated markdown code block:
+```proposed_clause
+[Write the exact revised or replacement clause text here]
+```
+Ensure the proposed_clause block contains only the clean legal text intended for the contract or document.
 """
                 elif distractor_info and distractor_info.get("is_mismatch"):
                     queried_art = distractor_info.get("queried_article", "")

@@ -74,8 +74,6 @@ interface CivilCodeTocSection {
   sample_article_id?: string;
 }
 
-type SearchCategory = "all" | "articles" | "jurisprudence" | "sessions";
-
 const CIVIL_CODE_BOOKS = [
   {
     roman: "Prelim",
@@ -131,7 +129,6 @@ export default function DashboardPage() {
   const [userName, setUserName] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [isSearchFocused, setIsSearchFocused] = useState(false);
-  const [searchCategory, setSearchCategory] = useState<SearchCategory>("all");
   const searchContainerRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [recentSessions, setRecentSessions] = useState<SessionItem[]>([]);
@@ -338,26 +335,15 @@ export default function DashboardPage() {
   }, [normalizedQuery]);
 
   const filteredMatchesCount = useMemo(() => {
-    switch (searchCategory) {
-      case "articles":
-        return activeCivilCodeArticles.length + activeCivilCodeTocSections.length + matchingBooks.length;
-      case "jurisprudence":
-        return activeJurisprudenceCases.length;
-      case "sessions":
-        return matchingSessions.length + matchingDocs.length;
-      case "all":
-      default:
-        return (
-          matchingSessions.length +
-          matchingDocs.length +
-          matchingBooks.length +
-          activeCivilCodeArticles.length +
-          activeCivilCodeTocSections.length +
-          activeJurisprudenceCases.length
-        );
-    }
+    return (
+      matchingSessions.length +
+      matchingDocs.length +
+      matchingBooks.length +
+      activeCivilCodeArticles.length +
+      activeCivilCodeTocSections.length +
+      activeJurisprudenceCases.length
+    );
   }, [
-    searchCategory,
     matchingSessions.length,
     matchingDocs.length,
     matchingBooks.length,
@@ -426,7 +412,7 @@ export default function DashboardPage() {
           <Card className="rounded-2xl border-border/80 bg-card shadow-xs hover:border-emerald-500/40 hover:shadow-sm transition-all duration-200">
             <CardContent className="p-3 sm:p-3.5 2xl:p-4 flex items-center justify-between gap-2">
               <div className="space-y-0.5 min-w-0">
-                <p className="text-[10px] sm:text-xs text-muted-foreground font-medium truncate">Documents Verified</p>
+                <p className="text-[10px] sm:text-xs text-muted-foreground font-medium truncate">Documents Analyzed</p>
                 <div className="text-base sm:text-lg 2xl:text-2xl font-bold tracking-tight text-foreground tabular-nums">
                   {isLoading ? <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" /> : docAnalysisCount}
                 </div>
@@ -479,8 +465,8 @@ export default function DashboardPage() {
           </Card>
         </div>
 
-        {/* 3. COMMAND SEARCH BAR & CATEGORY SELECTOR */}
-        <div ref={searchContainerRef} className="relative w-full z-30 space-y-2">
+        {/* 3. COMMAND SEARCH BAR */}
+        <div ref={searchContainerRef} className="relative w-full z-30">
           <div className="relative flex items-center w-full rounded-2xl border border-border/80 bg-card shadow-xs hover:border-border focus-within:border-primary/60 focus-within:ring-2 focus-within:ring-primary/20 transition-all p-1 sm:p-1.5">
             <form onSubmit={handleSearchSubmit} role="search" className="relative flex items-center w-full min-w-0">
               <Search
@@ -530,57 +516,6 @@ export default function DashboardPage() {
             </form>
           </div>
 
-          {/* Quick Category Filters */}
-          <div className="flex items-center gap-1.5 overflow-x-auto pb-1 no-scrollbar text-xs">
-            <button
-              type="button"
-              onClick={() => setSearchCategory("all")}
-              className={`px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all cursor-pointer whitespace-nowrap ${
-                searchCategory === "all"
-                  ? "bg-primary text-primary-foreground font-semibold shadow-2xs"
-                  : "bg-muted/70 text-muted-foreground hover:bg-muted hover:text-foreground"
-              }`}
-            >
-              All Sources
-            </button>
-            <button
-              type="button"
-              onClick={() => setSearchCategory("articles")}
-              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all cursor-pointer whitespace-nowrap ${
-                searchCategory === "articles"
-                  ? "bg-indigo-600 text-white font-semibold shadow-2xs"
-                  : "bg-muted/70 text-muted-foreground hover:bg-muted hover:text-foreground"
-              }`}
-            >
-              <CivilCodeCodex size={12} />
-              <span>Civil Code (R.A. 386)</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setSearchCategory("jurisprudence")}
-              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all cursor-pointer whitespace-nowrap ${
-                searchCategory === "jurisprudence"
-                  ? "bg-amber-600 text-white font-semibold shadow-2xs"
-                  : "bg-muted/70 text-muted-foreground hover:bg-muted hover:text-foreground"
-              }`}
-            >
-              <JurisprudenceGavel size={12} />
-              <span>Jurisprudence Precedents</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setSearchCategory("sessions")}
-              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all cursor-pointer whitespace-nowrap ${
-                searchCategory === "sessions"
-                  ? "bg-sky-600 text-white font-semibold shadow-2xs"
-                  : "bg-muted/70 text-muted-foreground hover:bg-muted hover:text-foreground"
-              }`}
-            >
-              <MessageSquare className="w-3 h-3" />
-              <span>Case Sessions</span>
-            </button>
-          </div>
-
           {/* Live Search Results Dropdown Overlay */}
           {showSearchResults && (
             <div className="absolute left-0 right-0 top-full mt-2 rounded-2xl bg-card border border-border shadow-2xl p-3 sm:p-4 max-h-[460px] overflow-y-auto custom-scrollbar z-50">
@@ -605,7 +540,7 @@ export default function DashboardPage() {
               )}
 
               {/* Group: Codal Articles */}
-              {(searchCategory === "all" || searchCategory === "articles") && activeCivilCodeArticles.length > 0 && (
+              {activeCivilCodeArticles.length > 0 && (
                 <div className="space-y-1.5 mb-3">
                   <div className="flex items-center justify-between px-1">
                     <p className="text-[11px] font-semibold text-amber-600 dark:text-amber-400 uppercase tracking-wider flex items-center gap-1.5">
@@ -646,11 +581,10 @@ export default function DashboardPage() {
                             </div>
                             <Badge
                               variant="outline"
-                              className={`text-[9px] py-0 px-1.5 h-3.5 font-normal shrink-0 ${
-                                art.match_type === "exact_number"
+                              className={`text-[9px] py-0 px-1.5 h-3.5 font-normal shrink-0 ${art.match_type === "exact_number"
                                   ? "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/30 font-medium"
                                   : "bg-muted text-muted-foreground"
-                              }`}
+                                }`}
                             >
                               {art.match_type === "exact_number" ? "Exact Article" : "Content Match"}
                             </Badge>
@@ -668,7 +602,7 @@ export default function DashboardPage() {
               )}
 
               {/* Group: Supreme Court Jurisprudence Cases */}
-              {(searchCategory === "all" || searchCategory === "jurisprudence") && activeJurisprudenceCases.length > 0 && (
+              {activeJurisprudenceCases.length > 0 && (
                 <div className="space-y-1.5 mb-3">
                   <div className="flex items-center justify-between px-1">
                     <p className="text-[11px] font-semibold text-amber-700 dark:text-amber-400 uppercase tracking-wider flex items-center gap-1.5">
@@ -718,7 +652,7 @@ export default function DashboardPage() {
               )}
 
               {/* Group: User Consultations & Case History */}
-              {(searchCategory === "all" || searchCategory === "sessions") && matchingSessions.length > 0 && (
+              {matchingSessions.length > 0 && (
                 <div className="space-y-1.5 mb-3">
                   <p className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider px-1">
                     Case Consultations ({matchingSessions.length})
@@ -755,11 +689,10 @@ export default function DashboardPage() {
                           </div>
                           <Badge
                             variant="outline"
-                            className={`text-[9px] py-0 px-1.5 h-3.5 font-normal shrink-0 ${
-                              isDoc
+                            className={`text-[9px] py-0 px-1.5 h-3.5 font-normal shrink-0 ${isDoc
                                 ? "bg-emerald-500/5 text-emerald-600 dark:text-emerald-400 border-emerald-500/20"
                                 : "bg-sky-500/5 text-sky-600 dark:text-sky-400 border-sky-500/20"
-                            }`}
+                              }`}
                           >
                             {isDoc ? "Audit" : "Chat"}
                           </Badge>
@@ -961,11 +894,10 @@ export default function DashboardPage() {
                                 <span>•</span>
                                 <Badge
                                   variant="outline"
-                                  className={`text-[9px] sm:text-[10px] py-0 px-1.5 h-3.5 sm:h-4 font-normal ${
-                                    isDoc
+                                  className={`text-[9px] sm:text-[10px] py-0 px-1.5 h-3.5 sm:h-4 font-normal ${isDoc
                                       ? "bg-emerald-500/5 text-emerald-600 dark:text-emerald-400 border-emerald-500/20"
                                       : "bg-sky-500/5 text-sky-600 dark:text-sky-400 border-sky-500/20"
-                                  }`}
+                                    }`}
                                 >
                                   {isDoc ? "Document Audit" : "Consultation"}
                                 </Badge>

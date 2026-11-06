@@ -12,7 +12,7 @@ CIVIL-LEX is a bilingual (English and Tagalog) legal hybrid Retrieval-Augmented 
   - *Authentication & Authorization:* Bearer JWT verification via Supabase Auth (`requireAuth` middleware) and request-scoped Supabase client creation.
   - *Reverse Proxy:* `http-proxy-middleware` forwarding streaming chat requests (`/api/chat` to Python `/search`), cancellation commands (`/api/chat/cancel` to Python `/cancel`), and storage assets (`/api/storage` to Supabase Storage).
   - *Internal Services:* Direct PostgreSQL/Supabase data access for Civil Code Table of Contents, statutory queries, jurisprudence retrieval, user session persistence, profiles, avatar in-memory caching, and presence telemetry.
-- **Secure Network Ingress:** **Microsoft Azure Dev Tunnels** (`devtunnel` CLI) securely exposing host services (Node.js API Gateway port `4000` and Supabase API port `54321`) to the cloud-hosted frontend via persistent HTTPS/WSS endpoints (`ps7cvfbz-4000.asse.devtunnels.ms` and `ps7cvfbz-54321.asse.devtunnels.ms`).
+- **Secure Network Ingress:** **Microsoft Azure Dev Tunnels** (`devtunnel` CLI) securely exposing host services (Node.js API Gateway port `4000` and Supabase API port `54321`) to the cloud-hosted frontend via persistent HTTPS/WSS endpoints (`w21xbn22-4000.asse.devtunnels.ms` and `w21xbn22-54321.asse.devtunnels.ms`).
 - **Database & Storage Engine:** Supabase PostgreSQL 15+ running in local Docker (Port `54322`).
   - *Vector Search:* `pgvector` extension supporting 768-dimensional vector cosine similarity with dedicated partial HNSW indexes.
   - *Full-Text Search:* Native PostgreSQL `tsvector` and `tsquery` utilizing the `simple` dictionary configuration with GIN indexing.
@@ -65,7 +65,7 @@ flowchart TD
 ```
 
 ### Network Configuration Details
-1. **Frontend to Gateway & Supabase:** The Next.js client deployed on **Azure Static Web Apps** transmits authenticated requests via public endpoints routed through secure **Microsoft Azure Dev Tunnels** (`ps7cvfbz-4000.asse.devtunnels.ms` into the Node.js API Gateway on Port `4000`, and `ps7cvfbz-54321.asse.devtunnels.ms` into Supabase).
+1. **Frontend to Gateway & Supabase:** The Next.js client deployed on **Azure Static Web Apps** transmits authenticated requests via public endpoints routed through secure **Microsoft Azure Dev Tunnels** (`w21xbn22-4000.asse.devtunnels.ms` into the Node.js API Gateway on Port `4000`, and `w21xbn22-54321.asse.devtunnels.ms` into Supabase).
 2. **Gateway to RAG Microservice:** The Node.js server proxies streaming endpoints (`/api/chat` -> `/search`, `/api/chat/cancel` -> `/cancel`) over internal `http://localhost:8000`, injecting authenticated user identity headers (`x-user-id`, `x-user-email`, `x-user-name`).
 3. **RAG Microservice to LLM Host:** The Python RAG service connects to the LM Studio OpenAI-compatible endpoint (`http://10.57.24.131:1234/v1`) through an isolated ZeroTier SD-WAN virtual network.
 4. **Disaster Recovery Pipeline:** The host machine executes automated backup pipelines exporting compressed schema, vector records, and storage volumes to an S3-compatible **Cloudflare R2** bucket (`civilex-db-backups`) with automated retention enforcement.

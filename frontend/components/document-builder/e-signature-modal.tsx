@@ -18,7 +18,6 @@ import {
   Eraser,
   Check,
   Trash2,
-  Sliders,
   Image as ImageIcon,
   X,
 } from "lucide-react";
@@ -67,12 +66,9 @@ export function ESignatureModal({
   const historyRef = useRef<ImageData[]>([]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  // Synchronize initial signer selection
-  useEffect(() => {
-    if (signerOptions.length > 0 && !signerOptions.some((s) => s.key === selectedSignerKey)) {
-      setSelectedSignerKey(signerOptions[0].key);
-    }
-  }, [signerOptions, selectedSignerKey]);
+  const activeSignerKey = signerOptions.some((s) => s.key === selectedSignerKey)
+    ? selectedSignerKey
+    : signerOptions[0]?.key || "party_1";
 
   // Canvas drawing setup
   const initCanvas = useCallback(() => {
@@ -266,10 +262,10 @@ export function ESignatureModal({
       finalDataUrl = uploadedPreview;
     }
 
-    const currentSigner = signerOptions.find((s) => s.key === selectedSignerKey);
-    onSaveSignature(selectedSignerKey, {
+    const currentSigner = signerOptions.find((s) => s.key === activeSignerKey);
+    onSaveSignature(activeSignerKey, {
       dataUrl: finalDataUrl,
-      signerRole: currentSigner?.label || selectedSignerKey,
+      signerRole: currentSigner?.label || activeSignerKey,
       signerName: currentSigner?.name || "",
       timestamp: new Date().toISOString(),
     });
@@ -277,7 +273,7 @@ export function ESignatureModal({
     onClose();
   };
 
-  const activeExistingSignature = signatures[selectedSignerKey];
+  const activeExistingSignature = signatures[activeSignerKey];
 
   return (
     <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
@@ -328,7 +324,7 @@ export function ESignatureModal({
             </Label>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
               {signerOptions.map((opt) => {
-                const isSelected = selectedSignerKey === opt.key;
+                const isSelected = activeSignerKey === opt.key;
                 const hasSig = Boolean(signatures[opt.key]);
 
                 return (
@@ -368,6 +364,7 @@ export function ESignatureModal({
           {activeExistingSignature && (
             <div className="p-3 rounded-xl bg-muted/40 border border-border flex items-center justify-between gap-3">
               <div className="flex items-center gap-3 min-w-0">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
                   src={activeExistingSignature.dataUrl}
                   alt="Existing Signature"
@@ -386,7 +383,7 @@ export function ESignatureModal({
                 type="button"
                 variant="outline"
                 size="sm"
-                onClick={() => onRemoveSignature(selectedSignerKey)}
+                onClick={() => onRemoveSignature(activeSignerKey)}
                 className="h-7 text-xs text-rose-600 hover:text-rose-700 hover:bg-rose-500/10 border-rose-500/30 gap-1 cursor-pointer shrink-0"
               >
                 <Trash2 className="w-3 h-3" />
@@ -542,6 +539,7 @@ export function ESignatureModal({
               >
                 {uploadedPreview ? (
                   <div className="flex flex-col items-center gap-2">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img
                       src={uploadedPreview}
                       alt="Uploaded Signature Preview"

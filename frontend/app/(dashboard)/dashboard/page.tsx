@@ -5,6 +5,7 @@ import Link from "next/link";
 import {
   Search,
   FileText,
+  FilePenLine,
   MessageSquare,
   ArrowRight,
   Clock,
@@ -28,6 +29,7 @@ import { supabase } from "@/lib/supabase";
 import { apiUrl } from "@/lib/config";
 import { getCachedProfile } from "@/lib/auth-storage";
 import { JurisprudenceModal, JurisprudenceCase } from "@/components/jurisprudence-modal";
+import { DashboardAnalyticsSection } from "@/components/analytics/dashboard-analytics-section";
 import {
   getDashboardSubtitle,
   getActionCardCopy,
@@ -127,6 +129,7 @@ const CIVIL_CODE_BOOKS = [
 
 export default function DashboardPage() {
   const [userName, setUserName] = useState("");
+  const [accessToken, setAccessToken] = useState<string | null | undefined>(undefined);
   const [searchQuery, setSearchQuery] = useState("");
   const [isSearchFocused, setIsSearchFocused] = useState(false);
   const searchContainerRef = useRef<HTMLDivElement>(null);
@@ -207,11 +210,13 @@ export default function DashboardPage() {
           data: { session },
         } = await supabase.auth.getSession();
         if (!session) {
+          setAccessToken(null);
           setIsLoading(false);
           return;
         }
 
         const token = session.access_token;
+        setAccessToken(token);
         const cached = getCachedProfile(session.user.id);
         if (cached && cached.id === session.user.id && cached.full_name) {
           setUserName(cached.full_name);
@@ -263,6 +268,7 @@ export default function DashboardPage() {
       } catch (err) {
         console.error("Failed to load dashboard data:", err);
       } finally {
+        setAccessToken((prev) => (prev === undefined ? null : prev));
         setIsLoading(false);
       }
     }
@@ -368,11 +374,15 @@ export default function DashboardPage() {
   }, [recentSessions, normalizedQuery]);
 
   const consultationCount = useMemo(() => {
-    return recentSessions.filter((s) => s.session_type !== "document" && !s.document_id).length;
+    return recentSessions.filter(
+      (s) => s.session_type !== "document" && s.session_type !== "document_analysis" && !s.document_id
+    ).length;
   }, [recentSessions]);
 
   const docAnalysisCount = useMemo(() => {
-    const sessionDocs = recentSessions.filter((s) => s.session_type === "document" || s.document_id).length;
+    const sessionDocs = recentSessions.filter(
+      (s) => s.session_type === "document" || s.session_type === "document_analysis" || s.document_id
+    ).length;
     return Math.max(sessionDocs, userDocs.length);
   }, [recentSessions, userDocs]);
 
@@ -659,8 +669,11 @@ export default function DashboardPage() {
                   </p>
                   <div className="space-y-1">
                     {matchingSessions.slice(0, 5).map((item) => {
-                      const isDoc = item.session_type === "document" || item.document_id;
-                      const linkHref = isDoc ? `/research?session=${item.id}` : `/chat?session=${item.id}`;
+                      const isDoc =
+                        item.session_type === "document" ||
+                        item.session_type === "document_analysis" ||
+                        Boolean(item.document_id);
+                      const linkHref = `/chat?session=${item.id}`;
                       return (
                         <Link
                           key={item.id}
@@ -744,9 +757,7 @@ export default function DashboardPage() {
         <div className="grid grid-cols-1 xl:grid-cols-12 gap-3.5 xl:gap-4.5 2xl:gap-6 items-stretch">
           {/* LEFT 8 COLUMNS: CORE WORKSPACES & RECENT ACTIVITY */}
           <div className="xl:col-span-8 space-y-3.5 xl:space-y-4.5 min-h-full">
-            {/* Core Action Cards */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5 sm:gap-3 2xl:gap-4">
-              {/* Card 1: Legal Chat */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 sm:gap-3 2xl:gap-4">
               <Card className="rounded-2xl border-border/80 bg-card shadow-xs hover:shadow-md hover:border-sky-500/40 transition-all duration-200 flex flex-col justify-between group">
                 <CardHeader className="p-3.5 sm:p-4 pb-2 sm:pb-2.5">
                   <div className="flex items-center justify-between mb-2">
@@ -773,7 +784,58 @@ export default function DashboardPage() {
                 </CardContent>
               </Card>
 
-              {/* Card 2: Civil Code Browser */}
+              <Card className="rounded-2xl border-border/80 bg-card shadow-xs hover:shadow-md hover:border-emerald-500/40 transition-all duration-200 flex flex-col justify-between group">
+                <CardHeader className="p-3.5 sm:p-4 pb-2 sm:pb-2.5">
+                  <div className="flex items-center justify-between mb-2">
+                    <LegalShieldCheck size={20} className="text-emerald-600 dark:text-emerald-400 shrink-0" aria-hidden="true" />
+                    <Badge variant="secondary" className="text-[10px] font-medium py-0 px-2 h-4.5">
+                      OCR &amp; Risk Scan
+                    </Badge>
+                  </div>
+                  <CardTitle className="text-sm sm:text-base 2xl:text-lg text-foreground font-semibold">
+                    {actionCards.docAnalysis.title}
+                  </CardTitle>
+                  <CardDescription className="text-xs leading-relaxed text-muted-foreground line-clamp-2">
+                    {actionCards.docAnalysis.description}
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="p-3.5 sm:p-4 pt-0">
+                  <Link
+                    href="/chat?upload=1"
+                    className="inline-flex items-center justify-between font-medium w-full text-xs text-emerald-700 dark:text-emerald-300 bg-emerald-500/10 dark:bg-emerald-500/15 hover:bg-emerald-600 hover:text-white dark:hover:bg-emerald-600 dark:hover:text-white transition-all rounded-xl h-8.5 px-3 cursor-pointer"
+                  >
+                    <span>{actionCards.docAnalysis.cta}</span>
+                    <ArrowRight strokeWidth={1.75} className="w-3.5 h-3.5 ml-1 group-hover:translate-x-0.5 transition-transform" aria-hidden="true" />
+                  </Link>
+                </CardContent>
+              </Card>
+
+              <Card className="rounded-2xl border-border/80 bg-card shadow-xs hover:shadow-md hover:border-amber-500/40 transition-all duration-200 flex flex-col justify-between group">
+                <CardHeader className="p-3.5 sm:p-4 pb-2 sm:pb-2.5">
+                  <div className="flex items-center justify-between mb-2">
+                    <FilePenLine strokeWidth={1.75} className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0" aria-hidden="true" />
+                    <Badge variant="secondary" className="text-[10px] font-medium py-0 px-2 h-4.5">
+                      25 Legal Formats
+                    </Badge>
+                  </div>
+                  <CardTitle className="text-sm sm:text-base 2xl:text-lg text-foreground font-semibold">
+                    {actionCards.docBuilder.title}
+                  </CardTitle>
+                  <CardDescription className="text-xs leading-relaxed text-muted-foreground line-clamp-2">
+                    {actionCards.docBuilder.description}
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="p-3.5 sm:p-4 pt-0">
+                  <Link
+                    href="/document-builder"
+                    className="inline-flex items-center justify-between font-medium w-full text-xs text-amber-700 dark:text-amber-300 bg-amber-500/10 dark:bg-amber-500/15 hover:bg-amber-600 hover:text-white dark:hover:bg-amber-600 dark:hover:text-white transition-all rounded-xl h-8.5 px-3 cursor-pointer"
+                  >
+                    <span>{actionCards.docBuilder.cta}</span>
+                    <ArrowRight strokeWidth={1.75} className="w-3.5 h-3.5 ml-1 group-hover:translate-x-0.5 transition-transform" aria-hidden="true" />
+                  </Link>
+                </CardContent>
+              </Card>
+
               <Card className="rounded-2xl border-border/80 bg-card shadow-xs hover:shadow-md hover:border-indigo-500/40 transition-all duration-200 flex flex-col justify-between group">
                 <CardHeader className="p-3.5 sm:p-4 pb-2 sm:pb-2.5">
                   <div className="flex items-center justify-between mb-2">
@@ -795,33 +857,6 @@ export default function DashboardPage() {
                     className="inline-flex items-center justify-between font-medium w-full text-xs text-indigo-700 dark:text-indigo-300 bg-indigo-500/10 dark:bg-indigo-500/15 hover:bg-indigo-600 hover:text-white dark:hover:bg-indigo-600 dark:hover:text-white transition-all rounded-xl h-8.5 px-3 cursor-pointer"
                   >
                     <span>{actionCards.civilCode.cta}</span>
-                    <ArrowRight strokeWidth={1.75} className="w-3.5 h-3.5 ml-1 group-hover:translate-x-0.5 transition-transform" aria-hidden="true" />
-                  </Link>
-                </CardContent>
-              </Card>
-
-              {/* Card 3: Document Analysis */}
-              <Card className="rounded-2xl border-border/80 bg-card shadow-xs hover:shadow-md hover:border-emerald-500/40 transition-all duration-200 flex flex-col justify-between group">
-                <CardHeader className="p-3.5 sm:p-4 pb-2 sm:pb-2.5">
-                  <div className="flex items-center justify-between mb-2">
-                    <LegalShieldCheck size={20} className="text-emerald-600 dark:text-emerald-400 shrink-0" aria-hidden="true" />
-                    <Badge variant="secondary" className="text-[10px] font-medium py-0 px-2 h-4.5">
-                      OCR &amp; Risk Scan
-                    </Badge>
-                  </div>
-                  <CardTitle className="text-sm sm:text-base 2xl:text-lg text-foreground font-semibold">
-                    {actionCards.docAnalysis.title}
-                  </CardTitle>
-                  <CardDescription className="text-xs leading-relaxed text-muted-foreground line-clamp-2">
-                    {actionCards.docAnalysis.description}
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="p-3.5 sm:p-4 pt-0">
-                  <Link
-                    href="/research"
-                    className="inline-flex items-center justify-between font-medium w-full text-xs text-emerald-700 dark:text-emerald-300 bg-emerald-500/10 dark:bg-emerald-500/15 hover:bg-emerald-600 hover:text-white dark:hover:bg-emerald-600 dark:hover:text-white transition-all rounded-xl h-8.5 px-3 cursor-pointer"
-                  >
-                    <span>{actionCards.docAnalysis.cta}</span>
                     <ArrowRight strokeWidth={1.75} className="w-3.5 h-3.5 ml-1 group-hover:translate-x-0.5 transition-transform" aria-hidden="true" />
                   </Link>
                 </CardContent>
@@ -864,8 +899,11 @@ export default function DashboardPage() {
                 ) : filteredSessions.length > 0 ? (
                   <div className="space-y-2">
                     {filteredSessions.map((item) => {
-                      const isDoc = item.session_type === "document" || item.document_id;
-                      const linkHref = isDoc ? `/research?session=${item.id}` : `/chat?session=${item.id}`;
+                      const isDoc =
+                        item.session_type === "document" ||
+                        item.session_type === "document_analysis" ||
+                        Boolean(item.document_id);
+                      const linkHref = `/chat?session=${item.id}`;
 
                       return (
                         <Link
@@ -970,7 +1008,7 @@ export default function DashboardPage() {
                         <span>Start Consultation</span>
                       </Link>
                       <Link
-                        href="/research"
+                        href="/chat?upload=1"
                         className={buttonVariants({
                           variant: "outline",
                           size: "sm",
@@ -1041,6 +1079,9 @@ export default function DashboardPage() {
             </Card>
           </div>
         </div>
+
+        {/* 5. LEGAL INTELLIGENCE & USAGE ANALYTICS */}
+        <DashboardAnalyticsSection accessToken={accessToken} />
       </div>
       <JurisprudenceModal
         isOpen={!!selectedCase}

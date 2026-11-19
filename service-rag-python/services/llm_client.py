@@ -97,6 +97,53 @@ async def close_llm_clients():
     if _sync_client and not _sync_client.is_closed:
         _sync_client.close()
 
+def build_llm_messages(
+    system_prompt: str,
+    user_query: str,
+    history: Optional[list] = None,
+) -> list[dict]:
+    """Builds a cleanly alternating system/user/assistant message list for LM Studio."""
+    scope_refusal_snippet = "I am programmed only to assist with matters related to the Philippine Civil Code"
+    clean_history = []
+    for msg in history or []:
+        content = msg.get("content", "").strip() if isinstance(msg, dict) else ""
+        if not content:
+            continue
+        if msg.get("role") == "assistant" and scope_refusal_snippet in content:
+            continue
+        role = msg.get("role", "user")
+        if role not in ("user", "assistant"):
+            role = "user"
+        clean_history.append({"role": role, "content": content})
+    clean_history = clean_history[-12:]
+
+    if clean_history and clean_history[-1]["role"] == "user":
+        last_user_text = clean_history[-1]["content"].strip().lower()
+        query_text = user_query.strip().lower()
+        if (
+            last_user_text == query_text
+            or query_text.endswith(last_user_text)
+            or last_user_text in query_text
+        ):
+            clean_history.pop()
+
+    # Auto-analyzed document sessions start with an assistant message, so anchor with a user turn for Jinja templates.
+    if clean_history and clean_history[0]["role"] == "assistant":
+        clean_history.insert(0, {"role": "user", "content": "Please analyze the attached legal document."})
+
+    normalized_history = []
+    for msg in clean_history:
+        if normalized_history and normalized_history[-1]["role"] == msg["role"]:
+            normalized_history[-1]["content"] += f"\n\n{msg['content']}"
+        else:
+            normalized_history.append(dict(msg))
+
+    if normalized_history and normalized_history[-1]["role"] == "user":
+        normalized_history.pop()
+
+    return [{"role": "system", "content": system_prompt}, *normalized_history, {"role": "user", "content": user_query}]
+
+
 async def generate_response_stream(
     system_prompt: str,
     user_query: str,
@@ -105,33 +152,7 @@ async def generate_response_stream(
     repetition_penalty: float = 1.15,
     finish_info: dict | None = None,
 ):
-    if history is None:
-        history = []
-
-    # Window history to last 12 messages and strip previous scope refusals
-    SCOPE_REFUSAL_SNIPPET = "I am programmed only to assist with matters related to the Philippine Civil Code"
-    clean_history = []
-    for msg in history:
-        content = msg.get("content", "").strip() if isinstance(msg, dict) else ""
-        if content:
-            if msg.get("role") == "assistant" and SCOPE_REFUSAL_SNIPPET in content:
-                continue
-            clean_history.append({"role": msg.get("role", "user"), "content": content})
-    clean_history = clean_history[-12:]
-
-    # Deduplicate consecutive user turn if already present
-    if clean_history and clean_history[-1]["role"] == "user":
-        last_user_text = clean_history[-1]["content"].strip().lower()
-        query_text = user_query.strip().lower()
-        if (last_user_text == query_text or 
-            query_text.endswith(last_user_text) or 
-            last_user_text in query_text):
-            clean_history.pop()
-
-    messages = [{"role": "system", "content": system_prompt}]
-    for msg in clean_history:
-        messages.append({"role": msg["role"], "content": msg["content"]})
-    messages.append({"role": "user", "content": user_query})
+    messages = build_llm_messages(system_prompt, user_query, history)
 
     url = f"{LM_STUDIO_URL.rstrip('/')}/chat/completions"
     payload = {

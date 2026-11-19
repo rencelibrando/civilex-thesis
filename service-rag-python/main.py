@@ -49,11 +49,15 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 
-from services.document import extract_and_process_document, reindex_document_text
+from services.document import extract_and_process_document, reindex_document_text, set_shared_model
 from services.llm_client import generate_response_stream, close_llm_clients, set_model_offline, check_model_readiness
 from services.nli import score_faithfulness_async as nli_score_faithfulness_async, score_faithfulness as nli_score_faithfulness_sync, _compute_lexical_coverage
 from services.ambiguity import detect_ambiguity, enrich_query_with_clarification
-from services.domain_router import DomainRouter
+from services.domain_router import (
+    DomainRouter,
+    classify_document_domain,
+    set_shared_domain_router,
+)
 from sentence_transformers import SentenceTransformer
 
 # Load environment variables
@@ -113,8 +117,10 @@ app = FastAPI(title="CIVIL-LEX RAG Service API", lifespan=lifespan)
 # Initialize embedding model (global so it doesn't reload per request)
 logging.info("Loading SentenceTransformer embedding model...")
 embedder = SentenceTransformer(os.getenv("EMBEDDING_MODEL_NAME", "intfloat/multilingual-e5-base"))
+set_shared_model(embedder)
 logging.info("Initializing semantic domain router centroids...")
 domain_router = DomainRouter(embedder)
+set_shared_domain_router(domain_router)
 
 # Setup CORS
 app.add_middleware(
@@ -467,7 +473,7 @@ class ChatMessage(BaseModel):
     content: str
 
 class SearchRequest(BaseModel):
-    query: str
+    query: str = ""
     original_query: Optional[str] = None
     session_id: Optional[str] = None
     # Deprecated client-supplied memory (kept as fallback only). The server now
@@ -479,6 +485,7 @@ class SearchRequest(BaseModel):
     clarification_context: Optional[Dict] = None  # Carries user's answers to clarification questions
     selected_text: Optional[str] = None
     canvas_mode: bool = False
+    auto_analyze: bool = False
 
 class ReindexRequest(BaseModel):
     document_id: str
@@ -599,6 +606,18 @@ def generate_legal_docx(filename: str, content: str, signatures: Optional[Dict[s
         'IN WITNESS WHEREOF,', 'SUBSCRIBED AND SWORN', 'BEFORE ME,'
     ]
 
+    def _extract_b64(sig_val: Any) -> Optional[bytes]:
+        if not sig_val:
+            return None
+        data_url = sig_val.get('dataUrl', sig_val.get('data_url', '')) if isinstance(sig_val, dict) else sig_val
+        if isinstance(data_url, str) and data_url:
+            raw_b64 = data_url.split(',', 1)[-1]
+            try:
+                return base64.b64decode(raw_b64)
+            except Exception:
+                return None
+        return None
+
     for i, p in enumerate(paragraphs):
         p_upper = p.upper()
 
@@ -671,18 +690,6 @@ def generate_legal_docx(filename: str, content: str, signatures: Optional[Dict[s
             table.autofit = False
             for col in table.columns:
                 col.width = Inches(3.0)
-
-            def _extract_b64(sig_val: Any) -> Optional[bytes]:
-                if not sig_val:
-                    return None
-                data_url = sig_val.get('dataUrl', sig_val.get('data_url', '')) if isinstance(sig_val, dict) else sig_val
-                if isinstance(data_url, str) and data_url:
-                    raw_b64 = data_url.split(',', 1)[-1]
-                    try:
-                        return base64.b64decode(raw_b64)
-                    except Exception:
-                        return None
-                return None
 
             # Insert e-signature image row if attached
             if signatures and (signatures.get('party_1') or signatures.get('party_2')):
@@ -999,153 +1006,7 @@ def get_language_directive(lang: str) -> str:
 PHILIPPINE_LEGAL_EXPANSIONS: List[tuple] = []
 
 # Query Intent Classification & Domain Boundary Gating (Semantic Router)
-# Domain classification is handled natively by services/domain_router.DomainRouter
-
-
-CIVIL_LAW_DOC_PATTERNS = [
-    # Primary Civil Document Headers / Agreements (Weight = 3)
-    (r'\b(?:contract\s+of\s+lease|lease\s+contract|lease\s+agreement|rental\s+agreement|contract\s+of\s+rent|tenancy\s+agreement)\b', 3),
-    (r'\b(?:contract\s+of\s+sale|deed\s+of\s+(?:absolute\s+)?sale|conditional\s+sale|contract\s+to\s+sell|deed\s+of\s+donation|deed\s+of\s+assignment|deed\s+of\s+conveyance|deed\s+of\s+transfer)\b', 3),
-    (r'\b(?:loan\s+agreement|promissory\s+note|contract\s+of\s+loan|acknowledgment\s+of\s+debt|kasulatan\s+ng\s+utang|pautang)\b', 3),
-    (r'\b(?:real\s+estate\s+mortgage|chattel\s+mortgage|contract\s+of\s+mortgage|mortgage\s+contract|antichresis|contract\s+of\s+pledge|pactum\s+commissorium)\b', 3),
-    (r'\b(?:last\s+will\s+and\s+testament|holographic\s+will|notarial\s+will|testamento|habilin|probate\s+of\s+will)\b', 3),
-    (r'\b(?:extrajudicial\s+settlement|extra-judicial\s+settlement|settlement\s+of\s+estate|partition\s+of\s+(?:real\s+)?estate|deed\s+of\s+extrajudicial|kasunduan\s+sa\s+paghahati)\b', 3),
-    (r'\b(?:compromise\s+agreement|amicable\s+settlement|release\s+and\s+quitclaim|waiver\s+and\s+quitclaim|release\s+of\s+claims|waiver\s+of\s+rights|kasunduan\s+ng\s+pag-aayos)\b', 3),
-    (r'\b(?:special\s+power\s+of\s+attorney|general\s+power\s+of\s+attorney|\bspa\b|attorney-in-fact|principal\s+and\s+agent)\b', 3),
-    (r'\b(?:marriage\s+settlement|prenuptial\s+agreement|marriage\s+contract|absolute\s+community\s+of\s+property|conjugal\s+partnership\s+of\s+gains|declaration\s+of\s+(?:absolute\s+)?nullity\s+of\s+marriage|psychological\s+incapacity|legal\s+separation|support\s+pendente\s+lite)\b', 3),
-    (r'\b(?:affidavit\s+of\s+loss|affidavit\s+of\s+undertaking|affidavit\s+of\s+two\s+disinterested\s+persons|affidavit\s+of\s+guardianship|affidavit\s+of\s+support\s+and\s+consent|affidavit\s+of\s+adverse\s+claim|affidavit\s+of\s+self-adjudication)\b', 3),
-    (r'\b(?:memorandum\s+of\s+agreement|\bmoa\b|memorandum\s+of\s+understanding|\bmou\b|service\s+agreement|consultancy\s+agreement|independent\s+contractor\s+agreement|retainer\s+agreement)\b', 2),
-    (r'\b(?:notice\s+to\s+vacate|formal\s+demand\s+letter|demand\s+to\s+pay|demand\s+to\s+vacate|demand\s+letter|final\s+demand)\b', 3),
-    (r'\b(?:complaint\s+for\s+sum\s+of\s+money|complaint\s+for\s+damages|unlawful\s+detainer\s+complaint|forcible\s+entry\s+complaint|petition\s+for\s+declaration\s+of\s+nullity|petition\s+for\s+probate|action\s+for\s+reconveyance|quieting\s+of\s+title)\b', 3),
-    (r'\b(?:katarungang\s+pambarangay|certificate\s+to\s+file\s+action|lupon\s+tagapamayapa|pangkat\s+ng\s+tagapagkasundo|barangay\s+conciliation)\b', 3),
-    # Codified Civil Law Provisions & Doctrine
-    (r'\b(?:civil\s+code\s+of\s+the\s+philippines|republic\s+act\s+(?:no\.?\s*)?386|\bra\s*386\b)\b', 3),
-    (r'\b(?:family\s+code\s+of\s+the\s+philippines|executive\s+order\s*(?:no\.?\s*)?209|\beo\s*209\b)\b', 3),
-    (r'\b(?:lessor\b|lessee\b|vendor\b|vendee\b|mortgagor\b|mortgagee\b|pledgor\b|pledgee\b|testator\b|testatrix\b|compulsory\s+heir|legitime\b)\b', 2),
-    (r'\b(?:quasi[- ]delict|torts?\s+and\s+damages|vicarious\s+liability|actual\s+damages|moral\s+damages|exemplary\s+damages|liquidated\s+damages|nominal\s+damages)\b', 1),
-    (r'\b(?:easement\s+of\s+right\s+of\s+way|builder\s+in\s+good\s+faith|quieting\s+of\s+title|usufruct|accession|co-ownership)\b', 2),
-    (r'\b(?:know\s+all\s+men\s+by\s+these\s+presents|in\s+witness\s+whereof|subscribed\s+and\s+sworn\s+to\s+before\s+me|notary\s+public|doc\.\s*no\.\s*\d+)\b', 1)
-]
-
-NON_CIVIL_LEGAL_DOC_DOMAINS = [
-    {
-        "domain": "Philippine Criminal Law (Revised Penal Code / Special Penal Laws / DOJ National Prosecution Service / PNP)",
-        "primary": [
-            r'\b(?:revised\s+penal\s+code|act\s+no\.?\s*3815|\brpc\b|special\s+penal\s+laws?)\b',
-            r'\b(?:complaint-affidavit|criminal\s+complaint|information\s+filed\s+in\s+court|police\s+blotter|inquest\s+resolution|inquest\s+proceedings?|preliminary\s+investigation|probable\s+cause|warrant\s+of\s+arrest|search\s+warrant|plea\s+bargaining|bail\s+bond|criminal\s+case\s+no\.?)\b',
-            r'\b(?:office\s+of\s+the\s+city\s+prosecutor|office\s+of\s+the\s+provincial\s+prosecutor|national\s+prosecution\s+service|department\s+of\s+justice|pnp-cidg|philippine\s+national\s+police|national\s+bureau\s+of\s+investigation)\b',
-            r'\b(?:comprehensive\s+dangerous\s+drugs\s+act|ra\s*9165|comprehensive\s+firearms|ra\s*10591|anti-carnapping|ra\s*10883|anti-fencing\s+law|pd\s*1612|anti-graft|ra\s*3019)\b'
-        ],
-        "secondary": [
-            r'\b(?:homicide|murder|robbery|theft|estafa|swindling|rape|kidnapping|illegal\s+detention|parricide|infanticide|rebellion|sedition|shabu|marijuana|buy-bust|accused|complainant)\b'
-        ]
-    },
-    {
-        "domain": "Philippine Labor Law (Presidential Decree No. 442 - Labor Code / DOLE / NLRC)",
-        "primary": [
-            r'\b(?:labor\s+code\s+of\s+the\s+philippines|presidential\s+decree\s+(?:no\.?\s*)?442|\bpd\s*442\b|dole\s+department\s+order)\b',
-            r'\b(?:department\s+of\s+labor\s+and\s+employment|\bdole\b|national\s+labor\s+relations\s+commission|\bnlrc\b|labor\s+arbiter|single\s+entry\s+approach|\bsena\b|national\s+conciliation\s+and\s+mediation\s+board|\bncmb\b)\b',
-            r'\b(?:illegal\s+dismissal|constructive\s+dismissal|unjust\s+dismissal|unfair\s+labor\s+practice|\bulp\b|labor\s+union|collective\s+bargaining\s+agreement|\bcba\b|retrenchment|redundancy\s+program|dole\s+labor\s+inspection)\b'
-        ],
-        "secondary": [
-            r'\b(?:separation\s+pay|backwages|13th\s+month\s+pay|holiday\s+pay|overtime\s+pay|minimum\s+wage\s+order|strike|lockout)\b'
-        ]
-    },
-    {
-        "domain": "Philippine Tax Law (National Internal Revenue Code [NIRC] / Bureau of Internal Revenue [BIR])",
-        "primary": [
-            r'\b(?:national\s+internal\s+revenue\s+code|\bnirc\b|tax\s+code|republic\s+act\s+(?:no\.?\s*)?8424|\bra\s*8424\b|train\s+law|ra\s*10963|create\s+act|ra\s*11534|tariff\s+and\s+customs\s+code|customs\s+modernization\s+and\s+tariff\s+act|\bcmta\b)\b',
-            r'\b(?:bureau\s+of\s+internal\s+revenue|\bbir\b|court\s+of\s+tax\s+appeals|\bcta\b|bureau\s+of\s+customs|\bboc\b|department\s+of\s+finance|\bdof\b|local\s+board\s+of\s+assessment\s+appeals)\b',
-            r'\b(?:preliminary\s+assessment\s+notice|\bpan\b|final\s+assessment\s+notice|\bfan\b|formal\s+letter\s+of\s+demand|\bfld\b|letter\s+of\s+authority|\bloa\b|tax\s+audit|tax\s+deficiency|tax\s+evasion)\b'
-        ],
-        "secondary": [
-            r'\b(?:income\s+tax\s+return|\bitr\b|value-added\s+tax|\bvat\b|percentage\s+tax|withholding\s+tax|capital\s+gains\s+tax|donor\'s\s+tax|estate\s+tax\s+return|tax\s+clearance)\b'
-        ]
-    },
-    {
-        "domain": "Philippine Data Privacy & Cybercrime Law (RA 10173 [DPA] / RA 10175 [Cybercrime Act] / NPC / CICC)",
-        "primary": [
-            r'\b(?:data\s+privacy\s+act\s+of\s+2012|republic\s+act\s+(?:no\.?\s*)?10173|\bra\s*10173\b|cybercrime\s+prevention\s+act\s+of\s+2012|republic\s+act\s+(?:no\.?\s*)?10175|\bra\s*10175\b)\b',
-            r'\b(?:national\s+privacy\s+commission|\bnpc\b|cybercrime\s+investigation\s+and\s+coordinating\s+center|\bcicc\b|pnp\s+anti-cybercrime\s+group|pnp-acg|nbi\s+cybercrime\s+division)\b',
-            r'\b(?:personal\s+information\s+controller|\bpic\b|personal\s+information\s+processor|\bpip\b|data\s+subject\s+rights|data\s+breach\s+notification|privacy\s+impact\s+assessment|\bpia\b|unauthorized\s+processing\s+of\s+personal)\b'
-        ],
-        "secondary": [
-            r'\b(?:illegal\s+access\s+to\s+computer\s+system|data\s+interference|cyber-squatting|cyber-libel|computer-related\s+forgery|computer-related\s+fraud)\b'
-        ]
-    },
-    {
-        "domain": "Philippine Corporate & Commercial Law (Revised Corporation Code [RA 11232] / SEC / BSP)",
-        "primary": [
-            r'\b(?:revised\s+corporation\s+code\s+of\s+the\s+philippines|republic\s+act\s+(?:no\.?\s*)?11232|\bra\s*11232\b|securities\s+regulation\s+code|\bsrc\b|republic\s+act\s+(?:no\.?\s*)?8799|\bra\s*8799\b|anti-money\s+laundering\s+act|\bamla\b|ra\s*9160|general\s+banking\s+law|ra\s*8791)\b',
-            r'\b(?:securities\s+and\s+exchange\s+commission|\bsec\b|bangko\s+sentral\s+ng\s+pilipinas|\bbsp\b|anti-money\s+laundering\s+council|\bamlc\b|insurance\s+commission|\bic\b)\b',
-            r'\b(?:articles\s+of\s+incorporation|corporate\s+by-laws|general\s+information\s+sheet|\bgis\b|board\s+resolution|secretary\'s\s+certificate|sec\s+registration|sec\s+revocation|sec\s+compliance)\b'
-        ],
-        "secondary": [
-            r'\b(?:board\s+of\s+directors\s+meeting|quorum\s+of\s+the\s+board|stockholders\'?\s+meeting|outstanding\s+capital\s+stock|subscribed\s+capital|treasury\s+shares|corporate\s+officers|ultra\s+vires|corporate\s+dissolution)\b'
-        ]
-    },
-    {
-        "domain": "Philippine Intellectual Property Law (Republic Act No. 8293 - IP Code / IPOPHL)",
-        "primary": [
-            r'\b(?:intellectual\s+property\s+code\s+of\s+the\s+philippines|republic\s+act\s+(?:no\.?\s*)?8293|\bra\s*8293\b|\bip\s+code\b)\b',
-            r'\b(?:intellectual\s+property\s+office\s+of\s+the\s+philippines|\bipophl\b|bureau\s+of\s+legal\s+affairs|\bbla\b)\b',
-            r'\b(?:trademark\s+registration|trademark\s+infringement|patent\s+application|patent\s+infringement|letters\s+patent|utility\s+model|industrial\s+design|copyright\s+registration|inter\s+partes\s+proceedings|unfair\s+competition\s+under\s+section\s+168)\b'
-        ],
-        "secondary": [
-            r'\b(?:copyright\s+infringement|infringing\s+goods|patent\s+claim)\b'
-        ]
-    }
-]
-
-def classify_document_domain(text: str, filename: Optional[str] = None) -> Dict[str, Any]:
-    """
-    Evaluates an uploaded document's content and filename to determine whether it belongs to
-    the domain of the Philippine Civil Code (RA 386), specialized non-civil Philippine law (redirection),
-    or constitutes non-legal technical/academic/general material (strict refusal).
-    """
-    combined = f"{filename or ''} {text or ''}".lower()
-
-    # 1. Specialized Non-Civil Legal domain matching
-    non_civil_scores = []
-    for d in NON_CIVIL_LEGAL_DOC_DOMAINS:
-        primary_hits = sum(1 for p in d["primary"] if re.search(p, combined))
-        sec_hits = sum(1 for p in d.get("secondary", []) if re.search(p, combined))
-        # A non-civil domain qualifies if it has at least one primary statutory/institutional marker
-        if primary_hits > 0:
-            score = (primary_hits * 3) + sec_hits
-            non_civil_scores.append((d["domain"], score))
-
-    # 2. Civil Law scoring
-    civil_score = sum(weight for p, weight in CIVIL_LAW_DOC_PATTERNS if re.search(p, combined))
-
-    if non_civil_scores:
-        non_civil_scores.sort(key=lambda x: x[1], reverse=True)
-        top_domain, top_score = non_civil_scores[0]
-        if top_score >= civil_score:
-            return {
-                "category": "out_of_domain_legal",
-                "target_domain": top_domain,
-                "reason": f"Document belongs to specialized Philippine legal jurisdiction: {top_domain}."
-            }
-
-    if civil_score >= 2:
-        return {
-            "category": "in_domain_civil",
-            "target_domain": None,
-            "reason": "Document contains authentic Philippine Civil Law concepts, instruments, or stipulations."
-        }
-    elif non_civil_scores:
-        return {
-            "category": "out_of_domain_legal",
-            "target_domain": non_civil_scores[0][0],
-            "reason": f"Document belongs to specialized Philippine legal jurisdiction: {non_civil_scores[0][0]}."
-        }
-    else:
-        return {
-            "category": "out_of_domain_non_legal",
-            "target_domain": None,
-            "reason": "Document contains non-legal material and lacks recognized Philippine Civil Code concepts."
-        }
+# Document and query domain classification live in services/domain_router.py
 
 
 def is_refusal_or_out_of_scope(text: str) -> bool:
@@ -2264,7 +2125,13 @@ def prune_retrieval_noise(items: List[Dict[str, Any]], max_items: int = 15) -> L
     return rank_and_stratify_citations(items, context_budget=max_items)
 
 
-def search_with_embedding(q_emb: list, query: str, document_id: Optional[str] = None, raw_query: Optional[str] = None):
+def search_with_embedding(
+    q_emb: list,
+    query: str,
+    document_id: Optional[str] = None,
+    raw_query: Optional[str] = None,
+    auto_analyze: bool = False,
+):
     """Executes high-recall hybrid RRF search, companion expansion, and full-spectrum citation ranking."""
     conn = get_db_connection()
     try:
@@ -2339,7 +2206,19 @@ def search_with_embedding(q_emb: list, query: str, document_id: Optional[str] = 
                 return cur.fetchall()
 
             if document_id:
-                doc_results = hybrid_search('user_document', limit=15, parent_id=document_id)
+                if auto_analyze:
+                    cur.execute("""
+                        SELECT chunk_id, parent_type, parent_id, content, 0.92 AS similarity, 0.03 AS rrf_score
+                        FROM document_chunks
+                        WHERE parent_id = %s
+                        ORDER BY chunk_id ASC
+                        LIMIT 12;
+                    """, (document_id,))
+                    doc_results = cur.fetchall()
+                    for idx, d in enumerate(doc_results):
+                        d['similarity'] = round(max(0.80, 0.95 - (idx * 0.01)), 3)
+                else:
+                    doc_results = hybrid_search('user_document', limit=15, parent_id=document_id)
                 # Guaranteed fallback: if hybrid keyword search yielded 0 chunks, fetch document's chunks directly
                 if not doc_results:
                     cur.execute("""
@@ -2355,20 +2234,8 @@ def search_with_embedding(q_emb: list, query: str, document_id: Optional[str] = 
                 doc_domain = classify_document_domain(doc_text_sample)
                 is_doc_legal = doc_domain['category'] == 'in_domain_civil'
 
-                # Has user explicitly referenced an article by number (e.g. "Article 1181" or "Artikulo 1181")?
                 has_explicit_article = bool(parse_article_numbers(query))
-
-                # Check if legal provisions or jurisprudence are genuinely relevant to the document inquiry
-                legal_terms = [
-                    'civil code', 'article', 'statute', 'law', 'violate', 'void', 'liability', 
-                    'obligation', 'breach', 'risk', 'remedy', 'damages', 'jurisprudence', 
-                    'case', 'compliance', 'legal', 'action', 'contract', 'agreement', 'lease',
-                    'terms', 'clause', 'provisions', 'stipulation', 'rights', 'summary', 
-                    'summarize', 'overview', 'about', 'valid', 'validity', 'ano ito', 'tungkol'
-                ]
-                query_lower = query.lower()
-
-                needs_statutory = (is_doc_legal and any(term in query_lower for term in legal_terms)) or has_explicit_article
+                needs_statutory = is_doc_legal or has_explicit_article or auto_analyze
                 if needs_statutory:
                     statutory_articles = hybrid_search('article', limit=12)
                     if statutory_articles:
@@ -2958,8 +2825,9 @@ async def search_documents(request: SearchRequest, raw_req: Request = None):
             user_name = urllib.parse.unquote(user_name_raw) if user_name_raw else ""
         except Exception:
             user_name = user_name_raw
-        detected_lang = detect_query_language(request.query)
-        lang_directive = get_language_directive(detected_lang)
+        is_auto_analyze = bool(request.auto_analyze and request.document_id)
+        if not is_auto_analyze and not (request.query or "").strip():
+            raise HTTPException(status_code=400, detail="Query cannot be empty.")
 
         def build_user_persona_prefix(name: str, lang: str = "en") -> str:
             """
@@ -2997,8 +2865,6 @@ async def search_documents(request: SearchRequest, raw_req: Request = None):
                 f"{persona_guidelines}\n\n"
             )
 
-        user_persona_prefix = build_user_persona_prefix(user_name, detected_lang)
-
         logging.info(
             f"Received search request from user [{user_name or user_email or user_identifier}]: {request.query[:80]}"
         )
@@ -3034,27 +2900,28 @@ async def search_documents(request: SearchRequest, raw_req: Request = None):
                 merged_prior_citations = session_memory.merge_prior_citations(
                     server_citations, request.prior_citations
                 )
-                # Persist the incoming user turn
-                await asyncio.to_thread(
-                    session_memory.save_user_message,
-                    request.session_id,
-                    request.query,
-                    get_db_connection,
-                )
-                if _db_history is not None:
-                    _db_history2 = await asyncio.to_thread(
-                        session_memory.load_session_history,
+                # Persist the incoming user turn unless running automatic upload analysis
+                if not is_auto_analyze and (request.query or "").strip():
+                    await asyncio.to_thread(
+                        session_memory.save_user_message,
                         request.session_id,
-                        session_memory.HISTORY_LIMIT,
-                        user_identifier if user_identifier != "anon" else None,
+                        request.query,
                         get_db_connection,
                     )
-                    if _db_history2:
-                        canonical_history = session_memory.resolve_history(_client_dicts, _db_history2)
-                        canonical_msgs = session_memory.to_chat_messages(canonical_history)
+                    if _db_history is not None:
+                        _db_history2 = await asyncio.to_thread(
+                            session_memory.load_session_history,
+                            request.session_id,
+                            session_memory.HISTORY_LIMIT,
+                            user_identifier if user_identifier != "anon" else None,
+                            get_db_connection,
+                        )
+                        if _db_history2:
+                            canonical_history = session_memory.resolve_history(_client_dicts, _db_history2)
+                            canonical_msgs = session_memory.to_chat_messages(canonical_history)
 
                 # History-recall shortcut: deterministic response without GPU queue
-                if session_memory.is_history_recall_query(request.query):
+                if not is_auto_analyze and session_memory.is_history_recall_query(request.query):
                     recall_text = session_memory.build_recall_response(request.query, _recall_base)
                     recall_analytics = {
                         'nli_score': None,
@@ -3075,7 +2942,7 @@ async def search_documents(request: SearchRequest, raw_req: Request = None):
                     return
 
                 # Summary-request shortcut: deterministic response without GPU queue
-                if session_memory.is_summary_request(request.query):
+                if not is_auto_analyze and session_memory.is_summary_request(request.query):
                     short_text = session_memory.build_summary_response(request.query, _recall_base)
                     short_analytics = {
                         'nli_score': None,
@@ -3160,18 +3027,25 @@ async def search_documents(request: SearchRequest, raw_req: Request = None):
                 # Resolve document filename and sample content if analyzing an uploaded document
                 doc_filename = request.document_name
                 doc_sample_text = ""
+                doc_status = None
+                doc_error_msg = None
                 if request.document_id:
                     conn_doc = None
                     try:
                         conn_doc = get_db_connection()
                         with conn_doc.cursor() as cur_doc:
                             for _ in range(8):
-                                cur_doc.execute("SELECT filename, status FROM user_documents WHERE id = %s;", (request.document_id,))
+                                cur_doc.execute(
+                                    "SELECT filename, status, error_message FROM user_documents WHERE id = %s;",
+                                    (request.document_id,),
+                                )
                                 row = cur_doc.fetchone()
                                 if row:
                                     if not doc_filename and row[0]:
                                         doc_filename = row[0]
-                                    if row[1] == 'completed':
+                                    doc_status = row[1]
+                                    doc_error_msg = row[2]
+                                    if doc_status in ('completed', 'rejected_unrelated', 'error'):
                                         break
                                 cur_doc.execute("SELECT count(*) FROM document_chunks WHERE parent_id = %s;", (request.document_id,))
                                 count_row = cur_doc.fetchone()
@@ -3179,16 +3053,16 @@ async def search_documents(request: SearchRequest, raw_req: Request = None):
                                     break
                                 await asyncio.sleep(0.5)
 
-                            # Fetch representative text chunks from the active document for domain gating
-                            cur_doc.execute("""
-                                SELECT content FROM document_chunks 
-                                WHERE parent_id = %s 
-                                ORDER BY chunk_id ASC 
-                                LIMIT 15;
-                            """, (request.document_id,))
-                            chunk_rows = cur_doc.fetchall()
-                            if chunk_rows:
-                                doc_sample_text = " ".join([cr[0] for cr in chunk_rows if cr and cr[0]])
+                            if doc_status not in ('rejected_unrelated', 'error'):
+                                cur_doc.execute("""
+                                    SELECT content FROM document_chunks 
+                                    WHERE parent_id = %s 
+                                    ORDER BY chunk_id ASC 
+                                    LIMIT 15;
+                                """, (request.document_id,))
+                                chunk_rows = cur_doc.fetchall()
+                                if chunk_rows:
+                                    doc_sample_text = " ".join([cr[0] for cr in chunk_rows if cr and cr[0]])
                     except Exception as e:
                         logging.warning(f"Could not fetch document info for {request.document_id}: {e}")
                     finally:
@@ -3197,6 +3071,24 @@ async def search_documents(request: SearchRequest, raw_req: Request = None):
                                 conn_doc.close()
                             except Exception:
                                 pass
+
+                if request.document_id and doc_status in ('rejected_unrelated', 'error'):
+                    reject_reason = (
+                        doc_error_msg
+                        or "This document was rejected because it does not fall under the Philippine Civil Code (RA 386)."
+                    )
+                    yield f"data: {dumps({'type': 'error', 'message': reject_reason})}\n\n"
+                    yield f"data: {dumps({'type': 'done'})}\n\n"
+                    return
+
+                lang_source = (
+                    doc_sample_text[:1200]
+                    if is_auto_analyze and not (request.query or "").strip() and doc_sample_text
+                    else request.query
+                )
+                detected_lang = detect_query_language(lang_source)
+                lang_directive = get_language_directive(detected_lang)
+                user_persona_prefix = build_user_persona_prefix(user_name, detected_lang)
 
                 history_dicts = canonical_history
 
@@ -3382,20 +3274,29 @@ CIVIL-LEX is strictly specialized in Philippine Civil Law (RA 386). Please uploa
                         save_assistant_message_to_db(request.session_id, full_text, [], analytics_payload)
                         return
 
-                # Stage 0.4: Resolve Effective Query (Enrich with Clarification Context if present)
-                effective_query = request.query
+                # Stage 0.4: Resolve effective query for retrieval and generation
+                if is_auto_analyze and not (request.query or "").strip():
+                    doc_label = doc_filename or "Uploaded Document"
+                    effective_query = (
+                        f'Suriin nang buo ang dokumentong "{doc_label}" batay sa Philippine Civil Code (RA 386) at Family Code (EO 209): '
+                        "uri ng dokumento, mga partido at obligasyon, kaugnay na batas, posibleng panganib o walang bisang probisyon, at mga susunod na hakbang."
+                        if detected_lang == "tl"
+                        else f'Provide a comprehensive initial legal analysis of the uploaded document "{doc_label}" under the Philippine Civil Code (RA 386) and Family Code (EO 209), '
+                        "covering document type, parties and obligations, statutory alignment, potential risks or void clauses, and practical takeaways."
+                    )
+                else:
+                    effective_query = request.query
                 if request.clarification_context:
                     orig_q = request.original_query or request.clarification_context.get("original_query") or request.query
                     effective_query = enrich_query_with_clarification(orig_q, request.clarification_context)
                     logging.info(f"Query enriched with clarification context: {effective_query[:200]}")
 
-                # Stage 0.5: Query Intent Classification & Domain Boundary Gating
-                if request.clarification_context:
-                    # Clarification answers continue an in-domain civil inquiry already validated in the prior turn
+                # Stage 0.5: Query intent classification and domain boundary gating
+                if request.clarification_context or is_auto_analyze:
                     intent_info = {
                         "category": "in_domain_civil",
                         "target_domain": None,
-                        "reason": "Clarification context provided for validated in-domain civil query.",
+                        "reason": "Validated civil document auto-analysis or clarified inquiry.",
                     }
                 else:
                     intent_info = await asyncio.to_thread(
@@ -3618,10 +3519,8 @@ YOUR MANDATORY REFUSAL AND STATUTORY RULES:
                     save_assistant_message_to_db(request.session_id, full_text, illicit_citations, analytics_payload)
                     return
 
-                # Conversational clarification (ambiguity detection)
-                # Only runs for in-domain civil queries WITHOUT existing clarification context.
-                # Anti-loop guard: if clarification_context is present, skip detection entirely.
-                if intent_info['category'] == 'in_domain_civil' and not request.clarification_context:
+                # Conversational clarification skips active document mode and auto-analysis
+                if intent_info['category'] == 'in_domain_civil' and not request.clarification_context and not is_auto_analyze:
                     yield f"data: {dumps({'type': 'status', 'stage': 'embedding', 'message': 'Analyzing query context & completeness...'})}\n\n"
                     ambiguity_result = await detect_ambiguity(
                         request.query,
@@ -3648,7 +3547,11 @@ YOUR MANDATORY REFUSAL AND STATUTORY RULES:
                 # Branch C: In-Domain Philippine Civil Law Inquiry (Execute hybrid retrieval)
 
                 # Context-aware query expansion for hybrid search
-                search_query = build_contextual_query(effective_query, canonical_msgs, doc_filename)
+                if is_auto_analyze:
+                    raw_retrieval_seed = f"{clean_doc_title(doc_filename)} {doc_sample_text[:700]}".strip()
+                    search_query = expand_legal_query(raw_retrieval_seed or effective_query)
+                else:
+                    search_query = build_contextual_query(effective_query, canonical_msgs, doc_filename)
                 logging.info(f"Contextualized search query: {search_query}")
 
                 # Stage 1: Embedding the prompt
@@ -3668,7 +3571,14 @@ YOUR MANDATORY REFUSAL AND STATUTORY RULES:
                     else "Searching Philippine Civil Code articles & jurisprudence..."
                 )
                 yield f"data: {dumps({'type': 'status', 'stage': 'retrieving', 'message': ret_msg})}\n\n"
-                results = await asyncio.to_thread(search_with_embedding, q_emb, search_query, request.document_id, effective_query)
+                results = await asyncio.to_thread(
+                    search_with_embedding,
+                    q_emb,
+                    search_query,
+                    request.document_id,
+                    effective_query,
+                    is_auto_analyze,
+                )
                 logging.info(f"Found {len(results)} relevant citations for current query.")
 
                 # Deduplicate prior citations and newly retrieved citations using parent/case keys
@@ -3874,7 +3784,48 @@ YOUR MANDATORY REFUSAL AND STATUTORY RULES:
 
                 if request.document_id:
                     doc_display_name = doc_filename or "Uploaded Legal Document"
-                    system_prompt = f"""{lang_directive}You are CIVIL-LEX, a warm, lively, and approachable Philippine Legal Assistant helping an ordinary citizen understand their uploaded civil document: "{doc_display_name}".
+                    if is_auto_analyze:
+                        system_prompt = f"""{lang_directive}You are CIVIL-LEX, a warm, lively, and approachable Philippine Legal Assistant providing an automatic initial legal review of an uploaded Philippine civil law document: "{doc_display_name}".
+Your reader is an everyday Filipino citizen who just uploaded this document without typing a prompt. Give them an immediate, clear, reassuring, and thorough plain-language breakdown.
+
+YOUR INITIAL DOCUMENT ANALYSIS DUTIES:
+1. DOCUMENT OVERVIEW & PARTIES: Identify what type of legal instrument "{doc_display_name}" is, who the parties are, and the key obligations, amounts, dates, or terms found in the DOCUMENT EXCERPTS.
+2. STATUTORY ALIGNMENT (PHILIPPINE CIVIL CODE / FAMILY CODE): Ground your review in the governing Civil Code (RA 386) or Family Code (EO 209) articles provided in CONTEXT, quoting core statutory rules verbatim and citing them inline (e.g. [Art. 1654], [Art. 1191]).
+3. RISKS, VOID CLAUSES & MISSING SAFEGUARDS: Flag any potentially unfair, one-sided, ambiguous, or legally void stipulations under Philippine Civil Law (or explain clearly if the main terms appear standard and what protections may be missing).
+4. PRACTICAL TAKEAWAYS & FOLLOW-UP INVITATION: Summarize concrete next steps in everyday language (such as notarization, written receipts/demand letters, Barangay Conciliation, Small Claims, or PAO) and invite the user to ask specific follow-up questions about any clause.
+5. CLOSED-BOOK & PLAIN-LANGUAGE RULES: State only facts present in DOCUMENT EXCERPTS and cite only Civil Code articles and cases in CONTEXT. Write short sentences (10-18 words) with zero archaic words and strict unilingual output.
+
+MANDATORY MARKDOWN STRUCTURE:
+### Document Overview & Parties
+[Summarize the document type, parties, main purpose, and key figures/dates in plain everyday words.]
+
+### Philippine Civil Code / Family Code Alignment
+> **[Governing Civil Code Article / Provision]**
+> *[Hierarchy / Book Title]*
+>
+> "[Quote the governing statutory text verbatim from CONTEXT]"
+
+- **[Key Obligation or Right]**: [Plain-language explanation grounded with inline citation like [Art. X]]
+
+### Potential Legal Risks & Clauses to Watch
+- **[Clause / Risk or Standard Compliance Check]**: [Explain any risky, unfair, missing, or void terms in everyday words]
+
+**Halimbawa sa Totoong Buhay (Batay sa Inyong Dokumento):** (or in English: **Real-Life Practical Example (Based on Your Document):**)
+[2-3 lively sentences illustrating how a key clause in this document plays out in daily life.]
+
+### Practical Takeaways & Next Steps
+- **Key Action Points**: [Practical checklist for the citizen before signing, paying, or enforcing this document]
+- **Questions You Can Ask Next**: [1 short sentence inviting follow-up questions about specific clauses or disputes]
+
+ACTIVE DOCUMENT:
+Filename: {doc_display_name}
+Document ID: {request.document_id}
+
+CONTEXT:
+{context_str}
+"""
+                    else:
+                        system_prompt = f"""{lang_directive}You are CIVIL-LEX, a warm, lively, and approachable Philippine Legal Assistant helping an ordinary citizen understand their uploaded civil document: "{doc_display_name}".
 Your persona is a trusted community paralegal or caring neighbor who explains legal papers conversationally, clearly, and engagingly so that even citizens with basic literacy can understand.
 
 YOUR TASK IN THIS ACTIVE SESSION:
@@ -4282,12 +4233,7 @@ CONTEXT:
                     yield f"data: {dumps({'type': 'citations', 'data': results})}\n\n"
                     yield f"data: {dumps({'type': 'accumulated_citations', 'data': accumulated_citations})}\n\n"
 
-                # ── Post-Generation Neuro-Symbolic Hybrid NLI Verification ─────
-                # Run the hybrid NLI engine (Symbolic Logic + Gemma in LM Studio)
-                # on the completed answer against retrieved context to compute
-                # accurate statutory faithfulness and detect contradictions.
-                # Follow-up suggestions are generated concurrently so they don't
-                # add latency after NLI finishes.
+                # Post-Generation Neuro-Symbolic Hybrid NLI Verification and follow-up suggestions
                 followup_task = None
                 if not is_out_of_domain and full_text.strip():
                     _prior_user_turns = [
@@ -4296,7 +4242,7 @@ CONTEXT:
                     ][-2:]
                     followup_task = asyncio.create_task(
                         followup_svc.generate_followups(
-                            query=request.query,
+                            query=request.query or effective_query,
                             answer=full_text,
                             prior_user_turns=_prior_user_turns,
                             doc_filename=doc_filename if is_doc_analysis else None,

@@ -374,7 +374,7 @@ export default function HistoryPage() {
                         item.session_type === "document" ||
                         item.session_type === "document_analysis" ||
                         Boolean(item.document_id);
-                      const linkHref = isDoc ? `/research?session=${item.id}` : `/chat?session=${item.id}`;
+                      const linkHref = `/chat?session=${item.id}`;
 
                       return (
                         <Card

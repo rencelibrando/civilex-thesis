@@ -37,9 +37,9 @@ export interface ActionCardCopy {
   legalChat: { title: string; description: string; cta: string };
   civilCode: { title: string; description: string; cta: string };
   docAnalysis: { title: string; description: string; cta: string };
+  docBuilder: { title: string; description: string; cta: string };
 }
 
-/** Returns copy for the 3 main action cards on the dashboard */
 export function getActionCardCopy(): ActionCardCopy {
   return {
     legalChat: {
@@ -57,8 +57,14 @@ export function getActionCardCopy(): ActionCardCopy {
     docAnalysis: {
       title: "Check a Document",
       description:
-        "Upload a contract, lease, or agreement to understand what it says and whether it protects your rights.",
+        "Upload a contract, lease, or agreement directly in Legal Chat to understand what it says and check your rights.",
       cta: "Check Document",
+    },
+    docBuilder: {
+      title: "Document Builder",
+      description:
+        "Draft deeds, leases, affidavits, loans, and agreements from 25 Philippine legal templates with e-signatures and PDF/Word export.",
+      cta: "Open Builder",
     },
   };
 }
@@ -151,75 +157,6 @@ export function getSearchPlaceholder(): string {
   return getRandomSearchExample().example.full;
 }
 
-/** Returns the compact search bar placeholder for mobile devices */
 export function getMobileSearchPlaceholder(): string {
   return getRandomSearchExample().example.mobile;
-}
-
-// Document Panel Copy
-
-export interface DocStarterPrompt {
-  id: string;
-  label: string;
-  prompt: string;
-}
-
-/** Returns starter prompts for Document Analysis */
-export function getDocStarters(): DocStarterPrompt[] {
-  return [
-    {
-      id: "cz-1",
-      label: "Plain Summary",
-      prompt: "Explain this document in plain, simple language so I can understand what it actually says and means.",
-    },
-    {
-      id: "cz-2",
-      label: "Rights & Hidden Risks",
-      prompt: "Does this agreement protect my rights, or are there hidden risks, unfair penalties, or one-sided terms?",
-    },
-    {
-      id: "cz-3",
-      label: "My Responsibilities",
-      prompt: "What are my main duties under this document, and what happens if I cannot fulfill them?",
-    },
-    {
-      id: "cz-4",
-      label: "Next Legal Steps",
-      prompt: "What concrete steps should I take before signing or responding to this document under Philippine law?",
-    },
-  ];
-}
-
-/** Returns copy for the Documents Panel & Ingestion dropzone */
-export function getDocPanelCopy(): {
-  panelSubtitle: string;
-  dropzoneTitle: string;
-  dropzoneDescription: string;
-  badgeLabel: string;
-} {
-  return {
-    panelSubtitle: "Simple Document Review & Rights Check",
-    dropzoneTitle: "Upload a Document to Understand It",
-    dropzoneDescription:
-      "Drag & drop your lease, contract, agreement, or notice to get a plain-language summary and check your rights.",
-    badgeLabel: "Plain Language Review",
-  };
-}
-
-/** Returns the first-message greeting for the Document Analysis chat panel */
-export function getPersonalizedDocGreeting(firstName?: string, filename?: string): string {
-  const name = firstName ? `, ${firstName}` : "";
-
-  if (filename) {
-    return (
-      `Hello${name}! I am ready to help you review "${filename}". ` +
-      `I will explain what this document means in plain, everyday language and check how it affects your rights under Philippine law. ` +
-      `What questions do you have about this document?`
-    );
-  }
-
-  return (
-    `Hello${name}! I am here to help you understand your legal documents in simple, everyday language. ` +
-    `Upload a contract, lease, agreement, or notice to check what it says and whether your rights are protected under Philippine law.`
-  );
 }

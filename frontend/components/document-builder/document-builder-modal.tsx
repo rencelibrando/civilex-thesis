@@ -37,6 +37,7 @@ import {
   AlertCircle,
   ArrowRight,
   Pencil,
+  Save,
 } from "lucide-react";
 import { LegalTemplate, TemplateValues } from "@/lib/legal-templates/types";
 import { generateDocumentText } from "@/lib/legal-templates/generators";
@@ -45,8 +46,13 @@ import { CATEGORY_SECTION_LABELS } from "@/lib/legal-templates/catalog";
 import {
   validateDocumentFilename,
   generateUniqueDocumentFilename,
-  stripExtension,
 } from "@/lib/legal-templates/filename-utils";
+import {
+  parseBuilderMetadata,
+  isTemplateSignatureSupported,
+  getSignerOptionsForFields,
+  exportLegalDocument,
+} from "@/lib/legal-templates/document-utils";
 import {
   LegalDocumentPaper,
   LegalDocumentPaperRef,
@@ -54,7 +60,7 @@ import {
   FontSizePreset,
 } from "./legal-document-paper";
 import { ESignatureModal, SignaturesMap, SignatureEntry } from "./e-signature-modal";
-import { BACKEND_URL, apiUrl } from "@/lib/config";
+import { apiUrl } from "@/lib/config";
 import { supabase } from "@/lib/supabase";
 import { cn } from "@/lib/utils";
 
@@ -94,7 +100,97 @@ function getSectionTitle(secKey: string, template: LegalTemplate, index: number)
 
 type AutoSaveStatus = "saved" | "unsaved" | "saving" | "error";
 
-export function DocumentBuilderModal({
+function buildInitialBuilderState(
+  template: LegalTemplate,
+  existingDocument?: BuilderDocument | null,
+  initialFilename?: string,
+  existingDocuments: Array<{ filename?: string; id?: string } | string> = []
+) {
+  const initialValues: TemplateValues = {};
+  const now = new Date();
+  const currentYear = String(now.getFullYear());
+  const currentMonth = now.toLocaleString("default", { month: "long" });
+  const currentDay = String(now.getDate());
+
+  template.fields.forEach((f) => {
+    if (f.defaultValue) {
+      initialValues[f.id] = f.defaultValue;
+    } else if (f.id === "execution_year" || f.id === "notary_series") {
+      initialValues[f.id] = currentYear;
+    } else if (f.id === "execution_month") {
+      initialValues[f.id] = currentMonth;
+    } else if (f.id === "execution_day") {
+      initialValues[f.id] = currentDay;
+    } else {
+      initialValues[f.id] = "";
+    }
+  });
+
+  let initialText: string | null = null;
+  let initialSignatures: SignaturesMap = {};
+  if (existingDocument) {
+    const parsedMeta = parseBuilderMetadata(existingDocument);
+    if (parsedMeta.fields) {
+      Object.assign(initialValues, parsedMeta.fields);
+    }
+    if (parsedMeta.signatures) {
+      initialSignatures = parsedMeta.signatures;
+    }
+    initialText = existingDocument.canvas_content || existingDocument.extracted_text || null;
+  }
+
+  let initialCustomText: string | null = null;
+  if (initialText) {
+    const generatedFromInitial = generateDocumentText(template.id, initialValues);
+    if (initialText.trim() !== generatedFromInitial.trim()) {
+      initialCustomText = initialText;
+    }
+  }
+
+  const resolvedFilename = existingDocument?.filename
+    ? existingDocument.filename.replace(/\.txt$/i, "")
+    : initialFilename?.trim()
+      ? initialFilename.trim().replace(/\.txt$/i, "")
+      : generateUniqueDocumentFilename(template.title, existingDocuments, "");
+
+  const initialBuilt =
+    initialCustomText !== null
+      ? initialCustomText
+      : generateDocumentText(template.id, initialValues);
+
+  const initialSnapshot = JSON.stringify({
+    fields: initialValues,
+    text: initialBuilt,
+    signatures: initialSignatures,
+    filename: resolvedFilename,
+  });
+
+  return {
+    initialValues,
+    initialCustomText,
+    initialSignatures,
+    resolvedFilename,
+    initialSnapshot,
+  };
+}
+
+export function DocumentBuilderModal(props: DocumentBuilderModalProps) {
+  if (!props.isOpen || !props.template) return null;
+  const sessionKey = `${props.template.id}:${props.existingDocument?.id || "new"}:${props.initialFilename || ""}`;
+  return (
+    <DocumentBuilderModalContent
+      key={sessionKey}
+      {...props}
+      template={props.template}
+    />
+  );
+}
+
+interface DocumentBuilderModalContentProps extends Omit<DocumentBuilderModalProps, "template"> {
+  template: LegalTemplate;
+}
+
+function DocumentBuilderModalContent({
   isOpen,
   onClose,
   template,
@@ -102,41 +198,25 @@ export function DocumentBuilderModal({
   existingDocument,
   initialFilename,
   existingDocuments = [],
-}: DocumentBuilderModalProps) {
-  const [formValues, setFormValues] = useState<TemplateValues>({});
-  const [customBuiltText, setCustomBuiltText] = useState<string | null>(null);
+}: DocumentBuilderModalContentProps) {
+  const [initialState] = useState(() =>
+    buildInitialBuilderState(template, existingDocument, initialFilename, existingDocuments)
+  );
+  const [formValues, setFormValues] = useState<TemplateValues>(initialState.initialValues);
+  const [customBuiltText, setCustomBuiltText] = useState<string | null>(
+    initialState.initialCustomText
+  );
   const [isExportingDocx, setIsExportingDocx] = useState(false);
   const [isExportingPdf, setIsExportingPdf] = useState(false);
   const [currentDocId, setCurrentDocId] = useState<string | null>(existingDocument?.id || null);
   const [autoSaveStatus, setAutoSaveStatus] = useState<AutoSaveStatus>("saved");
 
-  // Document filename state and editing toggle
-  const [builderFilename, setBuilderFilename] = useState<string>("");
+  const [builderFilename, setBuilderFilename] = useState<string>(initialState.resolvedFilename);
   const [isEditingFilename, setIsEditingFilename] = useState(false);
 
-  // Initialize and synchronize filename whenever modal opens or document context changes (clean title without .txt)
-  useEffect(() => {
-    if (isOpen) {
-      if (existingDocument?.filename) {
-        setBuilderFilename(existingDocument.filename.replace(/\.txt$/i, ""));
-      } else if (initialFilename && initialFilename.trim()) {
-        setBuilderFilename(initialFilename.trim().replace(/\.txt$/i, ""));
-      } else if (template) {
-        setBuilderFilename(
-          generateUniqueDocumentFilename(template.title, existingDocuments, "")
-        );
-      } else {
-        setBuilderFilename("Untitled Document");
-      }
-      setIsEditingFilename(false);
-    }
-  }, [isOpen, existingDocument, initialFilename, template, existingDocuments]);
-
   const isDirtyRef = useRef<boolean>(false);
-  const loadedDocIdRef = useRef<string | null>(null);
 
-  // Real-time duplicate filename validation (strictly excludes the active document to prevent self-collision)
-  const activeDocId = currentDocId || existingDocument?.id || loadedDocIdRef.current;
+  const activeDocId = currentDocId || existingDocument?.id || null;
   const activeDocFilename = existingDocument?.filename;
 
   const filenameValidation = useMemo(() => {
@@ -151,13 +231,12 @@ export function DocumentBuilderModal({
   const handleFilenameChange = (newName: string) => {
     setBuilderFilename(newName);
     isDirtyRef.current = true;
+    setAutoSaveStatus("unsaved");
   };
 
-  // E-Signature state
-  const [signatures, setSignatures] = useState<SignaturesMap>({});
+  const [signatures, setSignatures] = useState<SignaturesMap>(initialState.initialSignatures);
   const [isSigModalOpen, setIsSigModalOpen] = useState(false);
 
-  // Unified view & paper display controls
   const [viewLayout, setViewLayout] = useState<"split" | "edit" | "paper">("split");
   const [mobileTab, setMobileTab] = useState<"form" | "paper" | "edit">("form");
   const [marginPreset, setMarginPreset] = useState<MarginPreset>("sc_standard");
@@ -171,7 +250,6 @@ export function DocumentBuilderModal({
     return 1.0;
   });
 
-  // Responsive zoom update on window resize
   useEffect(() => {
     const handleResize = () => {
       if (window.innerWidth < 640) {
@@ -189,101 +267,13 @@ export function DocumentBuilderModal({
   const paperRef = useRef<LegalDocumentPaperRef | null>(null);
   const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
   const isSavingRef = useRef<boolean>(false);
-  const lastSavedSnapshotRef = useRef<string>("");
+  const lastSavedSnapshotRef = useRef<string>(initialState.initialSnapshot);
 
-  const loadedTemplateIdRef = useRef<string | null>(null);
+  const isSignatureSupported = useMemo(
+    () => isTemplateSignatureSupported(template),
+    [template]
+  );
 
-  // Determine whether this statutory template requires or allows electronic signatures
-  const isSignatureSupported = useMemo(() => {
-    if (!template) return false;
-    if (template.requiresSignature === false) return false;
-    return Array.isArray(template.sections) && template.sections.includes("execution");
-  }, [template]);
-
-  // Initialize defaults whenever the template or existing document changes
-  useEffect(() => {
-    if (!template) return;
-
-    const currentIncomingId = existingDocument?.id || null;
-    // Prevent re-initialization loop when saving updates parent state
-    if (
-      loadedTemplateIdRef.current === template.id &&
-      loadedDocIdRef.current === currentIncomingId
-    ) {
-      return;
-    }
-
-    loadedTemplateIdRef.current = template.id;
-    loadedDocIdRef.current = currentIncomingId;
-    setCurrentDocId(currentIncomingId);
-
-    const initial: TemplateValues = {};
-    const now = new Date();
-    const currentYear = String(now.getFullYear());
-    const currentMonth = now.toLocaleString("default", { month: "long" });
-    const currentDay = String(now.getDate());
-
-    template.fields.forEach((f) => {
-      if (f.defaultValue) {
-        initial[f.id] = f.defaultValue;
-      } else if (f.id === "execution_year" || f.id === "notary_series") {
-        initial[f.id] = currentYear;
-      } else if (f.id === "execution_month") {
-        initial[f.id] = currentMonth;
-      } else if (f.id === "execution_day") {
-        initial[f.id] = currentDay;
-      } else {
-        initial[f.id] = "";
-      }
-    });
-
-    let initialText: string | null = null;
-    let initialSignatures: SignaturesMap = {};
-    if (existingDocument) {
-      if (existingDocument.canvas_html) {
-        try {
-          const parsed = typeof existingDocument.canvas_html === "string"
-            ? JSON.parse(existingDocument.canvas_html)
-            : existingDocument.canvas_html;
-          if (parsed && typeof parsed.fields === "object" && parsed.fields !== null) {
-            Object.assign(initial, parsed.fields);
-          }
-          if (parsed && typeof parsed.signatures === "object" && parsed.signatures !== null) {
-            initialSignatures = parsed.signatures;
-          }
-        } catch {
-          // ignore
-        }
-      }
-      initialText = existingDocument.canvas_content || existingDocument.extracted_text || null;
-    }
-
-    // Only activate custom direct text edit mode if content differs from the generated template
-    let initialCustomText: string | null = null;
-    if (initialText) {
-      const generatedFromInitial = generateDocumentText(template.id, initial);
-      if (initialText.trim() !== generatedFromInitial.trim()) {
-        initialCustomText = initialText;
-      }
-    }
-
-    setFormValues(initial);
-    setCustomBuiltText(initialCustomText);
-    setSignatures(initialSignatures);
-    setViewLayout("split");
-    setMobileTab("form");
-
-    const initialBuilt = initialCustomText !== null ? initialCustomText : generateDocumentText(template.id, initial);
-    lastSavedSnapshotRef.current = JSON.stringify({
-      fields: initial,
-      text: initialBuilt,
-      signatures: initialSignatures,
-    });
-    isDirtyRef.current = false;
-    setAutoSaveStatus("saved");
-  }, [template, existingDocument]);
-
-  // Compute live document text from form values
   const builtText = useMemo(() => {
     if (!template) return "";
     try {
@@ -306,53 +296,7 @@ export function DocumentBuilderModal({
     }).length;
   }, [template, formValues]);
 
-  // Derive party names for e-signature assignment
-  const party1Name = useMemo(() => {
-    return (
-      formValues.seller_name ||
-      formValues.lessor_name ||
-      formValues.borrower_name ||
-      formValues.principal_name ||
-      formValues.donor_name ||
-      formValues.assignor_name ||
-      formValues.testator_name ||
-      formValues.affiant_name ||
-      formValues.party_1_name ||
-      "First Party / Signer"
-    );
-  }, [formValues]);
-
-  const party2Name = useMemo(() => {
-    return (
-      formValues.buyer_name ||
-      formValues.lessee_name ||
-      formValues.lender_name ||
-      formValues.attorney_in_fact_name ||
-      formValues.donee_name ||
-      formValues.assignee_name ||
-      formValues.executor_name ||
-      formValues.party_2_name ||
-      "Second Party / Signer"
-    );
-  }, [formValues]);
-
-  // Signer options for e-signature assignment
-  const signerOptions = useMemo(() => {
-    return [
-      { key: "party_1", label: "First Party / Signer", name: party1Name },
-      { key: "party_2", label: "Second Party / Signer", name: party2Name },
-      {
-        key: "witness_1",
-        label: "Instrumental Witness 1",
-        name: formValues.witness_1 || "Witness 1",
-      },
-      {
-        key: "witness_2",
-        label: "Instrumental Witness 2",
-        name: formValues.witness_2 || "Witness 2",
-      },
-    ];
-  }, [party1Name, party2Name, formValues.witness_1, formValues.witness_2]);
+  const signerOptions = useMemo(() => getSignerOptionsForFields(formValues), [formValues]);
 
   // Count affixed signatures
   const signatureCount = Object.keys(signatures).length;
@@ -433,135 +377,44 @@ export function DocumentBuilderModal({
     });
   };
 
-  // Trigger high-fidelity print dialog
   const handlePrint = () => {
     paperRef.current?.print();
   };
 
-  // Export as PDF with embedded e-signatures and SC margins directly without launching print dialog
   const handleExportPdf = async () => {
     if (!template) return;
     try {
       setIsExportingPdf(true);
-      const cleanBase = stripExtension(builderFilename) || template.id;
-      const filename = `${cleanBase}.pdf`;
-      const exportUrl = apiUrl("/api/documents/export-pdf");
-      const renderedHtml = paperRef.current?.getHtml?.() || "";
-      const payload = {
-        filename,
-        html: renderedHtml,
+      await exportLegalDocument({
+        format: "pdf",
+        filenameBase: builderFilename || template.id,
         content: effectiveBuiltText,
+        html: paperRef.current?.getHtml?.() || "",
         signatures: isSignatureSupported ? signatures : {},
-        margin_preset: marginPreset,
-        font_size: fontSize,
-      };
-
-      let res: Response | null = null;
-      try {
-        res = await fetch(exportUrl, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-      } catch (err) {
-        console.warn("Primary pdf endpoint failed, trying fallback:", err);
-      }
-
-      if (!res || !res.ok) {
-        res = await fetch(`${BACKEND_URL}/export-pdf`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-      }
-
-      if (res && res.ok) {
-        const blob = await res.blob();
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement("a");
-        link.href = url;
-        link.download = filename;
-        link.click();
-        URL.revokeObjectURL(url);
-      } else {
-        console.warn("PDF export returned non-ok status, falling back to client print");
-        handlePrint();
-      }
-    } catch (e) {
-      console.warn("PDF export error:", e);
-      handlePrint();
+        marginPreset,
+        fontSize,
+        onPdfFallback: handlePrint,
+      });
     } finally {
       setIsExportingPdf(false);
     }
   };
 
-  // Download Plain Text fallback
-  const handleDownloadTxt = () => {
-    if (!template) return;
-    const cleanBase = stripExtension(builderFilename) || template.id;
-    const filename = `${cleanBase}.txt`;
-    const blob = new Blob([effectiveBuiltText], { type: "text/plain;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = filename;
-    link.click();
-    URL.revokeObjectURL(url);
-  };
-
-  // Export as Word (.docx) with embedded e-signatures and SC margins
   const handleExportDocx = async () => {
     if (!template) return;
     try {
       setIsExportingDocx(true);
-      const cleanBase = stripExtension(builderFilename) || template.id;
-      const filename = `${cleanBase}.docx`;
-      const exportUrl = apiUrl("/api/documents/export-docx");
-      const payload = {
-        filename,
+      await exportLegalDocument({
+        format: "docx",
+        filenameBase: builderFilename || template.id,
         content: effectiveBuiltText,
         signatures: isSignatureSupported ? signatures : {},
-      };
-
-      let res: Response | null = null;
-      try {
-        res = await fetch(exportUrl, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-      } catch (err) {
-        console.warn("Primary docx endpoint failed, trying fallback:", err);
-      }
-
-      if (!res || !res.ok) {
-        res = await fetch(`${BACKEND_URL}/export-docx`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-      }
-
-      if (res && res.ok) {
-        const blob = await res.blob();
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement("a");
-        link.href = url;
-        link.download = filename;
-        link.click();
-        URL.revokeObjectURL(url);
-      } else {
-        handleDownloadTxt();
-      }
-    } catch (e) {
-      console.warn("Docx export error, downloading text:", e);
-      handleDownloadTxt();
+      });
     } finally {
       setIsExportingDocx(false);
     }
   };
 
-  // Persistent reference for debounced auto-save payload (updated synchronously to prevent hook array mutations)
   const savePayloadRef = useRef({
     formValues,
     effectiveBuiltText,
@@ -571,17 +424,18 @@ export function DocumentBuilderModal({
     builderFilename,
   });
 
-  savePayloadRef.current = {
-    formValues,
-    effectiveBuiltText,
-    template,
-    currentDocId,
-    signatures,
-    builderFilename,
-  };
+  useEffect(() => {
+    savePayloadRef.current = {
+      formValues,
+      effectiveBuiltText,
+      template,
+      currentDocId,
+      signatures,
+      builderFilename,
+    };
+  }, [formValues, effectiveBuiltText, template, currentDocId, signatures, builderFilename]);
 
-  // Execute database persistence only when content actually changes
-  const performAutoSave = useCallback(async () => {
+  const performAutoSave = useCallback(async (force = false) => {
     const {
       formValues: vals,
       effectiveBuiltText: content,
@@ -593,20 +447,18 @@ export function DocumentBuilderModal({
     if (!tmpl || !content) return;
     if (isSavingRef.current) return;
 
-    // Do not auto-save if current document filename is duplicated or invalid
     if (!filenameValidation.isValid) {
       setAutoSaveStatus("error");
       return;
     }
 
-    // Verify there are actual dirty changes against last saved snapshot
     const currentSnapshot = JSON.stringify({
       fields: vals,
       text: content,
       signatures: sigs,
       filename: currentFilename,
     });
-    if (!isDirtyRef.current || currentSnapshot === lastSavedSnapshotRef.current) {
+    if (!force && (!isDirtyRef.current || currentSnapshot === lastSavedSnapshotRef.current)) {
       isDirtyRef.current = false;
       setAutoSaveStatus("saved");
       return;
@@ -666,9 +518,7 @@ export function DocumentBuilderModal({
           };
           onDocumentCreated(updatedDoc);
         } else if (res.status === 404) {
-          // Document was removed or not found on server; automatically recover by creating as a new document
           console.warn("Document not found on server (404), recreating via create-from-template...");
-          loadedDocIdRef.current = null;
           setCurrentDocId(null);
           const createUrl = apiUrl("/api/documents/create-from-template");
           const createRes = await fetch(createUrl, {
@@ -691,7 +541,6 @@ export function DocumentBuilderModal({
             const newDoc = await createRes.json();
             lastSavedSnapshotRef.current = currentSnapshot;
             isDirtyRef.current = false;
-            loadedDocIdRef.current = newDoc.id;
             setCurrentDocId(newDoc.id);
             if (newDoc.filename) {
               setBuilderFilename(newDoc.filename);
@@ -707,7 +556,6 @@ export function DocumentBuilderModal({
           setAutoSaveStatus("error");
         }
       } else {
-        // Create new document from template
         const createUrl = apiUrl("/api/documents/create-from-template");
         const res = await fetch(createUrl, {
           method: "POST",
@@ -730,7 +578,6 @@ export function DocumentBuilderModal({
           const newDoc = await res.json();
           lastSavedSnapshotRef.current = currentSnapshot;
           isDirtyRef.current = false;
-          loadedDocIdRef.current = newDoc.id;
           setCurrentDocId(newDoc.id);
           if (newDoc.filename) {
             setBuilderFilename(newDoc.filename);
@@ -936,38 +783,43 @@ export function DocumentBuilderModal({
 
             {/* Right: Autosave Status, Export Dropdown, and Close Button */}
             <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
-              {/* Auto-save Status Indicator */}
-              <div className="flex items-center">
+              <div className="flex items-center gap-1.5">
                 {!filenameValidation.isValid ? (
                   <div className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium text-destructive bg-destructive/10" title="Resolve duplicate document filename before saving">
                     <AlertCircle className="w-3.5 h-3.5" />
                     <span className="hidden sm:inline">Duplicate Name</span>
-                  </div>
-                ) : autoSaveStatus === "saved" ? (
-                  <div className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium text-emerald-600 dark:text-emerald-400 bg-emerald-500/10" title="All changes saved">
-                    <Check className="w-3.5 h-3.5" />
-                    <span className="hidden sm:inline">Saved</span>
                   </div>
                 ) : autoSaveStatus === "saving" ? (
                   <div className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium text-blue-600 dark:text-blue-400 bg-blue-500/10" title="Saving changes...">
                     <Loader2 className="w-3.5 h-3.5 animate-spin" />
                     <span className="hidden sm:inline">Saving</span>
                   </div>
-                ) : autoSaveStatus === "unsaved" ? (
-                  <div className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium text-amber-600 dark:text-amber-400 bg-amber-500/10" title="Unsaved changes">
-                    <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
-                    <span className="hidden sm:inline">Unsaved</span>
-                  </div>
-                ) : (
+                ) : autoSaveStatus === "error" ? (
                   <button
                     type="button"
-                    onClick={performAutoSave}
+                    onClick={() => performAutoSave(true)}
                     className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium text-rose-600 dark:text-rose-400 bg-rose-500/10 cursor-pointer"
                     title="Retry saving"
                   >
                     <AlertCircle className="w-3.5 h-3.5" />
                     <span>Retry</span>
                   </button>
+                ) : !currentDocId || autoSaveStatus === "unsaved" ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={() => performAutoSave(true)}
+                    className="h-7.5 sm:h-8 px-2.5 text-xs gap-1.5 bg-primary text-primary-foreground hover:bg-primary/90 font-semibold cursor-pointer shadow-2xs"
+                    title="Save draft to database"
+                  >
+                    <Save className="w-3.5 h-3.5" />
+                    <span>Save Draft</span>
+                  </Button>
+                ) : (
+                  <div className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium text-emerald-600 dark:text-emerald-400 bg-emerald-500/10" title="All changes saved">
+                    <Check className="w-3.5 h-3.5" />
+                    <span className="hidden sm:inline">Saved</span>
+                  </div>
                 )}
               </div>
 

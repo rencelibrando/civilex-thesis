@@ -32,6 +32,7 @@ export interface LegalDocumentPaperProps {
   documentTitle?: string;
   signatures?: SignaturesMap;
   onOpenSignatureModal?: () => void;
+  showSignatureToolbarButton?: boolean;
   hideToolbar?: boolean;
   showSaveButton?: boolean;
   onSaveToDatabase?: () => Promise<void> | void;
@@ -86,6 +87,7 @@ export const LegalDocumentPaper = forwardRef<LegalDocumentPaperRef, LegalDocumen
       documentTitle,
       signatures = {},
       onOpenSignatureModal,
+      showSignatureToolbarButton = true,
       hideToolbar = false,
       showSaveButton = false,
       onSaveToDatabase,
@@ -786,7 +788,7 @@ export const LegalDocumentPaper = forwardRef<LegalDocumentPaperRef, LegalDocumen
 
           {/* Right: Actions */}
           <div className="flex items-center gap-1.5">
-            {onOpenSignatureModal && (
+            {showSignatureToolbarButton && onOpenSignatureModal && (
               <Button
                 type="button"
                 variant="outline"
@@ -951,6 +953,7 @@ export const LegalDocumentPaper = forwardRef<LegalDocumentPaperRef, LegalDocumen
                         <div className="flex flex-col items-center text-center">
                           {s1Entry ? (
                             <div className="h-12 sm:h-16 flex items-end justify-center mb-[-8px] pointer-events-none select-none">
+                              {/* eslint-disable-next-line @next/next/no-img-element */}
                               <img
                                 src={s1Entry.dataUrl}
                                 alt="E-Signature Party 1"
@@ -983,6 +986,7 @@ export const LegalDocumentPaper = forwardRef<LegalDocumentPaperRef, LegalDocumen
                         <div className="flex flex-col items-center text-center">
                           {s2Entry ? (
                             <div className="h-12 sm:h-16 flex items-end justify-center mb-[-8px] pointer-events-none select-none">
+                              {/* eslint-disable-next-line @next/next/no-img-element */}
                               <img
                                 src={s2Entry.dataUrl}
                                 alt="E-Signature Party 2"
@@ -1031,6 +1035,7 @@ export const LegalDocumentPaper = forwardRef<LegalDocumentPaperRef, LegalDocumen
                         <div className="w-48 sm:w-60 flex flex-col items-center text-center">
                           {uEntry ? (
                             <div className="h-14 sm:h-16 flex items-end justify-center mb-[-8px] pointer-events-none select-none">
+                              {/* eslint-disable-next-line @next/next/no-img-element */}
                               <img
                                 src={uEntry.dataUrl}
                                 alt="E-Signature Affiant"
@@ -1084,6 +1089,7 @@ export const LegalDocumentPaper = forwardRef<LegalDocumentPaperRef, LegalDocumen
                         <div className="flex flex-col items-center text-center">
                           {w1Entry && (
                             <div className="h-10 sm:h-12 flex items-end justify-center mb-[-6px] pointer-events-none select-none">
+                              {/* eslint-disable-next-line @next/next/no-img-element */}
                               <img
                                 src={w1Entry.dataUrl}
                                 alt="Witness 1"
@@ -1097,6 +1103,7 @@ export const LegalDocumentPaper = forwardRef<LegalDocumentPaperRef, LegalDocumen
                         <div className="flex flex-col items-center text-center">
                           {w2Entry && (
                             <div className="h-10 sm:h-12 flex items-end justify-center mb-[-6px] pointer-events-none select-none">
+                              {/* eslint-disable-next-line @next/next/no-img-element */}
                               <img
                                 src={w2Entry.dataUrl}
                                 alt="Witness 2"

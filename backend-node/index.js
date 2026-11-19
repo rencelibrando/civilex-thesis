@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import { setupProxies } from './src/routes/proxy.js';
+import analyticsRoutes from './src/routes/analytics.js';
 import civilCodeRoutes from './src/routes/civil-code.js';
 import documentRoutes from './src/routes/documents.js';
 import profileRoutes from './src/routes/profiles.js';
@@ -99,6 +100,7 @@ setupProxies(app);
 app.use(express.json());
 
 // Apply internal routes
+app.use('/api/analytics', analyticsRoutes);
 app.use('/api/civil-code', civilCodeRoutes);
 app.use('/api/documents', documentRoutes);
 app.use('/api/profiles', profileRoutes);

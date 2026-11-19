@@ -22,13 +22,22 @@ except ImportError:
     SentenceTransformer = None
 
 from dotenv import load_dotenv
+from services.domain_router import classify_document_domain, get_shared_domain_router
+
 load_dotenv()
 
 DEFAULT_DB_URL = os.getenv("POSTGRES_DB_URL", "postgresql://postgres:postgres@127.0.0.1:54322/postgres")
 EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME", "intfloat/multilingual-e5-base")
 
-# Lazy load model
 _model = None
+
+
+def set_shared_model(model):
+    """Shares an already-loaded SentenceTransformer instance to avoid duplicate VRAM/RAM loads."""
+    global _model
+    _model = model
+
+
 def get_model():
     global _model
     if _model is None and SentenceTransformer is not None:
@@ -92,6 +101,46 @@ def update_status(document_id: str, status: str, error_message: str = None):
             conn.close()
     except Exception as e:
         print(f"Failed to update status to {status} for {document_id}: {e}")
+
+
+def _build_domain_rejection_message(domain_info: dict) -> str:
+    supported = (
+        "Supported Philippine Civil Code (RA 386) and Family Code (EO 209) documents include "
+        "contracts of lease, deeds of sale/donation, loan agreements, promissory notes, mortgages, "
+        "wills, estate settlements, marriage/support agreements, demand letters, and civil affidavits."
+    )
+    if domain_info.get("category") == "out_of_domain_legal":
+        target = domain_info.get("target_domain") or "another specialized branch of Philippine law"
+        return (
+            f"This document appears to fall under {target} rather than the Philippine Civil Code (RA 386) "
+            f"or Family Code (EO 209). {supported}"
+        )
+    return (
+        "This document does not appear to relate to the Philippine Civil Code (RA 386) or Family Code (EO 209) "
+        f"(it appears to be non-legal, technical, or general content). {supported}"
+    )
+
+
+def reject_document(document_id: str, error_message: str):
+    """Clears any partial chunks and marks a document rejected_unrelated with extracted_text cleared."""
+    conn = None
+    try:
+        conn = psycopg2.connect(DEFAULT_DB_URL)
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM document_chunks WHERE parent_id = %s AND parent_type = 'user_document';",
+                (document_id,),
+            )
+            cur.execute(
+                "UPDATE user_documents SET status = 'rejected_unrelated', error_message = %s, extracted_text = NULL WHERE id = %s;",
+                (error_message, document_id),
+            )
+            conn.commit()
+    except Exception as e:
+        print(f"Failed to reject document {document_id}: {e}")
+    finally:
+        if conn:
+            conn.close()
 
 def extract_pdf_structured_text(file_bytes: bytes) -> str:
     """Extracts PDF text preserving paragraphs, headers, and section structure."""
@@ -287,7 +336,18 @@ def extract_and_process_document(file_url: str, document_id: str, filename: str)
             else "No readable text could be extracted from this document. Please ensure the file contains legible text."
         )
         print(f"Insufficient text extracted ({alnum_chars} alphanumeric chars), marking rejected: {msg}")
-        update_status(document_id, 'rejected_unrelated', msg)
+        reject_document(document_id, msg)
+        return
+
+    # Reject non-Civil-Code documents immediately before chunking or embedding
+    router = get_shared_domain_router()
+    if router is None and _model is not None:
+        router = get_shared_domain_router(_model)
+    doc_domain = classify_document_domain(clean_text, filename, router=router)
+    if doc_domain.get("category") != "in_domain_civil":
+        rejection_msg = _build_domain_rejection_message(doc_domain)
+        print(f"Rejected document {document_id} ({filename}) as {doc_domain.get('category')}: {rejection_msg}")
+        reject_document(document_id, rejection_msg)
         return
 
     # 4. Chunk text and generate vector embeddings

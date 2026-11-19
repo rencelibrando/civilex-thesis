@@ -77,18 +77,22 @@ const ALLOWED_MIME_TYPES = [
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   'text/plain',
   'image/png',
-  'image/jpeg'
+  'image/jpeg',
+  'image/jpg'
 ];
+
+const ALLOWED_EXTENSIONS = new Set(['.pdf', '.doc', '.docx', '.txt', '.png', '.jpg', '.jpeg']);
 
 const storage = multer.memoryStorage();
 const upload = multer({
   storage,
   limits: { fileSize: 50 * 1024 * 1024 }, // 50MB limit matching config.toml
   fileFilter: (req, file, cb) => {
-    if (ALLOWED_MIME_TYPES.includes(file.mimetype)) {
+    const ext = path.extname(file.originalname || '').toLowerCase();
+    if (ALLOWED_MIME_TYPES.includes(file.mimetype) || ALLOWED_EXTENSIONS.has(ext)) {
       cb(null, true);
     } else {
-      cb(new Error(`Invalid file type: ${file.mimetype}. Allowed: PDF, DOC, DOCX, TXT`), false);
+      cb(new Error(`Invalid file type: ${file.mimetype}. Allowed: PDF, DOC, DOCX, TXT, PNG, JPG`), false);
     }
   }
 });
@@ -118,6 +122,37 @@ router.get('/', requireAuth, async (req, res) => {
   } catch (err) {
     console.error("Error fetching documents:", err);
     res.status(500).json({ error: "Failed to fetch user documents" });
+  }
+});
+
+// Get a single document by ID for polling or session restoration
+router.get('/:id', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    const docId = req.params.id;
+    if (!userId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const { data, error } = await req.supabase
+      .from('user_documents')
+      .select('*')
+      .eq('id', docId)
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    if (error) throw error;
+    if (!data) {
+      return res.status(404).json({ error: "Document not found" });
+    }
+
+    res.json({
+      ...data,
+      file_url: toPublicFileUrl(data.file_url, data.id),
+    });
+  } catch (err) {
+    console.error("Error fetching document:", err);
+    res.status(500).json({ error: "Failed to fetch user document" });
   }
 });
 

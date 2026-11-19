@@ -16,7 +16,14 @@ import {
   getPersonalizedGreeting,
 } from "@/lib/user-persona";
 import { runResumableStream, StreamEvent } from "@/lib/resumable-stream";
+import type { UserDocument } from "@/components/document-preview";
 import { useAuth } from "./auth-context";
+
+export interface DocRejectionNotice {
+  filename: string;
+  reason: string;
+  status: "rejected_unrelated" | "error";
+}
 
 
 // Types & Interfaces
@@ -444,8 +451,23 @@ interface ChatContextType {
   sessionId: string | null;
   setSessionId: (id: string | null) => void;
   followUpPrompts: string[];
+  setFollowUpPrompts: React.Dispatch<React.SetStateAction<string[]>>;
   starterPrompts: StarterPrompt[];
   refreshStarters: () => void;
+  activeDocument: UserDocument | null;
+  setActiveDocument: React.Dispatch<React.SetStateAction<UserDocument | null>>;
+  isUploadingDoc: boolean;
+  docUploadProgress: number;
+  docUploadStatusText: string | null;
+  docUploadError: string | null;
+  docRejectionNotice: DocRejectionNotice | null;
+  dismissDocFeedback: () => void;
+  attachDocument: (file: File) => Promise<void>;
+  loadDocumentById: (
+    docId: string,
+    options?: { autoAnalyzeIfIdle?: boolean; startFreshAnalysis?: boolean }
+  ) => Promise<UserDocument | null>;
+  clearDocument: () => void;
   handleSend: (overrideText?: string) => Promise<void>;
   handleStop: () => void;
   handleNewChat: () => void;
@@ -529,10 +551,13 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [followUpPrompts, setFollowUpPrompts] = useState<string[]>([]);
   const [starterPrompts, setStarterPrompts] = useState<StarterPrompt[]>(() => getRandomStarters(2));
+  const [activeDocument, setActiveDocument] = useState<UserDocument | null>(null);
+  const [isUploadingDoc, setIsUploadingDoc] = useState(false);
+  const [docUploadProgress, setDocUploadProgress] = useState(0);
+  const [docUploadStatusText, setDocUploadStatusText] = useState<string | null>(null);
+  const [docUploadError, setDocUploadError] = useState<string | null>(null);
+  const [docRejectionNotice, setDocRejectionNotice] = useState<DocRejectionNotice | null>(null);
 
-  // ── User Profile (for personalization) ───────────────────────────────────
-  // We read it from the Supabase session + local cache immediately so the
-  // greeting and starter prompts are personalized on first render.
   const [userFirstName, setUserFirstName] = useState(initialProfile.firstName);
 
   // Resolve the personalized greeting from profile fields
@@ -558,6 +583,33 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     turnStartTime: number;
   } | null>(null);
   const isReconcilingRef = useRef<boolean>(false);
+  const docPollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const autoAnalyzedDocIdsRef = useRef<Set<string>>(new Set());
+  const activeDocumentRef = useRef<UserDocument | null>(null);
+  const isTypingRef = useRef<boolean>(false);
+  const messagesRef = useRef<Message[]>(messages);
+  const sessionIdRef = useRef<string | null>(sessionId);
+  const retainedCitationsRef = useRef<any[]>(retainedCitations);
+
+  useEffect(() => {
+    activeDocumentRef.current = activeDocument;
+  }, [activeDocument]);
+
+  useEffect(() => {
+    isTypingRef.current = isTyping;
+  }, [isTyping]);
+
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+
+  useEffect(() => {
+    sessionIdRef.current = sessionId;
+  }, [sessionId]);
+
+  useEffect(() => {
+    retainedCitationsRef.current = retainedCitations;
+  }, [retainedCitations]);
 
   // ── Load profile + personalize greeting on mount ──────────────────────────
   useEffect(() => {
@@ -825,11 +877,37 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   }, [sessionId, stopCharStream]);
 
 
-  // New Chat (Immediately stops any running request)
+  const stopDocPolling = useCallback(() => {
+    if (docPollTimerRef.current) {
+      clearInterval(docPollTimerRef.current);
+      docPollTimerRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      stopDocPolling();
+    };
+  }, [stopDocPolling]);
+
+  const dismissDocFeedback = useCallback(() => {
+    setDocUploadError(null);
+    setDocRejectionNotice(null);
+  }, []);
+
+  const clearDocument = useCallback(() => {
+    stopDocPolling();
+    setActiveDocument(null);
+    activeDocumentRef.current = null;
+    setIsUploadingDoc(false);
+    setDocUploadProgress(0);
+    setDocUploadStatusText(null);
+    setDocUploadError(null);
+    setDocRejectionNotice(null);
+  }, [stopDocPolling]);
 
   const handleNewChat = useCallback(() => {
     isExplicitlyStoppedRef.current = true;
-    // 1. Instantly abort any active fetch request
     if (abortControllerRef.current && !abortControllerRef.current.signal.aborted) {
       try {
         abortControllerRef.current.abort("New chat started");
@@ -838,7 +916,6 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       }
       abortControllerRef.current = null;
     }
-    // 2. Clear character streaming timers & queues
     if (charIntervalRef.current) {
       clearInterval(charIntervalRef.current);
       charIntervalRef.current = null;
@@ -846,7 +923,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     charQueueRef.current = [];
     activeAssistantIdRef.current = null;
 
-    // 3. Reset state immediately — use personalized greeting if available
+    clearDocument();
     setIsTyping(false);
     setRagStatus(null);
     const resetMsgs = userFirstName
@@ -860,11 +937,14 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     setLegalAnalytics(null);
     setInputValue("");
     setSessionId(null);
+    sessionIdRef.current = null;
     setFollowUpPrompts([]);
+    if (typeof window !== "undefined" && window.location.pathname === "/chat" && window.location.search) {
+      window.history.replaceState({}, "", "/chat");
+    }
 
-    // 4. Roll a fresh set of prompt starters for the new chat!
     refreshStarters();
-  }, [refreshStarters, userFirstName]);
+  }, [clearDocument, refreshStarters, userFirstName]);
 
   // Reset chat if the logged-in user changes to prevent cross-account chat bleed
   let authUserId: string | null = null;
@@ -882,8 +962,558 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     prevUserIdRef.current = authUserId;
   }, [authUserId, handleNewChat]);
 
+  const executeAssistantStream = useCallback(
+    async ({
+      targetSessionId,
+      assistantId,
+      token,
+      payload,
+      turnStartTime,
+    }: {
+      targetSessionId: string | null;
+      assistantId: number;
+      token: string;
+      payload: Record<string, unknown>;
+      turnStartTime: number;
+    }) => {
+      let fullResponseAccumulator = "";
+      let receivedCitations: any[] = [];
+      let receivedFollowUps = false;
+      let hasStreamError = false;
 
-  // Send Message
+      try {
+        const controller = new AbortController();
+        abortControllerRef.current = controller;
+
+        activeStreamContextRef.current = {
+          sessionId: targetSessionId || "",
+          assistantId,
+          token,
+          fullResponse: "",
+          turnStartTime,
+        };
+
+        const streamExecution = async () => {
+          return await runResumableStream({
+            backendUrl: BACKEND_URL,
+            start: (signal) =>
+              fetch(`${BACKEND_URL}/api/chat`, {
+                method: "POST",
+                signal,
+                headers: {
+                  "Content-Type": "application/json",
+                  Authorization: `Bearer ${token}`,
+                  "X-Tunnel-Skip-AntiPhishing-Page": "true",
+                },
+                body: JSON.stringify(payload),
+              }),
+            getToken: async () => {
+              const { data: { session } } = await supabase.auth.getSession();
+              return session?.access_token || "";
+            },
+            onEvent: (data: StreamEvent) => {
+              if (data.type === "status") {
+                const statusObj: RagStatus = {
+                  stage: data.stage as RagStage,
+                  message: data.message || "",
+                  count: data.count,
+                  queue_position: data.queue_position,
+                };
+                setRagStatus(statusObj);
+                setMessages((prev) =>
+                  prev.map((msg) =>
+                    msg.id === assistantId ? { ...msg, ragStatus: statusObj } : msg
+                  )
+                );
+              } else if (data.type === "citations") {
+                receivedCitations = sortCitations(data.data || []);
+                setCurrentCitations(receivedCitations);
+                setRetainedCitations((prev) => mergeCitations(prev, receivedCitations));
+                setMessages((prev) =>
+                  prev.map((msg) =>
+                    msg.id === assistantId ? { ...msg, citations: receivedCitations } : msg
+                  )
+                );
+              } else if (data.type === "legal_analytics") {
+                const analytics = data.data as LegalAnalytics;
+                setLegalAnalytics(analytics);
+                if (analytics?.is_out_of_domain && receivedCitations.length === 0) {
+                  receivedCitations = [];
+                  setCurrentCitations([]);
+                }
+                setMessages((prev) =>
+                  prev.map((msg) =>
+                    msg.id === assistantId
+                      ? {
+                          ...msg,
+                          legalAnalytics: analytics,
+                          ...(analytics?.is_out_of_domain && receivedCitations.length === 0 ? { citations: [] } : {}),
+                        }
+                      : msg
+                  )
+                );
+              } else if (data.type === "accumulated_citations") {
+                setRetainedCitations(sortCitations(data.data || []));
+              } else if (data.type === "follow_ups") {
+                const suggestions = Array.isArray(data.data)
+                  ? data.data.filter((s: any) => typeof s === "string" && s.trim()).slice(0, 3)
+                  : [];
+                if (suggestions.length > 0) {
+                  receivedFollowUps = true;
+                  setFollowUpPrompts(suggestions);
+                }
+              } else if (data.type === "text" && data.text) {
+                fullResponseAccumulator += data.text;
+                if (activeStreamContextRef.current) {
+                  activeStreamContextRef.current.fullResponse = fullResponseAccumulator;
+                }
+                enqueueText(data.text);
+              } else if (data.type === "clarification_needed") {
+                const clarData = data.data as ClarificationData;
+                const clarStatus: RagStatus = {
+                  stage: "clarification_needed",
+                  message: "Additional context needed for accurate analysis",
+                };
+                setRagStatus(clarStatus);
+                const clarificationText = clarData.reasoning
+                  ? `${clarData.reasoning}\n\n${(clarData.questions || []).map((q: any) => q.question).join("\n")}`
+                  : "Additional context needed for accurate legal analysis.";
+                setMessages((prev) =>
+                  prev.map((msg) =>
+                    msg.id === assistantId
+                      ? { ...msg, clarificationData: clarData, content: clarificationText, ragStatus: clarStatus }
+                      : msg
+                  )
+                );
+                stopCharStream();
+                setIsTyping(false);
+              } else if (data.type === "error") {
+                const errorMsg = data.message || "An error occurred while generating the legal response.";
+                fullResponseAccumulator = `> **Service Notice**\n>\n> ${errorMsg}`;
+                hasStreamError = true;
+                stopCharStream();
+                setIsTyping(false);
+                setRagStatus({ stage: "error", message: errorMsg });
+                setCurrentCitations([]);
+                setMessages((prev) =>
+                  prev.map((msg) =>
+                    msg.id === assistantId
+                      ? {
+                          ...msg,
+                          content: fullResponseAccumulator,
+                          citations: [],
+                          ragStatus: { stage: "error", message: errorMsg },
+                        }
+                      : msg
+                  )
+                );
+              } else if (data.type === "done") {
+                setRagStatus({ stage: "completed", message: "Analysis complete" });
+                setMessages((prev) =>
+                  prev.map((msg) =>
+                    msg.id === assistantId
+                      ? { ...msg, legalAnalytics: settleNliAnalytics(msg.legalAnalytics ?? null) }
+                      : msg
+                  )
+                );
+                setLegalAnalytics((prev) => settleNliAnalytics(prev));
+              }
+            },
+            signal: controller.signal,
+          });
+        };
+
+        const outcome = typeof navigator !== "undefined" && "locks" in navigator && (navigator as any).locks?.request
+          ? await (navigator as any).locks.request(`civilex-stream-${assistantId}`, streamExecution)
+          : await streamExecution();
+
+        if (outcome === "expired" && targetSessionId) {
+          await reconcileWithServer(targetSessionId, assistantId, token);
+        }
+
+        if (outcome === "error" && !hasStreamError) {
+          const errorMsg = "An error occurred while generating the legal response.";
+          fullResponseAccumulator = fullResponseAccumulator || `> **Service Notice**\n>\n> ${errorMsg}`;
+          hasStreamError = true;
+          stopCharStream();
+          setIsTyping(false);
+          setRagStatus({ stage: "error", message: errorMsg });
+          setCurrentCitations([]);
+          setMessages((prev) =>
+            prev.map((msg) =>
+              msg.id === assistantId
+                ? {
+                    ...msg,
+                    content: fullResponseAccumulator,
+                    citations: [],
+                    ragStatus: { stage: "error", message: errorMsg },
+                  }
+                : msg
+            )
+          );
+        }
+
+        const waitForDrain = () =>
+          new Promise<void>((resolve) => {
+            if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+              flushCharQueueInstantly();
+              resolve();
+              return;
+            }
+            const startTime = Date.now();
+            const check = setInterval(() => {
+              if (
+                charQueueRef.current.length === 0 ||
+                (typeof document !== "undefined" && document.visibilityState === "hidden") ||
+                Date.now() - startTime > 2500
+              ) {
+                clearInterval(check);
+                flushCharQueueInstantly();
+                resolve();
+              }
+            }, 30);
+          });
+        await waitForDrain();
+        stopCharStream();
+
+        setIsTyping(false);
+        if (!hasStreamError) {
+          setRagStatus({ stage: "completed", message: "Analysis complete" });
+          if (!receivedFollowUps) {
+            setFollowUpPrompts(generateFollowUpPrompts(fullResponseAccumulator, receivedCitations));
+          }
+        }
+      } catch (error: any) {
+        const isAbort =
+          error?.name === "AbortError" ||
+          error?.message?.toLowerCase().includes("abort") ||
+          (typeof DOMException !== "undefined" && error instanceof DOMException && error.name === "AbortError");
+
+        stopCharStream();
+        setIsTyping(false);
+
+        if (isAbort && isExplicitlyStoppedRef.current) {
+          setRagStatus(null);
+          setMessages((prev) =>
+            prev.map((msg) =>
+              msg.id === assistantId
+                ? { ...msg, content: msg.content || "Request cancelled by user." }
+                : msg
+            )
+          );
+        } else {
+          setCurrentCitations([]);
+          setRagStatus({ stage: "error", message: "Service connection error" });
+          setMessages((prev) =>
+            prev.map((msg) =>
+              msg.id === assistantId
+                ? {
+                    ...msg,
+                    citations: [],
+                    ragStatus: { stage: "error", message: "Service connection error" },
+                    content:
+                      msg.content ||
+                      "> **Connection Notice**\n>\n> Unable to connect to the legal service. The model service (LM Studio) may be offline. Please verify that LM Studio is running and try again.",
+                  }
+                : msg
+            )
+          );
+        }
+      } finally {
+        abortControllerRef.current = null;
+      }
+    },
+    [enqueueText, flushCharQueueInstantly, reconcileWithServer, stopCharStream]
+  );
+
+  const startDocumentAnalysisSession = useCallback(
+    async (doc: UserDocument) => {
+      if (!doc?.id || autoAnalyzedDocIdsRef.current.has(doc.id)) return;
+      autoAnalyzedDocIdsRef.current.add(doc.id);
+
+      if (abortControllerRef.current && !abortControllerRef.current.signal.aborted) {
+        try {
+          abortControllerRef.current.abort("Starting document analysis");
+        } catch {
+          // Ignore already aborted
+        }
+        abortControllerRef.current = null;
+      }
+      stopCharStream();
+
+      const greetingMsgs = userFirstName
+        ? buildGreetingMessage(getPersonalizedGreeting(userFirstName))
+        : DEFAULT_MESSAGES;
+
+      const turnStartTime = Date.now();
+      const assistantId = turnStartTime + 1;
+      const initialStatus: RagStatus = {
+        stage: "embedding",
+        message: `Analyzing ${doc.filename} against Philippine Civil Law...`,
+      };
+
+      setActiveDocument(doc);
+      activeDocumentRef.current = doc;
+      setDocUploadError(null);
+      setDocRejectionNotice(null);
+      setCurrentCitations([]);
+      setRetainedCitations([]);
+      setLegalAnalytics(null);
+      setFollowUpPrompts([]);
+      setIsTyping(true);
+      setRagStatus(initialStatus);
+      setMessages([
+        ...greetingMsgs,
+        {
+          id: assistantId,
+          role: "assistant",
+          content: "",
+          ragStatus: initialStatus,
+        },
+      ]);
+
+      startCharStream(assistantId);
+      isExplicitlyStoppedRef.current = false;
+      isReconcilingRef.current = false;
+
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = session?.access_token || "";
+      let activeSessionId: string | null = null;
+
+      try {
+        const createRes = await fetch(`${BACKEND_URL}/api/sessions`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            title: `Analysis: ${doc.filename}`,
+            session_type: "document",
+            document_id: doc.id,
+          }),
+        });
+        if (createRes.ok) {
+          const sessionData = await createRes.json();
+          activeSessionId = sessionData.id;
+          setSessionId(activeSessionId);
+          sessionIdRef.current = activeSessionId;
+          if (typeof window !== "undefined" && window.location.pathname === "/chat" && activeSessionId) {
+            window.history.replaceState({}, "", `/chat?session=${activeSessionId}`);
+          }
+        }
+      } catch (sErr) {
+        console.error("Document session creation error:", sErr);
+      }
+
+      await executeAssistantStream({
+        targetSessionId: activeSessionId,
+        assistantId,
+        token,
+        turnStartTime,
+        payload: {
+          query: "",
+          session_id: activeSessionId,
+          document_id: doc.id,
+          document_name: doc.filename,
+          auto_analyze: true,
+          history: [],
+          prior_citations: [],
+        },
+      });
+    },
+    [executeAssistantStream, startCharStream, stopCharStream, userFirstName]
+  );
+
+  const loadDocumentById = useCallback(
+    async (
+      docId: string,
+      options?: { autoAnalyzeIfIdle?: boolean; startFreshAnalysis?: boolean }
+    ): Promise<UserDocument | null> => {
+      if (!docId) return null;
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const token = session?.access_token || "";
+        if (!token) return null;
+
+        const res = await fetch(`${BACKEND_URL}/api/documents/${encodeURIComponent(docId)}`, {
+          headers: { Authorization: `Bearer ${token}` },
+          cache: "no-store",
+        });
+        if (!res.ok) return null;
+        const doc = (await res.json()) as UserDocument;
+
+        if (doc.status === "rejected_unrelated" || doc.status === "error") {
+          setDocRejectionNotice({
+            filename: doc.filename,
+            reason:
+              doc.error_message ||
+              "This document is outside the scope of the Philippine Civil Code (RA 386).",
+            status: doc.status,
+          });
+          setActiveDocument(null);
+          activeDocumentRef.current = null;
+          return doc;
+        }
+
+        const alreadyAnalyzingSameDoc =
+          activeDocumentRef.current?.id === doc.id &&
+          Boolean(sessionIdRef.current) &&
+          messagesRef.current.length > 1;
+
+        setActiveDocument(doc);
+        activeDocumentRef.current = doc;
+        setDocRejectionNotice(null);
+        setDocUploadError(null);
+
+        if (doc.status === "completed") {
+          if (options?.startFreshAnalysis && !alreadyAnalyzingSameDoc) {
+            autoAnalyzedDocIdsRef.current.delete(doc.id);
+            await startDocumentAnalysisSession(doc);
+          } else if (
+            options?.autoAnalyzeIfIdle &&
+            !sessionIdRef.current &&
+            messagesRef.current.length <= 1
+          ) {
+            await startDocumentAnalysisSession(doc);
+          }
+        }
+        return doc;
+      } catch (err) {
+        console.error("Failed to fetch document by ID:", err);
+        return null;
+      }
+    },
+    [startDocumentAnalysisSession]
+  );
+
+  const attachDocument = useCallback(
+    async (file: File) => {
+      if (!file || isTypingRef.current || isUploadingDoc) return;
+
+      const allowedTypes = [
+        "application/pdf",
+        "application/msword",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "text/plain",
+        "image/png",
+        "image/jpeg",
+        "image/jpg",
+      ];
+      const allowedExts = [".pdf", ".doc", ".docx", ".txt", ".png", ".jpg", ".jpeg"];
+      const hasValidExt = allowedExts.some((ext) => file.name.toLowerCase().endsWith(ext));
+
+      if (!allowedTypes.includes(file.type) && !hasValidExt) {
+        setDocUploadError("Invalid file type. Allowed formats: PDF, DOC, DOCX, TXT, PNG, JPG.");
+        return;
+      }
+
+      stopDocPolling();
+      setDocUploadError(null);
+      setDocRejectionNotice(null);
+      setIsUploadingDoc(true);
+      setDocUploadProgress(5);
+      setDocUploadStatusText(`Uploading ${file.name}...`);
+
+      const formData = new FormData();
+      formData.append("file", file);
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 180000);
+
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const token = session?.access_token || "";
+
+        const res = await fetch(`${BACKEND_URL}/api/documents/upload`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}` },
+          body: formData,
+          signal: controller.signal,
+        });
+        clearTimeout(timeoutId);
+
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          setIsUploadingDoc(false);
+          setDocUploadStatusText(null);
+          setDocUploadError(errData.error || `Upload failed (${res.statusText || "error"}).`);
+          return;
+        }
+
+        const uploadResult = await res.json();
+        const docId: string | undefined = uploadResult?.id;
+        if (!docId) {
+          setIsUploadingDoc(false);
+          setDocUploadStatusText(null);
+          setDocUploadError("Upload response missing document ID.");
+          return;
+        }
+
+        setDocUploadProgress(15);
+        setDocUploadStatusText(`Extracting & checking Civil Code relevance for ${file.name}...`);
+
+        const pollStatus = async () => {
+          try {
+            const { data: { session: s } } = await supabase.auth.getSession();
+            const freshToken = s?.access_token || token;
+            const docRes = await fetch(`${BACKEND_URL}/api/documents/${encodeURIComponent(docId)}`, {
+              headers: { Authorization: `Bearer ${freshToken}` },
+              cache: "no-store",
+            });
+            if (!docRes.ok) return;
+            const docData = (await docRes.json()) as UserDocument;
+
+            if (docData.status === "completed") {
+              stopDocPolling();
+              setIsUploadingDoc(false);
+              setDocUploadProgress(100);
+              setDocUploadStatusText(null);
+              await startDocumentAnalysisSession(docData);
+            } else if (docData.status === "rejected_unrelated" || docData.status === "error") {
+              stopDocPolling();
+              setIsUploadingDoc(false);
+              setDocUploadProgress(0);
+              setDocUploadStatusText(null);
+              setDocRejectionNotice({
+                filename: docData.filename || file.name,
+                reason:
+                  docData.error_message ||
+                  (docData.status === "rejected_unrelated"
+                    ? "This document does not appear to relate to the Philippine Civil Code (RA 386)."
+                    : "An error occurred while extracting this document."),
+                status: docData.status,
+              });
+            } else {
+              setDocUploadProgress(docData.progress || 25);
+              setDocUploadStatusText(
+                docData.status === "extracting"
+                  ? `Extracting & validating Civil Code relevance (${docData.progress || 0}%)...`
+                  : `Uploading ${file.name}...`
+              );
+            }
+          } catch (pollErr) {
+            console.warn("Document polling check failed:", pollErr);
+          }
+        };
+
+        await pollStatus();
+        if (!autoAnalyzedDocIdsRef.current.has(docId) && docPollTimerRef.current === null) {
+          docPollTimerRef.current = setInterval(pollStatus, 1200);
+        }
+      } catch (err: any) {
+        clearTimeout(timeoutId);
+        stopDocPolling();
+        setIsUploadingDoc(false);
+        setDocUploadStatusText(null);
+        setDocUploadError(
+          err?.name === "AbortError"
+            ? "Upload timed out after 180 seconds. Please try again with a smaller file."
+            : "Upload error. Please check your connection and try again."
+        );
+      }
+    },
+    [isUploadingDoc, startDocumentAnalysisSession, stopDocPolling]
+  );
 
   const handleSend = async (overrideText?: string) => {
     const userText = (overrideText ?? inputValue).trim();
@@ -892,6 +1522,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     const turnStartTime = Date.now();
     const newUserMsg: Message = { id: turnStartTime, role: "user", content: userText };
     const currentHistory = [...messages, newUserMsg];
+    const currentDoc = activeDocumentRef.current;
+    const activeDocPayload =
+      currentDoc?.id && currentDoc.status === "completed"
+        ? { document_id: currentDoc.id, document_name: currentDoc.filename }
+        : {};
 
     setMessages(currentHistory);
     setInputValue("");
@@ -900,10 +1535,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     setLegalAnalytics(null);
     setFollowUpPrompts([]);
 
-    // Initialize RAG status to embedding stage
     const initialStatus: RagStatus = {
       stage: "embedding",
-      message: "Vectorizing legal inquiry...",
+      message: currentDoc ? `Cross-referencing ${currentDoc.filename}...` : "Vectorizing legal inquiry...",
     };
     setRagStatus(initialStatus);
 
@@ -922,330 +1556,60 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     isExplicitlyStoppedRef.current = false;
     isReconcilingRef.current = false;
 
-    let fullResponseAccumulator = "";
-    let receivedCitations: any[] = [];
-    let receivedFollowUps = false;
-    let hasStreamError = false;
+    const { data: { session } } = await supabase.auth.getSession();
+    const token = session?.access_token || "";
     let activeSessionId: string | null = sessionId;
-    let token = "";
 
-    try {
-      const controller = new AbortController();
-      abortControllerRef.current = controller;
-
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-      token = session?.access_token || "";
-
-      if (!activeSessionId) {
-        try {
-          const createRes = await fetch(`${BACKEND_URL}/api/sessions`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: `Bearer ${token}`,
-            },
-            body: JSON.stringify({ title: userText.slice(0, 30) + "..." }),
-          });
-          if (createRes.ok) {
-            const sessionData = await createRes.json();
-            activeSessionId = sessionData.id;
-            setSessionId(activeSessionId);
-          }
-        } catch (sErr) {
-          console.error("Session creation error:", sErr);
-        }
-      }
-
-      activeStreamContextRef.current = {
-        sessionId: activeSessionId || "",
-        assistantId,
-        token,
-        fullResponse: "",
-        turnStartTime,
-      };
-
-      if (activeSessionId) {
-        fetch(`${BACKEND_URL}/api/sessions/${activeSessionId}/messages`, {
+    if (!activeSessionId) {
+      try {
+        const createRes = await fetch(`${BACKEND_URL}/api/sessions`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
             Authorization: `Bearer ${token}`,
           },
-          body: JSON.stringify({ role: "user", content: userText }),
-        }).catch((err) => console.error("Failed to save user message:", err));
-      }
-
-      const streamExecution = async () => {
-        return await runResumableStream({
-          backendUrl: BACKEND_URL,
-          start: (signal) =>
-            fetch(`${BACKEND_URL}/api/chat`, {
-              method: "POST",
-              signal,
-              headers: {
-                "Content-Type": "application/json",
-                Authorization: `Bearer ${token}`,
-                "X-Tunnel-Skip-AntiPhishing-Page": "true",
-              },
-              body: JSON.stringify({
-                query: userText,
-                session_id: activeSessionId,
-                history: currentHistory
-                  .slice(0, -1)
-                  .map((m) => ({ role: m.role, content: m.content })),
-                prior_citations: retainedCitations,
-              }),
-            }),
-          getToken: async () => {
-            const { data: { session } } = await supabase.auth.getSession();
-            return session?.access_token || "";
-          },
-          onEvent: (data: StreamEvent) => {
-            if (data.type === "status") {
-              const statusObj: RagStatus = {
-                stage: data.stage as RagStage,
-                message: data.message || "",
-                count: data.count,
-                queue_position: data.queue_position,
-              };
-              setRagStatus(statusObj);
-              setMessages((prev) =>
-                prev.map((msg) =>
-                  msg.id === assistantId ? { ...msg, ragStatus: statusObj } : msg
-                )
-              );
-            } else if (data.type === "citations") {
-              receivedCitations = (data.data || []).sort((a: any, b: any) => {
-                const aOut = a.is_in_context === false || a.rank_status === "out_of_rank" ? 1 : 0;
-                const bOut = b.is_in_context === false || b.rank_status === "out_of_rank" ? 1 : 0;
-                if (aOut !== bOut) return aOut - bOut;
-                const rankDiff = (a?.rank || 999) - (b?.rank || 999);
-                if (rankDiff !== 0) return rankDiff;
-                return (Number(b?.suitability_percent) || 0) - (Number(a?.suitability_percent) || 0);
-              });
-              setCurrentCitations(receivedCitations);
-              setRetainedCitations((prev) => mergeCitations(prev, receivedCitations));
-              setMessages((prev) =>
-                prev.map((msg) =>
-                  msg.id === assistantId ? { ...msg, citations: receivedCitations } : msg
-                )
-              );
-            } else if (data.type === "legal_analytics") {
-              const analytics = data.data as LegalAnalytics;
-              setLegalAnalytics(analytics);
-              if (analytics?.is_out_of_domain && receivedCitations.length === 0) {
-                receivedCitations = [];
-                setCurrentCitations([]);
-              }
-              setMessages((prev) =>
-                prev.map((msg) =>
-                  msg.id === assistantId
-                    ? {
-                      ...msg,
-                      legalAnalytics: analytics,
-                      ...(analytics?.is_out_of_domain && receivedCitations.length === 0 ? { citations: [] } : {}),
-                    }
-                    : msg
-                )
-              );
-            } else if (data.type === "accumulated_citations") {
-              const incoming = data.data || [];
-              const accumulated = sortCitations(incoming);
-              setRetainedCitations(accumulated);
-            } else if (data.type === "follow_ups") {
-              const suggestions = Array.isArray(data.data)
-                ? data.data.filter((s: any) => typeof s === "string" && s.trim()).slice(0, 3)
-                : [];
-              if (suggestions.length > 0) {
-                receivedFollowUps = true;
-                setFollowUpPrompts(suggestions);
-              }
-            } else if (data.type === "text" && data.text) {
-              fullResponseAccumulator += data.text;
-              if (activeStreamContextRef.current) {
-                activeStreamContextRef.current.fullResponse = fullResponseAccumulator;
-              }
-              enqueueText(data.text);
-            } else if (data.type === "clarification_needed") {
-              const clarData = data.data as ClarificationData;
-              const clarStatus: RagStatus = {
-                stage: "clarification_needed",
-                message: "Additional context needed for accurate analysis",
-              };
-              setRagStatus(clarStatus);
-              const clarificationText = clarData.reasoning
-                ? `${clarData.reasoning}\n\n${(clarData.questions || []).map((q: any) => q.question).join("\n")}`
-                : "Additional context needed for accurate legal analysis.";
-              setMessages((prev) =>
-                prev.map((msg) =>
-                  msg.id === assistantId
-                    ? { ...msg, clarificationData: clarData, content: clarificationText, ragStatus: clarStatus }
-                    : msg
-                )
-              );
-              stopCharStream();
-              setIsTyping(false);
-            } else if (data.type === "error") {
-              const errorMsg = data.message || "An error occurred while generating the legal response.";
-              fullResponseAccumulator = `> **Service Notice**\n>\n> ${errorMsg}`;
-              hasStreamError = true;
-              stopCharStream();
-              setIsTyping(false);
-              setRagStatus({
-                stage: "error",
-                message: errorMsg,
-              });
-              setCurrentCitations([]);
-              setMessages((prev) =>
-                prev.map((msg) =>
-                  msg.id === assistantId
-                    ? {
-                        ...msg,
-                        content: fullResponseAccumulator,
-                        citations: [],
-                        ragStatus: { stage: "error", message: errorMsg },
-                      }
-                    : msg
-                )
-              );
-            } else if (data.type === "done") {
-              setRagStatus({
-                stage: "completed",
-                message: "Analysis complete",
-              });
-              setMessages((prev) =>
-                prev.map((msg) =>
-                  msg.id === assistantId
-                    ? { ...msg, legalAnalytics: settleNliAnalytics(msg.legalAnalytics ?? null) }
-                    : msg
-                )
-              );
-              setLegalAnalytics((prev) => settleNliAnalytics(prev));
-            }
-          },
-          signal: controller.signal,
+          body: JSON.stringify({
+            title: currentDoc ? `Analysis: ${currentDoc.filename}` : userText.slice(0, 30) + "...",
+            ...(currentDoc ? { session_type: "document", document_id: currentDoc.id } : {}),
+          }),
         });
-      };
-
-      // Web Locks desktop hardening: prevents Chromium Energy/Memory Saver from pausing the stream
-      const outcome = typeof navigator !== "undefined" && "locks" in navigator && (navigator as any).locks?.request
-        ? await (navigator as any).locks.request(`civilex-stream-${assistantId}`, streamExecution)
-        : await streamExecution();
-
-      if (outcome === "expired" && activeSessionId) {
-        await reconcileWithServer(activeSessionId, assistantId, token);
-      }
-
-      if (outcome === "error" && !hasStreamError) {
-        const errorMsg = "An error occurred while generating the legal response.";
-        fullResponseAccumulator = fullResponseAccumulator || `> **Service Notice**\n>\n> ${errorMsg}`;
-        hasStreamError = true;
-        stopCharStream();
-        setIsTyping(false);
-        setRagStatus({
-          stage: "error",
-          message: errorMsg,
-        });
-        setCurrentCitations([]);
-        setMessages((prev) =>
-          prev.map((msg) =>
-            msg.id === assistantId
-              ? {
-                  ...msg,
-                  content: fullResponseAccumulator,
-                  citations: [],
-                  ragStatus: { stage: "error", message: errorMsg },
-                }
-              : msg
-          )
-        );
-      }
-
-      // Wait for character queue to drain smoothly
-      const waitForDrain = () =>
-        new Promise<void>((resolve) => {
-          if (typeof document !== "undefined" && document.visibilityState === "hidden") {
-            flushCharQueueInstantly();
-            resolve();
-            return;
-          }
-          const startTime = Date.now();
-          const check = setInterval(() => {
-            if (
-              charQueueRef.current.length === 0 ||
-              (typeof document !== "undefined" && document.visibilityState === "hidden") ||
-              Date.now() - startTime > 2500
-            ) {
-              clearInterval(check);
-              flushCharQueueInstantly();
-              resolve();
-            }
-          }, 30);
-        });
-      await waitForDrain();
-      stopCharStream();
-
-      setIsTyping(false);
-      if (!hasStreamError) {
-        setRagStatus({
-          stage: "completed",
-          message: "Analysis complete",
-        });
-
-        if (!receivedFollowUps) {
-          const followUps = generateFollowUpPrompts(fullResponseAccumulator, receivedCitations);
-          setFollowUpPrompts(followUps);
+        if (createRes.ok) {
+          const sessionData = await createRes.json();
+          activeSessionId = sessionData.id;
+          setSessionId(activeSessionId);
+          sessionIdRef.current = activeSessionId;
         }
+      } catch (sErr) {
+        console.error("Session creation error:", sErr);
       }
-    } catch (error: any) {
-      const isAbort =
-        error?.name === "AbortError" ||
-        error?.message?.toLowerCase().includes("abort") ||
-        (typeof DOMException !== "undefined" && error instanceof DOMException && error.name === "AbortError");
-
-      stopCharStream();
-      setIsTyping(false);
-
-      if (isAbort && isExplicitlyStoppedRef.current) {
-        setRagStatus(null);
-        setMessages((prev) =>
-          prev.map((msg) =>
-            msg.id === assistantId
-              ? { ...msg, content: msg.content || "Request cancelled by user." }
-              : msg
-          )
-        );
-      } else {
-        stopCharStream();
-        setIsTyping(false);
-        setCurrentCitations([]);
-        setRagStatus({
-          stage: "error",
-          message: "Service connection error",
-        });
-        setMessages((prev) =>
-          prev.map((msg) =>
-            msg.id === assistantId
-              ? {
-                ...msg,
-                citations: [],
-                ragStatus: { stage: "error", message: "Service connection error" },
-                content:
-                  msg.content ||
-                  "> **Connection Notice**\n>\n> Unable to connect to the legal service. The model service (LM Studio) may be offline. Please verify that LM Studio is running and try again.",
-              }
-              : msg
-          )
-        );
-      }
-    } finally {
-      abortControllerRef.current = null;
     }
+
+    if (activeSessionId) {
+      fetch(`${BACKEND_URL}/api/sessions/${activeSessionId}/messages`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ role: "user", content: userText }),
+      }).catch((err) => console.error("Failed to save user message:", err));
+    }
+
+    await executeAssistantStream({
+      targetSessionId: activeSessionId,
+      assistantId,
+      token,
+      turnStartTime,
+      payload: {
+        query: userText,
+        session_id: activeSessionId,
+        ...activeDocPayload,
+        history: currentHistory.slice(0, -1).map((m) => ({ role: m.role, content: m.content })),
+        prior_citations: retainedCitations,
+      },
+    });
   };
 
-  // Clarification Submit: re-sends the original query with user's clarification answers
   const handleClarificationSubmit = async (
     originalQuery: string,
     answers: Record<string, string>
@@ -1286,285 +1650,41 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     isExplicitlyStoppedRef.current = false;
     isReconcilingRef.current = false;
 
-    let fullResponseAccumulator = "";
-    let receivedCitations: any[] = [];
-    let receivedFollowUps = false;
-    let hasStreamError = false;
-    let token = "";
+    const { data: { session } } = await supabase.auth.getSession();
+    const token = session?.access_token || "";
 
-    try {
-      const controller = new AbortController();
-      abortControllerRef.current = controller;
-
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-      token = session?.access_token || "";
-
-      activeStreamContextRef.current = {
-        sessionId: sessionId || "",
-        assistantId,
-        token,
-        fullResponse: "",
-        turnStartTime,
-      };
-
-      if (sessionId) {
-        fetch(`${BACKEND_URL}/api/sessions/${sessionId}/messages`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify({ role: "user", content: answerSummary }),
-        }).catch((err) => console.error("Failed to save clarification message:", err));
-      }
-
-      const currentHistory = messages.map((m) => ({ role: m.role, content: m.content }));
-
-      const streamExecution = async () => {
-        return await runResumableStream({
-          backendUrl: BACKEND_URL,
-          start: (signal) =>
-            fetch(`${BACKEND_URL}/api/chat`, {
-              method: "POST",
-              signal,
-              headers: {
-                "Content-Type": "application/json",
-                Authorization: `Bearer ${token}`,
-                "X-Tunnel-Skip-AntiPhishing-Page": "true",
-              },
-              body: JSON.stringify({
-                query: answerSummary,
-                original_query: originalQuery,
-                session_id: sessionId,
-                history: currentHistory,
-                prior_citations: retainedCitations,
-                clarification_context: { answers, original_query: originalQuery },
-              }),
-            }),
-          getToken: async () => {
-            const { data: { session } } = await supabase.auth.getSession();
-            return session?.access_token || "";
-          },
-          onEvent: (data: StreamEvent) => {
-            if (data.type === "status") {
-              const statusObj: RagStatus = {
-                stage: data.stage as RagStage,
-                message: data.message || "",
-                count: data.count,
-                queue_position: data.queue_position,
-              };
-              setRagStatus(statusObj);
-              setMessages((prev) =>
-                prev.map((msg) =>
-                  msg.id === assistantId ? { ...msg, ragStatus: statusObj } : msg
-                )
-              );
-            } else if (data.type === "citations") {
-              receivedCitations = (data.data || []).sort((a: any, b: any) => {
-                const aOut = a.is_in_context === false || a.rank_status === "out_of_rank" ? 1 : 0;
-                const bOut = b.is_in_context === false || b.rank_status === "out_of_rank" ? 1 : 0;
-                if (aOut !== bOut) return aOut - bOut;
-                return (a?.rank || 999) - (b?.rank || 999);
-              });
-              setCurrentCitations(receivedCitations);
-              setRetainedCitations((prev) => mergeCitations(prev, receivedCitations));
-              setMessages((prev) =>
-                prev.map((msg) =>
-                  msg.id === assistantId ? { ...msg, citations: receivedCitations } : msg
-                )
-              );
-            } else if (data.type === "legal_analytics") {
-              const analytics = data.data as LegalAnalytics;
-              setLegalAnalytics(analytics);
-              if (analytics?.is_out_of_domain && receivedCitations.length === 0) {
-                receivedCitations = [];
-                setCurrentCitations([]);
-              }
-              setMessages((prev) =>
-                prev.map((msg) =>
-                  msg.id === assistantId
-                    ? {
-                      ...msg,
-                      legalAnalytics: analytics,
-                      ...(analytics?.is_out_of_domain && receivedCitations.length === 0 ? { citations: [] } : {}),
-                    }
-                    : msg
-                )
-              );
-            } else if (data.type === "accumulated_citations") {
-              const incoming = data.data || [];
-              const accumulated = sortCitations(incoming);
-              setRetainedCitations(accumulated);
-            } else if (data.type === "follow_ups") {
-              const suggestions = Array.isArray(data.data)
-                ? data.data.filter((s: any) => typeof s === "string" && s.trim()).slice(0, 3)
-                : [];
-              if (suggestions.length > 0) {
-                receivedFollowUps = true;
-                setFollowUpPrompts(suggestions);
-              }
-            } else if (data.type === "text" && data.text) {
-              fullResponseAccumulator += data.text;
-              if (activeStreamContextRef.current) {
-                activeStreamContextRef.current.fullResponse = fullResponseAccumulator;
-              }
-              enqueueText(data.text);
-            } else if (data.type === "error") {
-              const errorMsg = data.message || "An error occurred while generating the legal response.";
-              fullResponseAccumulator = `> **Service Notice**\n>\n> ${errorMsg}`;
-              hasStreamError = true;
-              stopCharStream();
-              setIsTyping(false);
-              setRagStatus({
-                stage: "error",
-                message: errorMsg,
-              });
-              setCurrentCitations([]);
-              setMessages((prev) =>
-                prev.map((msg) =>
-                  msg.id === assistantId
-                    ? {
-                        ...msg,
-                        content: fullResponseAccumulator,
-                        citations: [],
-                        ragStatus: { stage: "error", message: errorMsg },
-                      }
-                    : msg
-                )
-              );
-            } else if (data.type === "done") {
-              setRagStatus({
-                stage: "completed",
-                message: "Analysis complete",
-              });
-              setMessages((prev) =>
-                prev.map((msg) =>
-                  msg.id === assistantId
-                    ? { ...msg, legalAnalytics: settleNliAnalytics(msg.legalAnalytics ?? null) }
-                    : msg
-                )
-              );
-              setLegalAnalytics((prev) => settleNliAnalytics(prev));
-            }
-          },
-          signal: controller.signal,
-        });
-      };
-
-      const outcome = typeof navigator !== "undefined" && "locks" in navigator && (navigator as any).locks?.request
-        ? await (navigator as any).locks.request(`civilex-stream-${assistantId}`, streamExecution)
-        : await streamExecution();
-
-      if (outcome === "expired" && sessionId) {
-        await reconcileWithServer(sessionId, assistantId, token);
-      }
-
-      if (outcome === "error" && !hasStreamError) {
-        const errorMsg = "An error occurred while generating the legal response.";
-        fullResponseAccumulator = fullResponseAccumulator || `> **Service Notice**\n>\n> ${errorMsg}`;
-        hasStreamError = true;
-        stopCharStream();
-        setIsTyping(false);
-        setRagStatus({
-          stage: "error",
-          message: errorMsg,
-        });
-        setCurrentCitations([]);
-        setMessages((prev) =>
-          prev.map((msg) =>
-            msg.id === assistantId
-              ? {
-                  ...msg,
-                  content: fullResponseAccumulator,
-                  citations: [],
-                  ragStatus: { stage: "error", message: errorMsg },
-                }
-              : msg
-          )
-        );
-      }
-
-      const waitForDrain = () =>
-        new Promise<void>((resolve) => {
-          if (typeof document !== "undefined" && document.visibilityState === "hidden") {
-            flushCharQueueInstantly();
-            resolve();
-            return;
-          }
-          const startTime = Date.now();
-          const check = setInterval(() => {
-            if (
-              charQueueRef.current.length === 0 ||
-              (typeof document !== "undefined" && document.visibilityState === "hidden") ||
-              Date.now() - startTime > 2500
-            ) {
-              clearInterval(check);
-              flushCharQueueInstantly();
-              resolve();
-            }
-          }, 30);
-        });
-      await waitForDrain();
-      stopCharStream();
-
-      setIsTyping(false);
-      if (!hasStreamError) {
-        setRagStatus({
-          stage: "completed",
-          message: "Analysis complete",
-        });
-
-        if (!receivedFollowUps) {
-          const followUps = generateFollowUpPrompts(fullResponseAccumulator, receivedCitations);
-          setFollowUpPrompts(followUps);
-        }
-      }
-    } catch (error: any) {
-      const isAbort =
-        error?.name === "AbortError" ||
-        error?.message?.toLowerCase().includes("abort") ||
-        (typeof DOMException !== "undefined" && error instanceof DOMException && error.name === "AbortError");
-
-      stopCharStream();
-      setIsTyping(false);
-
-      if (isAbort && isExplicitlyStoppedRef.current) {
-        setRagStatus(null);
-        setMessages((prev) =>
-          prev.map((msg) =>
-            msg.id === assistantId
-              ? { ...msg, content: msg.content || "Request cancelled by user." }
-              : msg
-          )
-        );
-      } else {
-        stopCharStream();
-        setIsTyping(false);
-        setCurrentCitations([]);
-        setRagStatus({
-          stage: "error",
-          message: "Service connection error",
-        });
-        setMessages((prev) =>
-          prev.map((msg) =>
-            msg.id === assistantId
-              ? {
-                ...msg,
-                citations: [],
-                ragStatus: { stage: "error", message: "Service connection error" },
-                content:
-                  msg.content ||
-                  "> **Connection Notice**\n>\n> Unable to connect to the legal service. The model service (LM Studio) may be offline. Please verify that LM Studio is running and try again.",
-              }
-              : msg
-          )
-        );
-      }
-    } finally {
-      abortControllerRef.current = null;
+    if (sessionId) {
+      fetch(`${BACKEND_URL}/api/sessions/${sessionId}/messages`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ role: "user", content: answerSummary }),
+      }).catch((err) => console.error("Failed to save clarification message:", err));
     }
+
+    const currentDoc = activeDocumentRef.current;
+    const activeDocPayload =
+      currentDoc?.id && currentDoc.status === "completed"
+        ? { document_id: currentDoc.id, document_name: currentDoc.filename }
+        : {};
+
+    await executeAssistantStream({
+      targetSessionId: sessionId,
+      assistantId,
+      token,
+      turnStartTime,
+      payload: {
+        query: answerSummary,
+        original_query: originalQuery,
+        session_id: sessionId,
+        ...activeDocPayload,
+        history: messages.map((m) => ({ role: m.role, content: m.content })),
+        prior_citations: retainedCitations,
+        clarification_context: { answers, original_query: originalQuery },
+      },
+    });
   };
 
   // Connects or re-attaches to a generation that was running when iOS discarded the page
@@ -1734,8 +1854,20 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         sessionId,
         setSessionId,
         followUpPrompts,
+        setFollowUpPrompts,
         starterPrompts,
         refreshStarters,
+        activeDocument,
+        setActiveDocument,
+        isUploadingDoc,
+        docUploadProgress,
+        docUploadStatusText,
+        docUploadError,
+        docRejectionNotice,
+        dismissDocFeedback,
+        attachDocument,
+        loadDocumentById,
+        clearDocument,
         handleSend,
         handleStop,
         handleNewChat,

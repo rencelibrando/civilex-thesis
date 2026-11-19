@@ -1,17 +1,17 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import {
   MessageSquare,
   History,
   Settings,
   LogOut,
+  FilePenLine,
 } from "lucide-react";
 import {
   ScalesOfJustice,
   CivilCodeCodex,
-  LegalShieldCheck,
 } from "@/components/icons";
 import { cn } from "@/lib/utils";
 
@@ -37,9 +37,9 @@ const sidebarNavItems = [
     icon: CivilCodeCodex,
   },
   {
-    title: "Document Analysis",
-    href: "/research",
-    icon: LegalShieldCheck,
+    title: "Document Builder",
+    href: "/document-builder",
+    icon: FilePenLine,
   },
 ];
 
@@ -48,20 +48,21 @@ import { useAuth } from "@/context/auth-context";
 
 export function SidebarNav({ className }: { className?: string }) {
   const pathname = usePathname();
+  const router = useRouter();
   const { signOut } = useAuth();
   let isTyping = false;
   try {
     const chat = useChat();
     isTyping = chat.isTyping;
   } catch {
-    // If used outside ChatProvider (e.g. mobile sheet before provider), gracefully fallback
+    // Gracefully fallback when rendered outside ChatProvider
   }
 
   const handleLogout = async () => {
     try {
       await signOut();
     } finally {
-      window.location.href = "/login";
+      router.replace("/login");
     }
   };
 

@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback, Fragment, isValidElement } from "react";
-import { useRouter } from "next/navigation";
+import { useState, useRef, useEffect, useCallback, Fragment, isValidElement, Suspense } from "react";
+import { useSearchParams } from "next/navigation";
 import {
   Send,
   ChevronRight,
@@ -12,7 +12,6 @@ import {
   PlusCircle,
   Sparkles,
   User,
-  RefreshCw,
   Brain,
   CheckCircle2,
   ChevronDown,
@@ -25,23 +24,43 @@ import {
   Compass,
   Info,
   AlertCircle,
+  AlertTriangle,
   ArrowRight,
   HelpCircle,
   MessageCircleQuestion,
   Clock,
+  Paperclip,
+  FileText,
+  UploadCloud,
+  Eye,
+  EyeOff,
+  X,
+  Download,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { supabase } from "@/lib/supabase";
-import { BACKEND_URL } from "@/lib/config";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { BACKEND_URL, apiUrl } from "@/lib/config";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { JurisprudenceModal, JurisprudenceCase } from "@/components/jurisprudence-modal";
+import {
+  DocumentPreview,
+  formatDocDisplayName,
+  getFilePreviewUrl,
+} from "@/components/document-preview";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { useChat, RagStatus, getCitationKey, ClarificationData, sortCitations } from "@/context/chat-context";
+import {
+  useChat,
+  RagStatus,
+  getCitationKey,
+  ClarificationData,
+  sortCitations,
+  generateFollowUpPrompts,
+  LegalAnalytics,
+} from "@/context/chat-context";
 
 function cleanCaseSummary(text?: string): string {
   if (!text) return "No summary available for this case.";
@@ -585,10 +604,9 @@ function ClarificationCard({
 
 // Main Chat Page
 
-export default function ChatPage() {
-  const router = useRouter();
+function ChatPageContent() {
+  const searchParams = useSearchParams();
 
-  // Consume hoisted ChatContext (persists across dashboard tabs and handles background streaming)
   const {
     messages,
     setMessages,
@@ -608,8 +626,18 @@ export default function ChatPage() {
     sessionId,
     setSessionId,
     followUpPrompts,
+    setFollowUpPrompts,
     starterPrompts,
-    refreshStarters,
+    activeDocument,
+    isUploadingDoc,
+    docUploadProgress,
+    docUploadStatusText,
+    docUploadError,
+    docRejectionNotice,
+    dismissDocFeedback,
+    attachDocument,
+    loadDocumentById,
+    clearDocument,
     handleSend,
     handleStop,
     handleNewChat,
@@ -623,6 +651,24 @@ export default function ChatPage() {
   const [copiedCitation, setCopiedCitation] = useState(false);
   const [isNliModalOpen, setIsNliModalOpen] = useState(false);
   const [isMobileCitationsOpen, setIsMobileCitationsOpen] = useState(false);
+  const [isDesktopDocPreviewOpen, setIsDesktopDocPreviewOpen] = useState(false);
+  const [isMobileDocPreviewOpen, setIsMobileDocPreviewOpen] = useState(false);
+  const [isDraggingFile, setIsDraggingFile] = useState(false);
+  const [uploadDismissed, setUploadDismissed] = useState(false);
+  const showUploadPrompt =
+    searchParams.get("upload") === "1" && !uploadDismissed && !isUploadingDoc && !activeDocument;
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const dragCounterRef = useRef(0);
+  const handledQueryParamRef = useRef<string>("");
+
+  const toggleDocPreview = useCallback(() => {
+    if (typeof window !== "undefined" && window.innerWidth < 1024) {
+      setIsMobileDocPreviewOpen((v) => !v);
+    } else {
+      setIsDesktopDocPreviewOpen((v) => !v);
+    }
+  }, []);
 
   const handleCopyCitation = useCallback((text: string) => {
     if (!navigator?.clipboard) return;
@@ -631,11 +677,9 @@ export default function ChatPage() {
     setTimeout(() => setCopiedCitation(false), 2000);
   }, []);
 
-  // Refs for scroll
   const chatScrollRef = useRef<HTMLDivElement>(null);
   const citationScrollRef = useRef<HTMLDivElement>(null);
 
-  // Auto-scroll chat to bottom whenever messages or typing changes
   useEffect(() => {
     const el = chatScrollRef.current;
     if (el && isAutoScrollEnabled) {
@@ -650,80 +694,141 @@ export default function ChatPage() {
     setIsAutoScrollEnabled(isNearBottom);
   }, []);
 
-
-  // URL search params handling (Prompt from dashboard or past Session)
-
   useEffect(() => {
-    if (typeof window === "undefined") return;
-    const params = new URLSearchParams(window.location.search);
-    const promptParam = params.get("prompt");
-    const sessionParam = params.get("session");
+    const promptParam = searchParams.get("prompt");
+    const sessionParam = searchParams.get("session");
+    const uploadParam = searchParams.get("upload");
+    const docParam = searchParams.get("doc");
+    const key = `${promptParam || ""}|${sessionParam || ""}|${uploadParam || ""}|${docParam || ""}`;
+
+    if (handledQueryParamRef.current === key) return;
 
     if (promptParam && promptParam.trim()) {
+      handledQueryParamRef.current = key;
       window.history.replaceState({}, "", "/chat");
       handleSend(promptParam.trim());
-    } else if (sessionParam && sessionParam.trim() && sessionParam !== sessionId) {
+      return;
+    }
+
+    if (uploadParam === "1") {
+      handledQueryParamRef.current = key;
+      return;
+    }
+
+    if (docParam && docParam.trim()) {
+      handledQueryParamRef.current = key;
+      window.history.replaceState({}, "", "/chat");
+      loadDocumentById(docParam.trim(), { startFreshAnalysis: true });
+      return;
+    }
+
+    if (sessionParam && sessionParam.trim() && sessionParam !== sessionId) {
+      handledQueryParamRef.current = key;
       async function loadSession() {
         try {
           const { data: { session } } = await supabase.auth.getSession();
           if (!session) return;
-          const res = await fetch(`${BACKEND_URL}/api/sessions/${sessionParam}/messages`, {
-            headers: { Authorization: `Bearer ${session.access_token}` },
-          });
-          if (res.ok) {
-            const rawMessages = await res.json();
+
+          const [sessRes, msgRes] = await Promise.all([
+            fetch(`${BACKEND_URL}/api/sessions/${sessionParam}`, {
+              headers: { Authorization: `Bearer ${session.access_token}` },
+            }),
+            fetch(`${BACKEND_URL}/api/sessions/${sessionParam}/messages`, {
+              headers: { Authorization: `Bearer ${session.access_token}` },
+            }),
+          ]);
+
+          let linkedDocId: string | null = null;
+          if (sessRes.ok) {
+            const sessMeta = await sessRes.json();
+            linkedDocId = sessMeta?.document_id || null;
+          }
+
+          if (linkedDocId) {
+            await loadDocumentById(linkedDocId);
+          } else {
+            clearDocument();
+            setIsDesktopDocPreviewOpen(false);
+            setIsMobileDocPreviewOpen(false);
+          }
+
+          if (sessRes.ok) {
+            setSessionId(sessionParam);
+          }
+
+          if (msgRes.ok) {
+            const rawMessages = (await msgRes.json()) as Array<{
+              id?: string | number;
+              role: "user" | "assistant";
+              content: string;
+              citations?: string | Record<string, unknown>[];
+              legal_analytics?: string | LegalAnalytics;
+              legalAnalytics?: LegalAnalytics;
+            }>;
             if (Array.isArray(rawMessages) && rawMessages.length > 0) {
               setSessionId(sessionParam);
-              const allCits: any[] = [];
+              const allCits: Record<string, unknown>[] = [];
               const seen = new Set<string>();
 
-              const formattedMessages = rawMessages.map((m: any, idx: number) => {
-                let parsedCits = [];
+              const formattedMessages = rawMessages.map((m, idx) => {
+                let parsedCits: Record<string, unknown>[] = [];
                 if (m.citations) {
                   try {
                     parsedCits = typeof m.citations === "string" ? JSON.parse(m.citations) : m.citations;
-                  } catch (e) { }
+                  } catch { }
                 }
                 if (Array.isArray(parsedCits)) {
                   for (const c of parsedCits) {
-                    const key = getCitationKey(c);
-                    if (key && !seen.has(key)) {
-                      seen.add(key);
+                    const cKey = getCitationKey(c);
+                    if (cKey && !seen.has(cKey)) {
+                      seen.add(cKey);
                       allCits.push(c);
                     }
                   }
                   parsedCits = sortCitations(parsedCits);
                 }
-                let parsedAnalytics = null;
+                let parsedAnalytics: LegalAnalytics | null = null;
                 if (m.legal_analytics) {
                   try {
                     parsedAnalytics = typeof m.legal_analytics === "string" ? JSON.parse(m.legal_analytics) : m.legal_analytics;
-                  } catch (e) { }
+                  } catch { }
                 } else if (m.legalAnalytics) {
                   parsedAnalytics = m.legalAnalytics;
                 }
 
                 return {
                   id: m.id ? Number(m.id) || idx + 2 : idx + 2,
-                  role: m.role as "user" | "assistant",
+                  role: m.role,
                   content: m.content,
                   citations: parsedCits,
                   legalAnalytics: parsedAnalytics,
                 };
               });
 
-              setRetainedCitations(sortCitations(allCits));
+              const sortedAll = sortCitations(allCits);
+              setRetainedCitations(sortedAll);
 
-              const lastAssistantWithAnalytics = [...formattedMessages].reverse().find((m: any) => m.role === "assistant" && m.legalAnalytics);
+              const lastAssistantWithAnalytics = [...formattedMessages]
+                .reverse()
+                .find((m) => m.role === "assistant" && m.legalAnalytics);
               if (lastAssistantWithAnalytics?.legalAnalytics) {
                 setLegalAnalytics(lastAssistantWithAnalytics.legalAnalytics);
+              }
+
+              const lastAssistantMsg = [...formattedMessages]
+                .reverse()
+                .find((m) => m.role === "assistant" && m.content);
+              if (lastAssistantMsg) {
+                setFollowUpPrompts(generateFollowUpPrompts(lastAssistantMsg.content, sortedAll));
               }
 
               setMessages([
                 {
                   id: 1,
                   role: "assistant",
-                  content: "Welcome back. Continuing previous civil law session.",
+                  content: linkedDocId
+                    ? "Welcome back. Continuing previous document analysis session."
+                    : "Welcome back. Continuing previous civil law session.",
                 },
                 ...formattedMessages,
               ]);
@@ -738,29 +843,157 @@ export default function ChatPage() {
       }
       loadSession();
     }
-  }, []);
+  }, [
+    searchParams,
+    sessionId,
+    handleSend,
+    loadDocumentById,
+    clearDocument,
+    setSessionId,
+    setRetainedCitations,
+    setLegalAnalytics,
+    setFollowUpPrompts,
+    setMessages,
+    resumeActiveJob,
+  ]);
+
+  const handleFileInputChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+    if (!file) return;
+    setUploadDismissed(true);
+    if (typeof window !== "undefined" && window.location.search.includes("upload=1")) {
+      window.history.replaceState({}, "", "/chat");
+    }
+    await attachDocument(file);
+  };
+
+  const handleDragEnter = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!e.dataTransfer.types.includes("Files")) return;
+    dragCounterRef.current += 1;
+    setIsDraggingFile(true);
+  };
+
+  const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+  };
+
+  const handleDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current = Math.max(0, dragCounterRef.current - 1);
+    if (dragCounterRef.current === 0) {
+      setIsDraggingFile(false);
+    }
+  };
+
+  const handleDrop = async (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current = 0;
+    setIsDraggingFile(false);
+    const file = e.dataTransfer.files?.[0];
+    if (!file) return;
+    setUploadDismissed(true);
+    if (typeof window !== "undefined" && window.location.search.includes("upload=1")) {
+      window.history.replaceState({}, "", "/chat");
+    }
+    await attachDocument(file);
+  };
 
   return (
     <div className="flex h-full gap-3 xl:gap-4 2xl:gap-6 animate-fade-in min-h-0">
 
-      {/* Main Chat Area*/}
-      <div className="flex-1 flex flex-col bg-card rounded-2xl border border-border shadow-sm overflow-hidden relative min-h-0">
+      {/* Main Chat & Optional Document Preview Container */}
+      <div
+        onDragEnter={handleDragEnter}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+        className="flex-1 flex flex-col bg-card rounded-2xl border border-border shadow-sm overflow-hidden relative min-h-0 min-w-0"
+      >
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".pdf,.doc,.docx,.txt,.png,.jpg,.jpeg"
+          onChange={handleFileInputChange}
+          className="hidden"
+          aria-label="Upload Philippine Civil Law document"
+        />
+
+        {isDraggingFile && (
+          <div className="absolute inset-0 z-40 bg-background/85 backdrop-blur-xs border-2 border-dashed border-primary rounded-2xl flex flex-col items-center justify-center p-6 text-center pointer-events-none">
+            <div className="w-14 h-14 rounded-2xl bg-primary/10 border border-primary/25 flex items-center justify-center mb-3">
+              <UploadCloud className="w-7 h-7 text-primary" />
+            </div>
+            <p className="text-sm sm:text-base font-semibold text-foreground">
+              Drop document to analyze in Legal Chat
+            </p>
+            <p className="text-xs text-muted-foreground mt-1 max-w-sm">
+              Supports PDF, DOC, DOCX, TXT, PNG, and JPG. Non-Civil Code files are rejected automatically.
+            </p>
+          </div>
+        )}
+
         {/* Chat Panel Top Bar */}
-        <div className="px-3 sm:px-4 py-2 border-b border-border/70 flex items-center justify-between bg-card/95 backdrop-blur-sm shrink-0 z-10">
-          <div className="flex items-center gap-2">
-            <span className="text-xs font-semibold text-foreground tracking-tight flex items-center gap-1.5">
+        <div className="px-3 sm:px-4 py-2 border-b border-border/70 flex items-center justify-between gap-2 bg-card/95 backdrop-blur-sm shrink-0 z-10">
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="text-xs font-semibold text-foreground tracking-tight flex items-center gap-1.5 shrink-0">
               <Scale className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
-              CIVIL-LEX Intelligence
+              <span>CIVIL-LEX Intelligence</span>
             </span>
+
+            {activeDocument && activeDocument.status === "completed" && (
+              <div className="hidden sm:flex items-center gap-1.5 min-w-0 pl-2 border-l border-border/70">
+                <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-700 dark:text-emerald-300 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-full max-w-[200px] truncate">
+                  <FileText className="w-3 h-3 shrink-0" />
+                  <span className="truncate">{formatDocDisplayName(activeDocument.filename)}</span>
+                </span>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={toggleDocPreview}
+                  className="h-7 px-2 text-[11px] gap-1 text-muted-foreground hover:text-foreground cursor-pointer"
+                  title={isDesktopDocPreviewOpen ? "Hide document preview" : "Preview uploaded document"}
+                >
+                  {isDesktopDocPreviewOpen ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                  <span>{isDesktopDocPreviewOpen ? "Hide Doc" : "Preview Doc"}</span>
+                </Button>
+              </div>
+            )}
           </div>
 
-          <div className="flex items-center gap-2">
-            {messages.length > 1 && (
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+            {activeDocument && activeDocument.status === "completed" && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={toggleDocPreview}
+                className="sm:hidden border-emerald-500/30 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/10 gap-1 text-xs h-7 px-2 rounded-full"
+                title="Preview uploaded document"
+              >
+                <FileText className="w-3.5 h-3.5" />
+                <span>Doc</span>
+              </Button>
+            )}
+
+            {(messages.length > 1 || activeDocument) && (
               <Button
                 variant="outline"
                 size="sm"
-                onClick={handleNewChat}
-                className="border-blue-500/25 text-blue-600 dark:text-blue-400 hover:bg-blue-500/10 dark:hover:bg-blue-500/20 gap-1.5 text-xs h-7 px-2.5 sm:h-8 sm:px-3 rounded-full shadow-2xs transition-all"
+                onClick={() => {
+                  setIsDesktopDocPreviewOpen(false);
+                  setIsMobileDocPreviewOpen(false);
+                  handleNewChat();
+                }}
+                className="border-blue-500/25 text-blue-600 dark:text-blue-400 hover:bg-blue-500/10 dark:hover:bg-blue-500/20 gap-1.5 text-xs h-7 px-2.5 sm:h-8 sm:px-3 rounded-full shadow-2xs transition-all cursor-pointer"
                 title="Start a new chat (immediately stops active query)"
               >
                 <PlusCircle className="w-3.5 h-3.5" />
@@ -772,7 +1005,7 @@ export default function ChatPage() {
               variant="outline"
               size="sm"
               onClick={() => setIsMobileCitationsOpen(true)}
-              className="xl:hidden border-border/80 hover:bg-accent gap-1.5 text-xs h-7 px-2.5 sm:h-8 sm:px-3 rounded-full shadow-2xs transition-all"
+              className="xl:hidden border-border/80 hover:bg-accent gap-1.5 text-xs h-7 px-2.5 sm:h-8 sm:px-3 rounded-full shadow-2xs transition-all cursor-pointer"
               title="View statutory citations and grounding"
             >
               <BookOpen className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
@@ -781,235 +1014,469 @@ export default function ChatPage() {
           </div>
         </div>
 
-        {/* Scrollable messages area */}
-        <div
-          ref={chatScrollRef}
-          onScroll={handleScroll}
-          className="flex-1 overflow-y-auto px-2.5 py-3 sm:px-4 sm:py-5 2xl:px-6 2xl:py-6 custom-scrollbar min-h-0"
-        >
-          <div className="flex flex-col w-full max-w-4xl 2xl:max-w-5xl 3xl:max-w-6xl mx-auto px-1 sm:px-2">
-            {messages.map((msg, idx) => {
-              const isAssistant = msg.role === "assistant";
-              const isLatestAssistant =
-                isAssistant && msg.id === messages[messages.length - 1]?.id;
-
-              // Calculate conversational turns
-              const isUser = msg.role === "user";
-              const userTurnIndex = isUser
-                ? messages.slice(0, idx + 1).filter((m) => m.role === "user").length
-                : 0;
-              const isNewTurn = isUser && userTurnIndex > 1;
-              const isFirstUserTurn = isUser && userTurnIndex === 1;
-
-              return (
-                <div key={msg.id} className="w-full flex flex-col">
-                  {/* Subtle Turn Separator between completed turns */}
-                  {isNewTurn && (
-                    <div className="flex items-center justify-center my-6 sm:my-8 select-none">
-                      <div className="h-px bg-border/60 flex-1 max-w-[60px] sm:max-w-[120px]" />
-                      <span className="mx-3 px-3 py-0.5 text-[10px] sm:text-[11px] font-semibold tracking-wider uppercase text-muted-foreground/75 bg-muted/60 dark:bg-card border border-border/60 rounded-full shadow-2xs">
-                        Inquiry {userTurnIndex}
-                      </span>
-                      <div className="h-px bg-border/60 flex-1 max-w-[60px] sm:max-w-[120px]" />
-                    </div>
-                  )}
-
-                  {/* Message Row with Messenger-Style Rhythm */}
-                  <div
-                    className={`flex gap-2 sm:gap-3.5 w-full ${isUser ? "flex-row-reverse" : ""
-                      } ${idx === 0
-                        ? "mt-0"
-                        : isFirstUserTurn
-                          ? "mt-5 sm:mt-6"
-                          : isAssistant
-                            ? "mt-2.5 sm:mt-3"
-                            : "mt-0"
-                      }`}
-                  >
-                    {/* Clean Message Icon */}
-                    {isAssistant ? (
-                      <Scale className="w-5 h-5 text-blue-600 dark:text-blue-400 mt-1 shrink-0" />
-                    ) : (
-                      <User className="w-5 h-5 text-muted-foreground mt-1 shrink-0" />
-                    )}
-
-                    {/* Message Bubble Container */}
-                    <div
-                      className={`flex flex-col min-w-0 ${isUser
-                        ? "items-end max-w-[88%] sm:max-w-[80%] md:max-w-[72%]"
-                        : "items-start w-full max-w-[96%] sm:max-w-[92%] md:max-w-[90%]"
-                        }`}
+        {/* Body: Collapsible Desktop Preview Split + Chat Stream */}
+        <div className="flex-1 flex min-h-0 min-w-0 overflow-hidden">
+          {activeDocument && activeDocument.status === "completed" && isDesktopDocPreviewOpen && (
+            <div className="hidden lg:flex flex-col w-[42%] min-w-[300px] max-w-[520px] border-r border-border bg-muted/20 min-h-0 shrink-0">
+              <div className="px-3 py-2 border-b border-border/70 flex items-center justify-between gap-2 bg-card/80 shrink-0">
+                <div className="flex items-center gap-2 min-w-0">
+                  <FileText className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                  <span className="text-xs font-semibold text-foreground truncate" title={formatDocDisplayName(activeDocument.filename)}>
+                    {formatDocDisplayName(activeDocument.filename)}
+                  </span>
+                </div>
+                <div className="flex items-center gap-1 shrink-0">
+                  {getFilePreviewUrl(activeDocument) && (
+                    <a
+                      href={apiUrl(`${getFilePreviewUrl(activeDocument)}?download=1`)}
+                      download={activeDocument.filename}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+                      title="Download document"
                     >
-                      {/* Assistant RAG Pipeline Stepper */}
-                      {isAssistant && msg.id !== 1 && (
-                        <RagPipelineStepper
-                          status={isLatestAssistant && isGenerating ? (ragStatus || msg.ragStatus || null) : msg.ragStatus || null}
-                          isLive={isLatestAssistant && isGenerating}
-                          isOutOfDomain={Boolean(msg.legalAnalytics?.is_out_of_domain || (isLatestAssistant && legalAnalytics?.is_out_of_domain))}
-                        />
-                      )}
+                      <Download className="w-3.5 h-3.5" />
+                    </a>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setIsDesktopDocPreviewOpen(false)}
+                    className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
+                    title="Close preview"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+              <div className="flex-1 min-h-0 p-2.5 overflow-hidden">
+                <DocumentPreview document={activeDocument} />
+              </div>
+            </div>
+          )}
 
-                      {/* Message Bubble */}
-                      {(msg.content || msg.clarificationData || !isAssistant) && (
+          <div className="flex-1 flex flex-col min-h-0 min-w-0">
+            {/* Scrollable messages area */}
+            <div
+              ref={chatScrollRef}
+              onScroll={handleScroll}
+              className="flex-1 overflow-y-auto px-2.5 py-3 sm:px-4 sm:py-5 2xl:px-6 2xl:py-6 custom-scrollbar min-h-0"
+            >
+              <div className="flex flex-col w-full max-w-4xl 2xl:max-w-5xl 3xl:max-w-6xl mx-auto px-1 sm:px-2">
+                {messages.map((msg, idx) => {
+                  const isAssistant = msg.role === "assistant";
+                  const isLatestAssistant =
+                    isAssistant && msg.id === messages[messages.length - 1]?.id;
+
+                  const isUser = msg.role === "user";
+                  const userTurnIndex = isUser
+                    ? messages.slice(0, idx + 1).filter((m) => m.role === "user").length
+                    : 0;
+                  const isNewTurn = isUser && userTurnIndex > 1;
+                  const isFirstUserTurn = isUser && userTurnIndex === 1;
+
+                  return (
+                    <Fragment key={msg.id}>
+                      <div className="w-full flex flex-col">
+                        {isNewTurn && (
+                          <div className="flex items-center justify-center my-6 sm:my-8 select-none">
+                            <div className="h-px bg-border/60 flex-1 max-w-[60px] sm:max-w-[120px]" />
+                            <span className="mx-3 px-3 py-0.5 text-[10px] sm:text-[11px] font-semibold tracking-wider uppercase text-muted-foreground/75 bg-muted/60 dark:bg-card border border-border/60 rounded-full shadow-2xs">
+                              Inquiry {userTurnIndex}
+                            </span>
+                            <div className="h-px bg-border/60 flex-1 max-w-[60px] sm:max-w-[120px]" />
+                          </div>
+                        )}
+
                         <div
-                          className={`break-words ${isUser
-                            ? "w-fit inline-block px-3 py-1.5 sm:px-3.5 sm:py-2 2xl:px-5 2xl:py-3 rounded-2xl sm:rounded-3xl rounded-tr-xs sm:rounded-tr-xs text-xs sm:text-sm 2xl:text-[15px] leading-relaxed bg-[#100771] text-white shadow-sm shadow-[#100771]/15 dark:bg-blue-600 dark:text-white dark:border-0 dark:shadow-md dark:shadow-blue-900/30 font-medium"
-                            : msg.clarificationData
-                              ? "w-full" /* ClarificationCard has its own styling */
-                              : "w-full p-2.5 sm:p-3.5 2xl:p-5 rounded-2xl sm:rounded-3xl rounded-tl-xs sm:rounded-tl-xs bg-card dark:bg-[#131317] border border-border/80 dark:border-white/[0.08] text-foreground dark:text-zinc-100 shadow-xs text-xs sm:text-sm 2xl:text-base leading-relaxed"
+                          className={`flex gap-2 sm:gap-3.5 w-full ${isUser ? "flex-row-reverse" : ""
+                            } ${idx === 0
+                              ? "mt-0"
+                              : isFirstUserTurn
+                                ? "mt-5 sm:mt-6"
+                                : isAssistant
+                                  ? "mt-2.5 sm:mt-3"
+                                  : "mt-0"
                             }`}
                         >
                           {isAssistant ? (
-                            msg.clarificationData ? (
-                              <ClarificationCard
-                                data={msg.clarificationData}
-                                onSubmit={handleClarificationSubmit}
-                                isSubmitted={!isLatestAssistant || isGenerating}
-                              />
-                            ) : (msg.id === 1 || idx === 0) ? (
-                              <StartingTypewriterMessage key={msg.content} content={msg.content} />
-                            ) : (
-                              <AssistantMarkdown content={msg.content} />
-                            )
+                            <Scale className="w-5 h-5 text-blue-600 dark:text-blue-400 mt-1 shrink-0" />
                           ) : (
-                            <span className="whitespace-pre-wrap">{msg.content}</span>
+                            <User className="w-5 h-5 text-muted-foreground mt-1 shrink-0" />
                           )}
+
+                          <div
+                            className={`flex flex-col min-w-0 ${isUser
+                              ? "items-end max-w-[88%] sm:max-w-[80%] md:max-w-[72%]"
+                              : "items-start w-full max-w-[96%] sm:max-w-[92%] md:max-w-[90%]"
+                              }`}
+                          >
+                            {isAssistant && msg.id !== 1 && (
+                              <RagPipelineStepper
+                                status={isLatestAssistant && isGenerating ? (ragStatus || msg.ragStatus || null) : msg.ragStatus || null}
+                                isLive={isLatestAssistant && isGenerating}
+                                isOutOfDomain={Boolean(msg.legalAnalytics?.is_out_of_domain || (isLatestAssistant && legalAnalytics?.is_out_of_domain))}
+                              />
+                            )}
+
+                            {(msg.content || msg.clarificationData || !isAssistant) && (
+                              <div
+                                className={`break-words ${isUser
+                                  ? "w-fit inline-block px-3 py-1.5 sm:px-3.5 sm:py-2 2xl:px-5 2xl:py-3 rounded-2xl sm:rounded-3xl rounded-tr-xs sm:rounded-tr-xs text-xs sm:text-sm 2xl:text-[15px] leading-relaxed bg-[#100771] text-white shadow-sm shadow-[#100771]/15 dark:bg-blue-600 dark:text-white dark:border-0 dark:shadow-md dark:shadow-blue-900/30 font-medium"
+                                  : msg.clarificationData
+                                    ? "w-full"
+                                    : "w-full p-2.5 sm:p-3.5 2xl:p-5 rounded-2xl sm:rounded-3xl rounded-tl-xs sm:rounded-tl-xs bg-card dark:bg-[#131317] border border-border/80 dark:border-white/[0.08] text-foreground dark:text-zinc-100 shadow-xs text-xs sm:text-sm 2xl:text-base leading-relaxed"
+                                  }`}
+                              >
+                                {isAssistant ? (
+                                  msg.clarificationData ? (
+                                    <ClarificationCard
+                                      data={msg.clarificationData}
+                                      onSubmit={handleClarificationSubmit}
+                                      isSubmitted={!isLatestAssistant || isGenerating}
+                                    />
+                                  ) : (msg.id === 1 || idx === 0) ? (
+                                    <StartingTypewriterMessage key={msg.content} content={msg.content} />
+                                  ) : (
+                                    <AssistantMarkdown content={msg.content} />
+                                  )
+                                ) : (
+                                  <span className="whitespace-pre-wrap">{msg.content}</span>
+                                )}
+                              </div>
+                            )}
+
+                            {isAssistant && msg.content && !msg.clarificationData && (
+                              <CopyMessageButton
+                                content={msg.content}
+                                disabled={isLatestAssistant && isGenerating}
+                              />
+                            )}
+
+                            {msg.reasoning && (
+                              <div className="mt-2 w-full">
+                                <Accordion className="w-full">
+                                  <AccordionItem value="reasoning" className="border-none">
+                                    <AccordionTrigger className="py-2 text-xs text-primary hover:no-underline hover:opacity-80 rounded-md focus-visible:ring-2 focus-visible:ring-primary focus-visible:outline-none">
+                                      View Legal Reasoning Process
+                                    </AccordionTrigger>
+                                    <AccordionContent className="text-xs text-muted-foreground bg-accent/20 p-3 rounded-lg border border-border">
+                                      {msg.reasoning}
+                                    </AccordionContent>
+                                  </AccordionItem>
+                                </Accordion>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+
+                      {idx === 0 && activeDocument && activeDocument.status === "completed" && (
+                        <div className="my-4 p-3 sm:p-3.5 rounded-xl bg-emerald-500/8 dark:bg-emerald-500/12 border border-emerald-500/25 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 animate-fade-in">
+                          <div className="flex items-start sm:items-center gap-2.5 min-w-0">
+                            <div className="w-8 h-8 rounded-lg bg-emerald-500/15 border border-emerald-500/25 flex items-center justify-center shrink-0">
+                              <FileText className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+                            </div>
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                <span className="text-[11px] font-semibold uppercase tracking-wider text-emerald-700 dark:text-emerald-300">
+                                  Document Attached
+                                </span>
+                                <Badge variant="outline" className="text-[10px] py-0 px-1.5 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border-emerald-500/30">
+                                  Philippine Civil Law Verified
+                                </Badge>
+                              </div>
+                              <p className="text-xs sm:text-sm font-semibold text-foreground truncate mt-0.5">
+                                {formatDocDisplayName(activeDocument.filename)}
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              onClick={toggleDocPreview}
+                              className="h-7.5 px-2.5 text-xs gap-1.5 border-emerald-500/30 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/15 cursor-pointer"
+                            >
+                              <Eye className="w-3.5 h-3.5" />
+                              <span>Preview Document</span>
+                            </Button>
+                            {getFilePreviewUrl(activeDocument) && (
+                              <a
+                                href={apiUrl(`${getFilePreviewUrl(activeDocument)}?download=1`)}
+                                download={activeDocument.filename}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center justify-center h-7.5 w-7.5 rounded-md border border-border/80 text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+                                title="Download original document"
+                              >
+                                <Download className="w-3.5 h-3.5" />
+                              </a>
+                            )}
+                          </div>
                         </div>
                       )}
+                    </Fragment>
+                  );
+                })}
 
-                      {/* Copy text for model responses */}
-                      {isAssistant && msg.content && !msg.clarificationData && (
-                        <CopyMessageButton
-                          content={msg.content}
-                          disabled={isLatestAssistant && isGenerating}
-                        />
-                      )}
+                <div className="h-4" />
+              </div>
+            </div>
 
-                      {/* Legal Reasoning Accordion */}
-                      {msg.reasoning && (
-                        <div className="mt-2 w-full">
-                          <Accordion className="w-full">
-                            <AccordionItem value="reasoning" className="border-none">
-                              <AccordionTrigger className="py-2 text-xs text-primary hover:no-underline hover:opacity-80 rounded-md focus-visible:ring-2 focus-visible:ring-primary focus-visible:outline-none">
-                                View Legal Reasoning Process
-                              </AccordionTrigger>
-                              <AccordionContent className="text-xs text-muted-foreground bg-accent/20 p-3 rounded-lg border border-border">
-                                {msg.reasoning}
-                              </AccordionContent>
-                            </AccordionItem>
-                          </Accordion>
-                        </div>
-                      )}
+            {/* Chat Input, Document Status Banners & Suggestions Bar */}
+            <div className="p-2 sm:p-2.5 2xl:p-3.5 border-t border-border bg-card shrink-0">
+              <div className="max-w-3xl 2xl:max-w-4xl mx-auto space-y-1.5 sm:space-y-2">
+
+                {showUploadPrompt && !isUploadingDoc && !activeDocument && (
+                  <div className="p-2.5 sm:p-3 rounded-xl bg-primary/8 border border-primary/25 flex items-center justify-between gap-2.5 animate-fade-in">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <UploadCloud className="w-4 h-4 text-primary shrink-0" />
+                      <div className="min-w-0">
+                        <p className="text-xs font-semibold text-foreground">
+                          Upload a Document for Automatic Civil Law Analysis
+                        </p>
+                        <p className="text-[11px] text-muted-foreground truncate">
+                          Drop a contract, lease, promissory note, or deed anywhere here (.pdf, .doc, .docx, .txt, .png, .jpg).
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <Button
+                        type="button"
+                        size="sm"
+                        onClick={() => fileInputRef.current?.click()}
+                        className="h-7.5 px-3 text-xs gap-1.5 cursor-pointer"
+                      >
+                        <Paperclip className="w-3.5 h-3.5" />
+                        <span>Choose File</span>
+                      </Button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setUploadDismissed(true);
+                          if (typeof window !== "undefined" && window.location.search.includes("upload=1")) {
+                            window.history.replaceState({}, "", "/chat");
+                          }
+                        }}
+                        className="p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent cursor-pointer"
+                        title="Dismiss"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
                     </div>
                   </div>
-                </div>
-              );
-            })}
+                )}
 
-            {/* Sentinel for auto-scroll */}
-            <div className="h-4" />
-          </div>
-        </div>
-
-        {/* Chat Input & Compact Suggestions Bar */}
-        <div className="p-2 sm:p-2.5 2xl:p-3.5 border-t border-border bg-card shrink-0">
-          <div className="max-w-3xl 2xl:max-w-4xl mx-auto space-y-1.5 sm:space-y-2">
-
-            {/* 1. Dynamic Prompt Starters - Responsive 2-Prompt Grid without Scroll */}
-            {messages.length === 1 && (
-              <div className="space-y-1 animate-fade-in">
-                <div className="flex items-center justify-between px-0.5 text-[10px] sm:text-[11px] font-medium text-muted-foreground">
-                  <div className="flex items-center gap-1.5">
-                    <HelpCircle className="w-3 h-3 sm:w-3.5 sm:h-3.5 text-blue-600 dark:text-blue-400" />
-                    <span>Suggested Legal Inquiries:</span>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 sm:gap-2 w-full">
-                  {starterPrompts.slice(0, 2).map((item) => (
-                    <button
-                      key={item.id}
-                      type="button"
-                      onClick={() => handleSend(item.prompt)}
-                      className="group flex items-start justify-between gap-2 px-3 py-2 sm:py-2 rounded-xl text-xs bg-accent/40 dark:bg-accent/20 hover:bg-[#100771] dark:hover:bg-blue-600 hover:text-white text-foreground border border-border/70 hover:border-transparent dark:hover:border-transparent transition-all shadow-2xs hover:shadow-xs active:scale-98 cursor-pointer w-full text-left min-h-[2.5rem]"
-                      title={item.prompt}
-                    >
-                      <span className="text-left text-[11px] sm:text-xs leading-snug sm:leading-normal font-normal group-hover:text-white flex-1 break-words whitespace-normal">
-                        {item.prompt}
+                {isUploadingDoc && (
+                  <div className="p-2.5 sm:p-3 rounded-xl bg-blue-500/8 border border-blue-500/25 space-y-1.5 animate-fade-in">
+                    <div className="flex items-center justify-between gap-2 text-xs">
+                      <span className="flex items-center gap-2 font-medium text-foreground min-w-0">
+                        <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-600 dark:text-blue-400 shrink-0" />
+                        <span className="truncate">{docUploadStatusText || "Processing uploaded document..."}</span>
                       </span>
-                      <ChevronRight className="w-3.5 h-3.5 mt-0.5 opacity-50 group-hover:opacity-100 group-hover:text-white group-hover:translate-x-0.5 transition-all shrink-0" />
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* 2. Contextual Follow-Up Suggestions - Responsive 2-Prompt Grid without Scroll */}
-            {!isGenerating && followUpPrompts.length > 0 && messages.length > 1 && (
-              <div className="space-y-1 animate-fade-in">
-                <div className="flex items-center justify-between px-0.5 text-[10px] sm:text-[11px] font-semibold text-blue-600 dark:text-blue-400">
-                  <div className="flex items-center gap-1.5">
-                    <HelpCircle className="w-3 h-3 sm:w-3.5 sm:h-3.5 text-blue-600 dark:text-blue-400" />
-                    <span>Suggested Follow-up Inquiries:</span>
+                      <span className="font-mono text-[11px] text-blue-600 dark:text-blue-400 shrink-0">
+                        {docUploadProgress}%
+                      </span>
+                    </div>
+                    <div className="w-full h-1.5 bg-muted rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-blue-600 dark:bg-blue-400 transition-all duration-300"
+                        style={{ width: `${Math.min(100, Math.max(5, docUploadProgress))}%` }}
+                      />
+                    </div>
                   </div>
-                </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 sm:gap-2 w-full">
-                  {followUpPrompts.slice(0, 2).map((prompt, i) => (
+                )}
+
+                {docRejectionNotice && (
+                  <div
+                    className={`p-3 rounded-xl border flex items-start gap-2.5 animate-fade-in ${docRejectionNotice.status === "rejected_unrelated"
+                        ? "bg-amber-500/10 border-amber-500/30 text-amber-950 dark:text-amber-100"
+                        : "bg-destructive/10 border-destructive/30 text-destructive"
+                      }`}
+                  >
+                    {docRejectionNotice.status === "rejected_unrelated" ? (
+                      <AlertCircle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+                    ) : (
+                      <AlertTriangle className="w-4 h-4 text-destructive shrink-0 mt-0.5" />
+                    )}
+                    <div className="flex-1 min-w-0 space-y-1">
+                      <div className="flex items-center justify-between gap-2 flex-wrap">
+                        <p className="text-xs font-semibold">
+                          {docRejectionNotice.status === "rejected_unrelated"
+                            ? `Document Rejected: ${formatDocDisplayName(docRejectionNotice.filename)}`
+                            : `Document Processing Error: ${formatDocDisplayName(docRejectionNotice.filename)}`}
+                        </p>
+                        <div className="flex items-center gap-1.5">
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            onClick={() => fileInputRef.current?.click()}
+                            className="h-6.5 px-2 text-[11px] gap-1 cursor-pointer bg-background/60"
+                          >
+                            <UploadCloud className="w-3 h-3" />
+                            <span>Upload Another</span>
+                          </Button>
+                          <button
+                            type="button"
+                            onClick={dismissDocFeedback}
+                            className="p-1 rounded-md opacity-75 hover:opacity-100 cursor-pointer"
+                            title="Dismiss notice"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                      <p className="text-[11px] leading-relaxed opacity-90">
+                        {docRejectionNotice.reason}
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {docUploadError && (
+                  <div className="p-2.5 rounded-xl bg-destructive/10 border border-destructive/30 text-destructive flex items-center justify-between gap-2 text-xs animate-fade-in">
+                    <span className="flex items-center gap-2 min-w-0">
+                      <AlertTriangle className="w-4 h-4 shrink-0" />
+                      <span className="truncate">{docUploadError}</span>
+                    </span>
                     <button
-                      key={i}
                       type="button"
-                      onClick={() => handleSend(prompt)}
-                      className="group flex items-start justify-between gap-2 px-3 py-2 sm:py-2 rounded-xl text-xs bg-accent/50 dark:bg-accent/20 hover:bg-[#100771] dark:hover:bg-blue-600 hover:text-white text-foreground border border-border/80 hover:border-transparent dark:hover:border-transparent transition-all shadow-2xs hover:shadow-xs active:scale-98 cursor-pointer w-full text-left min-h-[2.5rem]"
-                      title={prompt}
+                      onClick={dismissDocFeedback}
+                      className="p-1 rounded-md hover:bg-destructive/10 shrink-0 cursor-pointer"
+                      title="Dismiss error"
                     >
-                      <span className="text-left text-[11px] sm:text-xs leading-snug sm:leading-normal font-normal group-hover:text-white flex-1 break-words whitespace-normal">{prompt}</span>
-                      <ChevronRight className="w-3.5 h-3.5 mt-0.5 opacity-60 group-hover:opacity-100 group-hover:text-white group-hover:translate-x-0.5 transition-all shrink-0" />
+                      <X className="w-3.5 h-3.5" />
                     </button>
-                  ))}
+                  </div>
+                )}
+
+                {/* 1. Dynamic Prompt Starters */}
+                {messages.length === 1 && !activeDocument && (
+                  <div className="space-y-1 animate-fade-in">
+                    <div className="flex items-center justify-between px-0.5 text-[10px] sm:text-[11px] font-medium text-muted-foreground">
+                      <div className="flex items-center gap-1.5">
+                        <HelpCircle className="w-3 h-3 sm:w-3.5 sm:h-3.5 text-blue-600 dark:text-blue-400" />
+                        <span>Suggested Legal Inquiries (or attach a Civil Law document below):</span>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 sm:gap-2 w-full">
+                      {starterPrompts.slice(0, 2).map((item) => (
+                        <button
+                          key={item.id}
+                          type="button"
+                          onClick={() => handleSend(item.prompt)}
+                          className="group flex items-start justify-between gap-2 px-3 py-2 sm:py-2 rounded-xl text-xs bg-accent/40 dark:bg-accent/20 hover:bg-[#100771] dark:hover:bg-blue-600 hover:text-white text-foreground border border-border/70 hover:border-transparent dark:hover:border-transparent transition-all shadow-2xs hover:shadow-xs active:scale-98 cursor-pointer w-full text-left min-h-[2.5rem]"
+                          title={item.prompt}
+                        >
+                          <span className="text-left text-[11px] sm:text-xs leading-snug sm:leading-normal font-normal group-hover:text-white flex-1 break-words whitespace-normal">
+                            {item.prompt}
+                          </span>
+                          <ChevronRight className="w-3.5 h-3.5 mt-0.5 opacity-50 group-hover:opacity-100 group-hover:text-white group-hover:translate-x-0.5 transition-all shrink-0" />
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* 2. Contextual Follow-Up Suggestions */}
+                {!isGenerating && followUpPrompts.length > 0 && messages.length > 1 && (
+                  <div className="space-y-1 animate-fade-in">
+                    <div className="flex items-center justify-between px-0.5 text-[10px] sm:text-[11px] font-semibold text-blue-600 dark:text-blue-400">
+                      <div className="flex items-center gap-1.5">
+                        <HelpCircle className="w-3 h-3 sm:w-3.5 sm:h-3.5 text-blue-600 dark:text-blue-400" />
+                        <span>Suggested Follow-up Inquiries:</span>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 sm:gap-2 w-full">
+                      {followUpPrompts.slice(0, 2).map((prompt, i) => (
+                        <button
+                          key={i}
+                          type="button"
+                          onClick={() => handleSend(prompt)}
+                          className="group flex items-start justify-between gap-2 px-3 py-2 sm:py-2 rounded-xl text-xs bg-accent/50 dark:bg-accent/20 hover:bg-[#100771] dark:hover:bg-blue-600 hover:text-white text-foreground border border-border/80 hover:border-transparent dark:hover:border-transparent transition-all shadow-2xs hover:shadow-xs active:scale-98 cursor-pointer w-full text-left min-h-[2.5rem]"
+                          title={prompt}
+                        >
+                          <span className="text-left text-[11px] sm:text-xs leading-snug sm:leading-normal font-normal group-hover:text-white flex-1 break-words whitespace-normal">{prompt}</span>
+                          <ChevronRight className="w-3.5 h-3.5 mt-0.5 opacity-60 group-hover:opacity-100 group-hover:text-white group-hover:translate-x-0.5 transition-all shrink-0" />
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* 3. Unified Chat Input Box with Document Attach */}
+                <div className="relative flex items-center bg-card border border-border/80 dark:border-white/10 rounded-2xl overflow-hidden focus-within:ring-2 focus-within:ring-primary focus-within:border-primary transition-all shadow-sm">
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={isGenerating || isUploadingDoc}
+                    title="Attach a Civil Law document for automatic analysis (.pdf, .doc, .docx, .txt, .png, .jpg)"
+                    aria-label="Attach document"
+                    className="ml-2 p-1.5 sm:p-2 rounded-xl text-muted-foreground hover:text-foreground hover:bg-accent transition-colors shrink-0 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    <Paperclip className="w-4 h-4" />
+                  </button>
+                  <input
+                    type="text"
+                    value={inputValue}
+                    onChange={(e) => setInputValue(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && handleSend()}
+                    placeholder={
+                      activeDocument && activeDocument.status === "completed"
+                        ? `Ask a follow-up question about ${formatDocDisplayName(activeDocument.filename)}...`
+                        : "Ask CIVIL-LEX about Philippine Civil Code articles, jurisprudence, or attach a document..."
+                    }
+                    className="flex-1 bg-transparent dark:bg-transparent border-none shadow-none outline-none focus:outline-none focus:ring-0 text-foreground placeholder:text-muted-foreground pl-2 sm:pl-2.5 pr-2 sm:pr-3 h-10 sm:h-11 2xl:h-12 text-xs sm:text-sm 2xl:text-base"
+                  />
+                  {isGenerating ? (
+                    <Button
+                      type="button"
+                      onClick={handleStop}
+                      className="mr-1.5 sm:mr-2 bg-destructive hover:bg-destructive/90 text-destructive-foreground rounded-xl h-7 w-7 sm:h-8 sm:w-8 2xl:h-9 2xl:w-9 p-0 focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-destructive focus-visible:outline-none transition-transform active:scale-95 shrink-0"
+                      title="Stop Generating"
+                    >
+                      <Square className="w-3.5 h-3.5 sm:w-4 sm:h-4 fill-current" />
+                    </Button>
+                  ) : (
+                    <Button
+                      type="button"
+                      onClick={() => handleSend()}
+                      disabled={!inputValue.trim()}
+                      className="mr-1.5 sm:mr-2 bg-[#100771] hover:bg-[#100771]/90 text-white dark:bg-blue-600 dark:hover:bg-blue-500 dark:text-white rounded-xl h-7 w-7 sm:h-8 sm:w-8 2xl:h-9 2xl:w-9 p-0 focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-blue-600 focus-visible:outline-none transition-transform active:scale-95 shrink-0 disabled:opacity-40"
+                      title="Send Message"
+                    >
+                      <Send className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+                    </Button>
+                  )}
                 </div>
               </div>
-            )}
-
-
-            {/* 3. Unified Chat Input Box                                     */}
-
-            <div className="relative flex items-center bg-card border border-border/80 dark:border-white/10 rounded-2xl overflow-hidden focus-within:ring-2 focus-within:ring-primary focus-within:border-primary transition-all shadow-sm">
-              <input
-                type="text"
-                value={inputValue}
-                onChange={(e) => setInputValue(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && handleSend()}
-                placeholder="Ask CIVIL-LEX about Philippine Civil Code articles, jurisprudence, or contracts..."
-                className="flex-1 bg-transparent dark:bg-transparent border-none shadow-none outline-none focus:outline-none focus:ring-0 text-foreground placeholder:text-muted-foreground pl-4 sm:pl-5 pr-2 sm:pr-3 h-10 sm:h-11 2xl:h-12 text-xs sm:text-sm 2xl:text-base"
-              />
-              {isGenerating ? (
-                <Button
-                  type="button"
-                  onClick={handleStop}
-                  className="mr-1.5 sm:mr-2 bg-destructive hover:bg-destructive/90 text-destructive-foreground rounded-xl h-7 w-7 sm:h-8 sm:w-8 2xl:h-9 2xl:w-9 p-0 focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-destructive focus-visible:outline-none transition-transform active:scale-95 shrink-0"
-                  title="Stop Generating"
-                >
-                  <Square className="w-3.5 h-3.5 sm:w-4 sm:h-4 fill-current" />
-                </Button>
-              ) : (
-                <Button
-                  type="button"
-                  onClick={() => handleSend()}
-                  disabled={!inputValue.trim()}
-                  className="mr-1.5 sm:mr-2 bg-[#100771] hover:bg-[#100771]/90 text-white dark:bg-blue-600 dark:hover:bg-blue-500 dark:text-white rounded-xl h-7 w-7 sm:h-8 sm:w-8 2xl:h-9 2xl:w-9 p-0 focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-blue-600 focus-visible:outline-none transition-transform active:scale-95 shrink-0 disabled:opacity-40"
-                  title="Send Message"
-                >
-                  <Send className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
-                </Button>
-              )}
             </div>
           </div>
         </div>
       </div>
 
-      {/* ------------------------------------------------------------------ */}
-      {/* Citations Side Panel & Responsive Drawer                           */}
-      {/* ------------------------------------------------------------------ */}
+      {/* Mobile Document Preview Sheet */}
+      {activeDocument && activeDocument.status === "completed" && (
+        <Sheet open={isMobileDocPreviewOpen} onOpenChange={setIsMobileDocPreviewOpen}>
+          <SheetContent side="left" className="w-[92vw] sm:w-[540px] max-w-xl p-0 flex flex-col h-full bg-card">
+            <SheetHeader className="px-4 py-3 border-b border-border flex flex-row items-center justify-between gap-2">
+              <SheetTitle className="text-sm font-semibold truncate flex items-center gap-2">
+                <FileText className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                <span className="truncate">{formatDocDisplayName(activeDocument.filename)}</span>
+              </SheetTitle>
+            </SheetHeader>
+            <div className="flex-1 min-h-0 p-3 overflow-hidden">
+              <DocumentPreview document={activeDocument} />
+            </div>
+          </SheetContent>
+        </Sheet>
+      )}
+
+      {/* Citations Side Panel and Responsive Drawer */}
       {(() => {
         const citationsBody = (
           <div className="flex flex-col h-full bg-card min-h-0 overflow-hidden w-full max-w-full">
@@ -1750,5 +2217,20 @@ export default function ChatPage() {
         </DialogContent>
       </Dialog>
     </div>
+  );
+}
+
+export default function ChatPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex h-full items-center justify-center text-muted-foreground gap-2 text-sm">
+          <Loader2 className="w-4 h-4 animate-spin text-primary" />
+          <span>Loading Legal Chat...</span>
+        </div>
+      }
+    >
+      <ChatPageContent />
+    </Suspense>
   );
 }

@@ -145,8 +145,16 @@ class DBHelper:
                 ON document_chunks USING hnsw (embedding vector_cosine_ops) WHERE parent_type = 'article';
             """)
             cur.execute("""
+                CREATE INDEX IF NOT EXISTS case_vector_idx 
+                ON document_chunks USING hnsw (embedding vector_cosine_ops) WHERE parent_type = 'case';
+            """)
+            cur.execute("""
                 CREATE INDEX IF NOT EXISTS doc_vector_idx 
                 ON document_chunks USING hnsw (embedding vector_cosine_ops) WHERE parent_type = 'user_document';
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_civil_code_articles_num
+                ON civil_code_articles (article_number);
             """)
             cur.execute("""
                 CREATE INDEX IF NOT EXISTS case_parent_id_idx 
@@ -154,7 +162,7 @@ class DBHelper:
             """)
             cur.execute("""
                 ALTER TABLE document_chunks 
-                ADD COLUMN IF NOT EXISTS fts tsvector GENERATED ALWAYS AS (to_tsvector('english', content)) STORED;
+                ADD COLUMN IF NOT EXISTS fts tsvector GENERATED ALWAYS AS (to_tsvector('simple', content)) STORED;
             """)
             cur.execute("""
                 CREATE INDEX IF NOT EXISTS fts_idx 

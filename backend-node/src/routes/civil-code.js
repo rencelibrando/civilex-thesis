@@ -1,6 +1,7 @@
 import express from 'express';
 import { createClient } from '@supabase/supabase-js';
 import dotenv from 'dotenv';
+import { searchJurisprudence } from '../services/jurisprudenceSearch.js';
 
 dotenv.config({ quiet: true });
 
@@ -46,22 +47,102 @@ router.get('/stats', async (req, res) => {
   }
 });
 
-function extractArticleNumber(q) {
+const ENACTMENT_YEARS = new Set([1949, 1950, 1987, 1988]);
+const DOCKET_QUERY_REGEX = /\b(?:g\.?\s*r\.?|a\.?\s*[mc]\.?|b\.?\s*m\.?)\s*(?:nos?\.?)?\s*[#:\-=]?\s*[a-z]?-?\d/i;
+const CURRENCY_QUERY_REGEX = /(?:php|₱|\$|pesos?|dollars?)/i;
+
+function normalizeThousandsArticles(q) {
+  return q.replace(/(?<![\d,.])\b([12]),(\d{3})\b(?![\d,])/g, (match, d1, d234, offset, str) => {
+    const before = str.slice(Math.max(0, offset - 12), offset);
+    const after = str.slice(offset + match.length, offset + match.length + 12);
+    if (CURRENCY_QUERY_REGEX.test(before) || CURRENCY_QUERY_REGEX.test(after)) {
+      return match;
+    }
+    const val = parseInt(`${d1}${d234}`, 10);
+    return val >= 1000 && val <= 2270 ? `${d1}${d234}` : match;
+  });
+}
+
+export function extractArticleNumber(q) {
   if (!q) return null;
-  // If pure number: must be whole number 1 to 2270 (not a 5-6 digit G.R. number)
-  const pureNumMatch = q.trim().match(/^#?\s*(\d{1,4})$/);
+  const trimmed = String(q).trim();
+  if (!trimmed || DOCKET_QUERY_REGEX.test(trimmed)) return null;
+
+  const normalized = normalizeThousandsArticles(trimmed);
+
+  const pureNumMatch = normalized.match(/^#?\s*(\d{1,4})\??$/);
   if (pureNumMatch) {
     const num = parseInt(pureNumMatch[1], 10);
-    if (num >= 1 && num <= 2270) return num;
-    return null;
+    return num >= 1 && num <= 2270 ? num : null;
   }
-  // If prefixed with article/art/artile/etc.
-  const prefixMatch = q.match(/\b(?:art(?:icle|ile|cl|icel)?\.?\s*)(\d{1,4})\b/i);
+
+  // Prefix form: art#1191, artikulo 1191, artilce 99, atr 1191, eo 209 36, family code 36, ra 386 1191, fc 36, cc 1191
+  const prefixMatch = normalized.match(
+    /\b(?:art(?:icles?|ilces?|iles?|cles?|icels?|cls?|ikulos?|s)?\.?|atr(?:icles?|cles?|ikulos?|s)?\.?|probisyon(?:\s+(?:blg|bilang|no)\.?)?|civil\s+code(?:\s+(?:articles?|arts?\.?|sec(?:tion)?\.?))?|family\s+code(?:\s+(?:articles?|arts?\.?|sec(?:tion)?\.?))?|r\.?a\.?\s*(?:no\.?\s*)?386(?:\s+(?:articles?|arts?\.?|sec(?:tion)?\.?))?|e\.?o\.?\s*(?:no\.?\s*)?209(?:\s+(?:articles?|arts?\.?|sec(?:tion)?\.?))?|kodigo\s+sibil(?:\s+(?:artikulo|articles?|arts?\.?))?|batas\s+sibil(?:\s+(?:artikulo|articles?|arts?\.?))?|fc(?:\s+(?:articles?|arts?\.?|sec(?:tion)?\.?))?|cc(?:\s+(?:articles?|arts?\.?|sec(?:tion)?\.?))?)\s*(?:(?:nos?|bilang|blg)\b\.?)?\s*[#:\-–=]?\s*(\d{1,4})\b/i
+  );
   if (prefixMatch) {
     const num = parseInt(prefixMatch[1], 10);
     if (num >= 1 && num <= 2270) return num;
   }
+
+  // Postfix form: "36 family code", "1191 of the civil code", "sec 36 family code"
+  const postfixMatch = normalized.match(
+    /(?<![\d.])\b(\d{1,4})\b\s*(?:(?:of\s+(?:the\s+)?|ng\s+|sa\s+|in\s+(?:the\s+)?|under\s+(?:the\s+)?))?(?:civil\s+code|family\s+code|r\.?a\.?\s*(?:no\.?\s*)?386|e\.?o\.?\s*(?:no\.?\s*)?209|kodigo\s+sibil|batas\s+sibil|f\.?c\.?|c\.?c\.?)\b/i
+  );
+  if (postfixMatch) {
+    const num = parseInt(postfixMatch[1], 10);
+    const before = normalized.slice(Math.max(0, postfixMatch.index - 30), postfixMatch.index);
+    const isStatuteNum = /\b(?:executive\s+order|e\.?\s*o\.?|republic\s+act|r\.?\s*a\.?|act|order|p\.?\s*d\.?|b\.?\s*p\.?)\s*(?:nos?\.?\s*)?$/i.test(before);
+    const isBareEnactmentYear = ENACTMENT_YEARS.has(num) && !/\b(?:art(?:icle)?s?|artikulo|sec(?:tion)?|probisyon)\b\s*$/i.test(before);
+    if (!isStatuteNum && !isBareEnactmentYear && num >= 1 && num <= 2270) {
+      return num;
+    }
+  }
+
   return null;
+}
+
+const RAW_DOCKET_TITLE_REGEX = /^(?:g\.?\s*r\.?|a\.?\s*[mc]\.?|b\.?\s*m\.?)/i;
+
+async function fetchLinkedArticleCases(articleIds, limit = 6) {
+  if (!articleIds || articleIds.length === 0) return [];
+  const { data: rels, error: relErr } = await supabase
+    .from('article_jurisprudence_relations')
+    .select('case_uid, citation_type')
+    .in('article_id', articleIds)
+    .limit(30);
+
+  if (relErr || !rels || rels.length === 0) return [];
+
+  // Prioritize explicit Family Code relations when present.
+  rels.sort((a, b) => (b.citation_type === 'family_code_explicit' ? 1 : 0) - (a.citation_type === 'family_code_explicit' ? 1 : 0));
+  const uniqueUids = Array.from(new Set(rels.map((r) => r.case_uid)));
+
+  const { data: rows, error: caseErr } = await supabase
+    .from('jurisprudence_cases')
+    .select('case_uid, title, gr_number, decision_date, content_summary, source_url')
+    .in('case_uid', uniqueUids);
+
+  if (caseErr || !rows) return [];
+
+  const named = rows.filter((r) => r.title && !RAW_DOCKET_TITLE_REGEX.test(r.title.trim()));
+  const pool = named.length > 0 ? named : rows;
+  const uidOrder = new Map(uniqueUids.map((u, idx) => [u, idx]));
+  pool.sort((a, b) => (uidOrder.get(a.case_uid) ?? 999) - (uidOrder.get(b.case_uid) ?? 999));
+
+  return pool.slice(0, limit).map((r) => {
+    const summary = r.content_summary && r.content_summary !== 'Summary unavailable.' ? r.content_summary : '';
+    const snippet = summary.length > 180 ? summary.slice(0, 180).trimEnd() + '...' : summary;
+    return {
+      case_uid: r.case_uid,
+      title: r.title,
+      gr_number: r.gr_number || '',
+      decision_date: r.decision_date || '',
+      source_url: r.source_url || '',
+      snippet,
+      content_summary: snippet
+    };
+  });
 }
 
 function makeSnippet(content, query) {
@@ -258,26 +339,30 @@ router.get('/search', async (req, res) => {
       }
     }
 
-    // 4. Search Jurisprudence Cases (G.R. Number, Title, or summary keywords)
-    let cases = [];
-    const caseSearchTerm = query.replace(/^art[a-z]*\.?\s*\d+\s*/i, '').trim() || query;
-    if (caseSearchTerm && caseSearchTerm.length >= 2) {
-      const { data: casesData, error: casesErr } = await supabase
-        .from('jurisprudence_cases')
-        .select('case_uid, title, gr_number, decision_date, content_summary')
-        .or(`title.ilike.%${caseSearchTerm}%,gr_number.ilike.%${caseSearchTerm}%,content_summary.ilike.%${caseSearchTerm}%`)
-        .limit(4);
+    // 4. Search Jurisprudence Cases (article graph links + flexible docket/party/summary index)
+    const strippedArtTerm = query
+      .replace(/^(?:art(?:icles?|ilces?|iles?|cles?|icels?|cls?|ikulos?|s)?\.?|atr(?:icles?|s)?\.?|probisyon)\s*(?:(?:nos?|bilang|blg)\b\.?)?\s*[#:\-–=]?\s*\d{1,4}\s*/i, '')
+      .trim();
+    const caseSearchTerm = strippedArtTerm || query;
 
-      if (!casesErr && casesData) {
-        cases = casesData.map(c => ({
-          case_uid: c.case_uid,
-          title: c.title,
-          gr_number: c.gr_number || '',
-          decision_date: c.decision_date || '',
-          snippet: c.content_summary ? (c.content_summary.length > 150 ? c.content_summary.slice(0, 150) + '...' : c.content_summary) : ''
-        }));
-      }
+    let linkedArticleCases = [];
+    if (articleNum) {
+      const isFamilyQuery = /\b(?:family|marriage|kasal|asawa|annulment|nullity|filiation|adoption|custody|support|separation|eo\s*209|e\.?o\.?\s*209|fc\b|conjugal|community|psychological|incapacity|spouse|husband|wife|parental|emancipation)\b/i.test(query);
+      const relationIds = isFamilyQuery
+        ? [`EO209-ART${articleNum}`, `RA386-ART${articleNum}`]
+        : [`RA386-ART${articleNum}`, `EO209-ART${articleNum}`];
+      linkedArticleCases = await fetchLinkedArticleCases(relationIds, 6);
     }
+
+    const searchedCases = await searchJurisprudence(supabase, caseSearchTerm, 6);
+    const mergedCaseMap = new Map();
+    for (const c of linkedArticleCases) {
+      if (!mergedCaseMap.has(c.case_uid)) mergedCaseMap.set(c.case_uid, c);
+    }
+    for (const c of searchedCases) {
+      if (!mergedCaseMap.has(c.case_uid)) mergedCaseMap.set(c.case_uid, c);
+    }
+    const cases = Array.from(mergedCaseMap.values()).slice(0, 6);
 
     const payload = {
       query,
@@ -458,29 +543,14 @@ router.get('/article/:id', async (req, res) => {
 
     const article = articleRows[0];
 
-    // Fetch related cases via the junction table using Supabase join syntax
-    // Since we don't have explicit foreign key setup defined in this snippet, 
-    // we can do a two-step query or a join if configured. Let's do a simple two-step to be safe.
-    const { data: relationRows, error: relationError } = await supabase
-      .from('article_jurisprudence_relations')
-      .select('case_uid')
-      .eq('article_id', articleId)
-      .limit(5);
-      
-    if (relationError) throw relationError;
-    
-    if (relationRows && relationRows.length > 0) {
-      const caseUids = relationRows.map(r => r.case_uid);
-      const { data: casesRows, error: casesError } = await supabase
-        .from('jurisprudence_cases')
-        .select('case_uid, title, gr_number, decision_date, content_summary, source_url, full_text')
-        .in('case_uid', caseUids);
-        
-      if (casesError) throw casesError;
-      article.related_cases = casesRows || [];
-    } else {
-      article.related_cases = [];
+    // Fetch related cases via junction table, bridging EO209 <-> RA386 when direct edges are absent.
+    const relationIds = [articleId];
+    const eoMatch = articleId.match(/^EO209-ART(\d+)$/i);
+    let linkedCases = await fetchLinkedArticleCases(relationIds, 5);
+    if (linkedCases.length === 0 && eoMatch) {
+      linkedCases = await fetchLinkedArticleCases([`RA386-ART${eoMatch[1]}`], 5);
     }
+    article.related_cases = linkedCases;
 
     res.json(article);
   } catch (err) {

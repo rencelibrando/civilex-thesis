@@ -37,10 +37,25 @@ TOPIC_MAP = {
 }
 
 
+# Strictly match end-of-article historical source notes without consuming mid-article clauses.
+_TRAILING_SOURCE_NOTE_RE = re.compile(
+    r'\s*\((?:'
+    r'\d+[a-z]?(?:-\d+[a-z]?)?(?:\s*,\s*(?:\d+[a-z]?(?:-\d+[a-z]?)?|\(\d+\)[a-z]?|E\.?\s*O\.?\s*(?:\d+\s*)?(?:and\s+)?PD\s*\d+|PD\s*\d+))*'
+    r'|n|R'
+    r'|As\s+amended\s+by\s+[^()]+'
+    r'|\d+\([^()]+\)[a-z]?(?:\s*(?:,|and)\s*(?:\(\d+\)[a-z]?|PD\s*\d+))*'
+    r')\s*\)\s*\.?\s*$',
+    re.IGNORECASE,
+)
+
+
 def clean_article_text(raw_text: str) -> str:
-    # Remove trailing historical source notes like (52a), (n), (142a), (2180(2)a and (4)a )
-    cleaned = re.sub(r'\s*\((?:\d+[a-z]?|\b[nRa-z]+\b|\d+\([^\)]+\)[a-z]?|[0-9a-zA-Z\s,\.\(\)]+)\)\s*$', '', raw_text.strip(), flags=re.MULTILINE)
-    # Normalize multiple newlines and spaces
+    cleaned = raw_text.strip()
+    while True:
+        updated = _TRAILING_SOURCE_NOTE_RE.sub('', cleaned).strip()
+        if updated == cleaned:
+            break
+        cleaned = updated
     cleaned = re.sub(r'[ \t]+', ' ', cleaned)
     cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
     return cleaned.strip()

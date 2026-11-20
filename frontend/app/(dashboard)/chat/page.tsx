@@ -1414,8 +1414,8 @@ function ChatPageContent() {
                 {docRejectionNotice && (
                   <div
                     className={`p-3 rounded-xl border flex items-start gap-2.5 animate-fade-in ${docRejectionNotice.status === "rejected_unrelated"
-                        ? "bg-amber-500/10 border-amber-500/30 text-amber-950 dark:text-amber-100"
-                        : "bg-destructive/10 border-destructive/30 text-destructive"
+                      ? "bg-amber-500/10 border-amber-500/30 text-amber-950 dark:text-amber-100"
+                      : "bg-destructive/10 border-destructive/30 text-destructive"
                       }`}
                   >
                     {docRejectionNotice.status === "rejected_unrelated" ? (
@@ -2291,6 +2291,87 @@ function ChatPageContent() {
                       <span>85%+ (Strict Entailment)</span>
                     </div>
                   </div>
+
+                  {legalAnalytics.claims_total != null && (
+                    <div className="grid grid-cols-3 gap-2 pt-1 text-center text-[11px]">
+                      <div className="p-2 rounded-lg bg-emerald-500/10 border border-emerald-500/20">
+                        <div className="font-bold text-emerald-700 dark:text-emerald-400 tabular-nums">
+                          {legalAnalytics.claims_entailed ?? 0}
+                        </div>
+                        <div className="text-[10px] text-muted-foreground">Entailed</div>
+                      </div>
+                      <div className="p-2 rounded-lg bg-muted/60 border border-border">
+                        <div className="font-bold text-foreground tabular-nums">
+                          {legalAnalytics.claims_neutral ?? 0}
+                        </div>
+                        <div className="text-[10px] text-muted-foreground">Neutral</div>
+                      </div>
+                      <div className="p-2 rounded-lg bg-rose-500/10 border border-rose-500/20">
+                        <div className="font-bold text-rose-700 dark:text-rose-400 tabular-nums">
+                          {legalAnalytics.claims_contradicted ?? 0}
+                        </div>
+                        <div className="text-[10px] text-muted-foreground">Contradicted</div>
+                      </div>
+                    </div>
+                  )}
+
+                  {legalAnalytics.nli_analysis && (
+                    <div className="p-3 rounded-lg bg-background/80 border border-border text-xs space-y-1">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-semibold text-foreground">
+                          Gemma NLI Score Analysis
+                        </span>
+                        {legalAnalytics.nli_engine && (
+                          <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-muted border border-border text-muted-foreground">
+                            {legalAnalytics.nli_engine}
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-muted-foreground text-[11px] leading-relaxed">
+                        {legalAnalytics.nli_analysis}
+                      </p>
+                    </div>
+                  )}
+
+                  {Array.isArray(legalAnalytics.nli_verdicts) && legalAnalytics.nli_verdicts.length > 0 && (
+                    <div className="space-y-1.5 pt-1">
+                      <p className="text-[11px] font-semibold text-foreground uppercase tracking-wider">
+                        Claim-by-Claim Audit ({legalAnalytics.nli_verdicts.length})
+                      </p>
+                      <div className="space-y-1.5 max-h-52 overflow-y-auto pr-1">
+                        {legalAnalytics.nli_verdicts.map((item, idx) => (
+                          <div
+                            key={idx}
+                            className="p-2.5 rounded-lg bg-background/80 border border-border text-[11px] space-y-1"
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <span
+                                className={`font-semibold px-1.5 py-0.5 rounded text-[10px] uppercase border ${item.verdict === "contradicted"
+                                    ? "text-rose-700 dark:text-rose-400 bg-rose-500/10 border-rose-500/25"
+                                    : item.verdict === "entailed"
+                                      ? "text-emerald-700 dark:text-emerald-400 bg-emerald-500/10 border-emerald-500/25"
+                                      : "text-muted-foreground bg-muted border-border"
+                                  }`}
+                              >
+                                {item.verdict}
+                              </span>
+                              {item.verifier && (
+                                <span className="text-[10px] font-mono text-muted-foreground">
+                                  {item.verifier}
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-foreground leading-snug">{item.claim}</p>
+                            {item.rationale && (
+                              <p className="text-muted-foreground text-[10px] leading-snug">
+                                {item.rationale}
+                              </p>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
 

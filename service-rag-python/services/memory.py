@@ -495,6 +495,7 @@ async def maybe_refresh_summary(
             temperature=0.0,
             max_tokens=400,
             timeout_sec=25.0,
+            reasoning_effort="none",
         )
     except Exception as exc:
         logger.warning("summary LLM call failed: %s", exc)

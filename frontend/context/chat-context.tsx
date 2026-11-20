@@ -61,11 +61,21 @@ export interface RagStatus {
   queue_position?: number;
 }
 
+export interface NliClaimAudit {
+  claim: string;
+  verdict: "entailed" | "neutral" | "contradicted" | string;
+  verifier?: string;
+  rule_fired?: string;
+  rationale?: string;
+}
+
 export interface LegalAnalytics {
   nli_score?: number | null;
   nli_score_net?: number | null;
   nli_score_weighted?: number | null;
   nli_engine?: string;
+  nli_analysis?: string | null;
+  nli_verdicts?: NliClaimAudit[];
   nli_status: "Grounded" | "Unverified" | "Out of Domain" | "Pending" | "Evaluating";
   nli_unavailable?: boolean;
   nli_timed_out?: boolean;

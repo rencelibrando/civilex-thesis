@@ -27,7 +27,11 @@ from dotenv import load_dotenv
 load_dotenv(override=True)
 
 from main import domain_router, embed_and_search, calibrate_suitability_score
-from eval_ragas import calculate_context_recall, calculate_context_precision
+from eval_ragas import (
+    IN_DOMAIN_BENCHMARK_CASES,
+    calculate_context_precision,
+    calculate_context_recall,
+)
 
 EVAL_DATASET_PATH = os.path.join(CURRENT_DIR, "data", "training", "eval_augmented.jsonl")
 
@@ -175,63 +179,20 @@ def evaluate_domain_router(sample_limit: int = 150) -> Dict[str, Any]:
     return compute_classification_metrics(y_true, y_pred, labels)
 
 
-def evaluate_retrieval_and_regression(n_queries: int = 20) -> Dict[str, Any]:
+def evaluate_retrieval_and_regression(n_queries: int = 30) -> Dict[str, Any]:
     """
-    Evaluates PostgreSQL hybrid retrieval, RAGAS Context Recall & Precision@K,
-    and Regression metrics for Calibrated Suitability Scores.
+    Evaluates PostgreSQL hybrid retrieval, active-context RAGAS Context Recall & Precision@K,
+    and Regression metrics for Calibrated Suitability Scores across the multi-scenario benchmark.
     """
-    benchmark_cases = [
-        {
-            "query": "The contractor failed to complete construction within the agreed period despite receiving full payment. Can I cancel the contract and demand my money back with damages?",
-            "expected": ["RA386-ART1715", "RA386-ART1724", "RA386-ART1191", "RA386-ART1170"],
-            "ground_truth_relevance": 95.0
-        },
-        {
-            "query": "A delivery truck hit my parked car while the driver was speeding. Can I claim damages from both the driver and the company that employed him?",
-            "expected": ["RA386-ART2176", "RA386-ART2180", "RA386-ART2199", "RA386-ART2184"],
-            "ground_truth_relevance": 95.0
-        },
-        {
-            "query": "I bought a vehicle from a dealership that broke down three days later due to a factory engine defect. Can I return it for a refund?",
-            "expected": ["RA386-ART1561", "RA386-ART1567", "RA386-ART1566"],
-            "ground_truth_relevance": 95.0
-        },
-        {
-            "query": "A friend borrowed ₱150,000 via a promissory note due last month. He refuses to pay despite several verbal reminders. What court should I file in?",
-            "expected": ["RA386-ART1169", "RA386-ART1231", "RA386-ART1933"],
-            "ground_truth_relevance": 95.0
-        },
-        {
-            "query": "Can spouses donate an entire parcel of land to each other during the marriage?",
-            "expected": ["RA386-ART133", "RA386-ART748", "RA386-ART749", "RA386-ART1490"],
-            "ground_truth_relevance": 95.0
-        },
-        {
-            "query": "What are the requisites of quasi-delict or negligence under Philippine Civil Law?",
-            "expected": ["RA386-ART2176", "RA386-ART2179"],
-            "ground_truth_relevance": 95.0
-        },
-        {
-            "query": "Ano ang mga karapatan ng bumili kapag may nakatagong depekto sa biniling gamit?",
-            "expected": ["RA386-ART1561", "RA386-ART1566", "RA386-ART1567"],
-            "ground_truth_relevance": 95.0
-        },
-        {
-            "query": "Pwede ko ba kanselahin ang kontrata kapag hindi sumunod ang kabilang panig sa napagkasunduan?",
-            "expected": ["RA386-ART1191", "RA386-ART1170", "RA386-ART1169"],
-            "ground_truth_relevance": 95.0
-        }
-    ]
-
     recalls = []
     precisions = []
     latencies = []
     predicted_suitabilities = []
     actual_relevances = []
 
-    for case in benchmark_cases[:n_queries]:
+    for case in IN_DOMAIN_BENCHMARK_CASES[:n_queries]:
         q = case["query"]
-        expected = case["expected"]
+        expected = list(case.get("expected_articles", [])) + list(case.get("expected_cases", []))
 
         t0 = time.perf_counter()
         try:
@@ -239,8 +200,8 @@ def evaluate_retrieval_and_regression(n_queries: int = 20) -> Dict[str, Any]:
             t_ret = (time.perf_counter() - t0) * 1000.0
             latencies.append(t_ret)
 
-            rec = calculate_context_recall(chunks, expected)
-            prec = calculate_context_precision(chunks, expected)
+            rec = calculate_context_recall(chunks, expected, active_only=True)
+            prec = calculate_context_precision(chunks, expected, active_only=True)
             recalls.append(rec)
             precisions.append(prec)
 
@@ -252,7 +213,7 @@ def evaluate_retrieval_and_regression(n_queries: int = 20) -> Dict[str, Any]:
                     top_suit = calibrate_suitability_score(sim, is_exact=False, is_active=True)
 
             predicted_suitabilities.append(top_suit)
-            actual_relevances.append(case["ground_truth_relevance"] if rec > 0.5 else 40.0)
+            actual_relevances.append(95.0 if rec >= 0.5 else 40.0)
         except Exception as e:
             print(f"Retrieval error for query '{q[:30]}': {e}")
 
@@ -356,7 +317,7 @@ def run_full_evaluation():
 
     # 2. Retrieval & Regression Metrics
     print("\n[PART 2] Evaluating Hybrid Retrieval & Regression Metrics...")
-    ret_res = evaluate_retrieval_and_regression(n_queries=8)
+    ret_res = evaluate_retrieval_and_regression(n_queries=30)
     print(f"Mean Context Recall:     {ret_res['context_recall_mean']:.2f}% (Target >= 90.0%)")
     print(f"Mean Context Precision:  {ret_res['context_precision_mean']:.2f}% (Target >= 85.0%)")
     print(f"Average Retrieval Time:  {ret_res['avg_latency_ms']:.2f} ms")

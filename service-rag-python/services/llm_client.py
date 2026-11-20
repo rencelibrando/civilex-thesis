@@ -309,12 +309,24 @@ async def generate_response_stream(
         raise RuntimeError(f"Unexpected error during LM Studio streaming: {e}") from e
 
 
+_THINK_BLOCK_RE = re.compile(r"<think>[\s\S]*?</think>", re.IGNORECASE)
+
+
+def _strip_thinking_blocks(text: str) -> str:
+    """Remove inline <think>...</think> blocks so raw chain-of-thought never leaks."""
+    if not text:
+        return ""
+    return _THINK_BLOCK_RE.sub("", text).strip()
+
+
 async def call_chat_completion_async(
     messages: list,
     temperature: float = 0.1,
     max_tokens: int = 3000,
     timeout_sec: float = 60.0,
     repetition_penalty: float = 1.15,
+    reasoning_effort: Optional[str] = None,
+    allow_reasoning_fallback: bool = False,
 ) -> str | None:
     url = f"{LM_STUDIO_URL.rstrip('/')}/chat/completions"
     payload = {
@@ -325,6 +337,8 @@ async def call_chat_completion_async(
         "stream": False,
         "repetition_penalty": repetition_penalty,
     }
+    if reasoning_effort is not None:
+        payload["reasoning_effort"] = reasoning_effort
 
     try:
         req_timeout = httpx.Timeout(timeout_sec, connect=min(10.0, timeout_sec))
@@ -333,7 +347,12 @@ async def call_chat_completion_async(
         response.raise_for_status()
         data = response.json()
         msg = data["choices"][0]["message"]
-        return msg.get("content") or msg.get("reasoning_content") or ""
+        content = _strip_thinking_blocks(msg.get("content") or "")
+        if content:
+            return content
+        if allow_reasoning_fallback:
+            return msg.get("reasoning_content") or ""
+        return ""
     except (httpx.TimeoutException, httpx.ConnectError, httpx.HTTPStatusError) as e:
         set_model_offline()
         logging.warning(f"LM Studio async completion failed ({type(e).__name__}: {e})")
@@ -349,6 +368,8 @@ def call_chat_completion_sync(
     max_tokens: int = 3000,
     timeout_sec: float = 60.0,
     repetition_penalty: float = 1.15,
+    reasoning_effort: Optional[str] = None,
+    allow_reasoning_fallback: bool = False,
 ) -> str | None:
     url = f"{LM_STUDIO_URL.rstrip('/')}/chat/completions"
     payload = {
@@ -359,6 +380,8 @@ def call_chat_completion_sync(
         "stream": False,
         "repetition_penalty": repetition_penalty,
     }
+    if reasoning_effort is not None:
+        payload["reasoning_effort"] = reasoning_effort
 
     try:
         req_timeout = httpx.Timeout(timeout_sec, connect=min(10.0, timeout_sec))
@@ -367,7 +390,12 @@ def call_chat_completion_sync(
         response.raise_for_status()
         data = response.json()
         msg = data["choices"][0]["message"]
-        return msg.get("content") or msg.get("reasoning_content") or ""
+        content = _strip_thinking_blocks(msg.get("content") or "")
+        if content:
+            return content
+        if allow_reasoning_fallback:
+            return msg.get("reasoning_content") or ""
+        return ""
     except (httpx.TimeoutException, httpx.ConnectError, httpx.HTTPStatusError) as e:
         set_model_offline()
         logging.warning(f"LM Studio sync completion failed ({type(e).__name__}: {e})")

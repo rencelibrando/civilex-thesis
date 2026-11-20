@@ -154,6 +154,127 @@ class TestAutoAnalyzeRagPipeline(unittest.TestCase):
         self.assertIn("follow_ups", event_types)
         self.assertIn("done", event_types)
 
+    def test_auto_analyze_prompt_exposes_top_relevance_articles_for_alignment(self):
+        import main
+        from fastapi.testclient import TestClient
+
+        doc_id = "22222222-2222-4222-8222-222222222222"
+        sess_id = "11111111-1111-4111-8111-111111111111"
+
+        class _DocCursor:
+            def __init__(self):
+                self._last = None
+
+            def execute(self, sql, params=None):
+                s = " ".join(sql.split()).lower()
+                if "from user_documents" in s:
+                    self._last = ("Lease_Agreements.pdf", "completed", None)
+                elif "count(*)" in s:
+                    self._last = (1,)
+                elif "from document_chunks" in s:
+                    self._last = [("This Lease Agreement covers residential premises, rent, and repairs.",)]
+                else:
+                    self._last = None
+
+            def fetchone(self):
+                return self._last
+
+            def fetchall(self):
+                return self._last or []
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        class _DocConn:
+            def cursor(self, *args, **kwargs):
+                return _DocCursor()
+
+            def close(self):
+                pass
+
+        captured_prompts = []
+
+        async def _fake_stream(sys_prompt, *args, **kwargs):
+            captured_prompts.append(sys_prompt)
+            yield (
+                "### Philippine Civil Code / Family Code Alignment\n"
+                "Under [Art. 1658] and [Art. 1654], the lessee may suspend rent if necessary repairs are withheld."
+            )
+
+        fake_search_results = [
+            {
+                "chunk_id": "RA386-ART1658_0",
+                "parent_type": "article",
+                "parent_id": "RA386-ART1658",
+                "content": "Article 1658. The lessee may suspend the payment of the rent...",
+                "metadata": {"article_id": "RA386-ART1658", "article_number": 1658, "hierarchy": {}},
+                "similarity": 0.91,
+                "suitability_percent": 95.1,
+                "display_suitability": 95.1,
+                "is_in_context": True,
+                "rank": 1,
+            },
+            {
+                "chunk_id": "RA386-ART1654_0",
+                "parent_type": "article",
+                "parent_id": "RA386-ART1654",
+                "content": "Article 1654. The lessor is obliged to make all necessary repairs...",
+                "metadata": {"article_id": "RA386-ART1654", "article_number": 1654, "hierarchy": {}},
+                "similarity": 0.87,
+                "suitability_percent": 91.2,
+                "display_suitability": 91.2,
+                "is_in_context": True,
+                "rank": 2,
+            },
+        ]
+
+        fake_nli = MagicMock(
+            score_percent=94.0,
+            score_net_percent=94.0,
+            score_weighted=0.94,
+            status="Grounded",
+            claims_total=2,
+            claims_entailed=2,
+            claims_neutral=0,
+            claims_contradicted=0,
+            engine="symbolic",
+        )
+
+        with patch("main.get_db_connection", side_effect=lambda: _DocConn()), \
+             patch("main.session_memory.load_session_history", return_value=[]), \
+             patch("main.session_memory.load_session_summary", return_value=None), \
+             patch("main.session_memory.load_recent_citations", return_value=[]), \
+             patch("main.session_memory.save_user_message"), \
+             patch("main.check_model_readiness", new=AsyncMock(return_value=(True, "ready"))), \
+             patch("main.compute_embedding", return_value=[0.1] * 768), \
+             patch("main.search_with_embedding", return_value=fake_search_results), \
+             patch("main.generate_response_stream", side_effect=_fake_stream), \
+             patch("main.nli_score_faithfulness_async", new=AsyncMock(return_value=fake_nli)), \
+             patch("main.followup_svc.generate_followups", new=AsyncMock(return_value=[])), \
+             patch("main.save_assistant_message_to_db"):
+            client = TestClient(main.app)
+            resp = client.post(
+                "/search",
+                json={
+                    "query": "",
+                    "session_id": sess_id,
+                    "document_id": doc_id,
+                    "document_name": "Lease_Agreements.pdf",
+                    "auto_analyze": True,
+                },
+            )
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(len(captured_prompts), 1)
+        prompt = captured_prompts[0]
+        self.assertIn("[Statutory Article 1 | Relevance: 95.1% — TOP RELEVANCE (PRIORITIZE FIRST)]", prompt)
+        self.assertIn("[Statutory Article 2 | Relevance: 91.2% — HIGH RELEVANCE]", prompt)
+        self.assertIn("Article 1658 (Civil Code (RA 386), 95.1%), Article 1654 (Civil Code (RA 386), 91.2%)", prompt)
+        self.assertIn("Do NOT omit the #1 top-ranked article or lead only with lower-percentage articles", prompt)
+
     def test_followup_without_legal_keywords_still_fetches_civil_code_articles(self):
         import main
 

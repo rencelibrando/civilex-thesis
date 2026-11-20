@@ -34,9 +34,15 @@ from core.article_parser import (
     detect_statute_mention,
     FAMILY_CODE_PATTERNS,
     parse_gr_numbers,
+    expand_docket_range,
     extract_case_parties,
-    extract_case_title_candidate,
     bold_article_references,
+)
+from core.jurisprudence_matcher import (
+    format_clean_gr_number,
+    search_jurisprudence_cases,
+    strip_accents,
+    strip_dates_from_docket,
 )
 from services import memory as session_memory
 from services import followups as followup_svc
@@ -448,7 +454,7 @@ def get_civil_code_article(article_id: str):
             if not article:
                 raise HTTPException(status_code=404, detail="Article not found")
                 
-            # Fetch related jurisprudence (if any)
+            # Fetch related jurisprudence, prioritizing explicit Family Code edges and named cases.
             cur.execute("""
                 SELECT j.case_uid, j.title, j.gr_number, j.decision_date,
                        COALESCE(NULLIF(NULLIF(j.content_summary, 'Summary unavailable.'), ''), j.full_text) AS content_summary,
@@ -457,9 +463,26 @@ def get_civil_code_article(article_id: str):
                 JOIN jurisprudence_cases j ON r.case_uid = j.case_uid
                 WHERE r.article_id = %s
                   AND COALESCE(NULLIF(NULLIF(j.content_summary, 'Summary unavailable.'), ''), j.full_text) IS NOT NULL
+                  AND j.title !~* '^(G\\.R\\.|A\\.M\\.|A\\.C\\.|B\\.M\\.)'
+                ORDER BY (r.citation_type = 'family_code_explicit') DESC, j.case_uid DESC
                 LIMIT 5;
             """, (article_id,))
             related_cases = cur.fetchall()
+            if not related_cases and article_id.startswith("EO209-ART"):
+                fallback_aid = article_id.replace("EO209-ART", "RA386-ART", 1)
+                cur.execute("""
+                    SELECT j.case_uid, j.title, j.gr_number, j.decision_date,
+                           COALESCE(NULLIF(NULLIF(j.content_summary, 'Summary unavailable.'), ''), j.full_text) AS content_summary,
+                           j.source_url
+                    FROM article_jurisprudence_relations r
+                    JOIN jurisprudence_cases j ON r.case_uid = j.case_uid
+                    WHERE r.article_id = %s
+                      AND COALESCE(NULLIF(NULLIF(j.content_summary, 'Summary unavailable.'), ''), j.full_text) IS NOT NULL
+                      AND j.title !~* '^(G\\.R\\.|A\\.M\\.|A\\.C\\.|B\\.M\\.)'
+                      AND (j.content_summary ~* 'family code|executive order no\\.?\\s*209' OR j.full_text ~* 'family code|executive order no\\.?\\s*209')
+                    LIMIT 5;
+                """, (fallback_aid,))
+                related_cases = cur.fetchall()
             
             article['related_cases'] = related_cases
             return article
@@ -1122,6 +1145,95 @@ def align_refusal_language(text: str, lang: str = "en") -> str:
     return text
 
 
+def _build_case_excerpt(text: str, max_chars: int = 12000) -> str:
+    # Preserve both opening facts/posture and closing Supreme Court holding/dispositive portion.
+    raw = str(text or "").strip()
+    if len(raw) <= max_chars:
+        return raw
+    head_len = int(max_chars * 0.40)
+    tail_len = max_chars - head_len
+    head = raw[:head_len].rsplit(" ", 1)[0] or raw[:head_len]
+    tail = raw[-tail_len:].split(" ", 1)[-1] if " " in raw[-tail_len:] else raw[-tail_len:]
+    return (
+        f"{head}\n\n"
+        "[...middle narration omitted; Supreme Court holding, statutory basis, and dispositive ruling follow...]\n\n"
+        f"{tail}"
+    )
+
+
+def _format_case_docket_tag(gr_number: str, decision_date: str = "") -> str:
+    clean_gr = format_clean_gr_number(gr_number) or str(gr_number or "").strip()
+    date_str = str(decision_date or "").strip()
+    if clean_gr and date_str:
+        return f"{clean_gr}, {date_str}"
+    return clean_gr or date_str
+
+
+def _collapse_article_chunk_rows(rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    # Group multi-chunk article rows by parent_id, retaining canonical first chunk and MAX(similarity/rrf).
+    grouped: Dict[str, Dict[str, Any]] = {}
+    sorted_rows = sorted(rows, key=lambda r: str(r.get('chunk_id') or ''))
+    for raw in sorted_rows:
+        row = dict(raw)
+        pid = row.get('parent_id')
+        if not pid:
+            continue
+        if pid not in grouped:
+            row['_chunk_count'] = 1
+            grouped[pid] = row
+        else:
+            existing = grouped[pid]
+            existing['_chunk_count'] = int(existing.get('_chunk_count', 1)) + 1
+            if row.get('similarity') is not None:
+                prev_sim = float(existing.get('similarity')) if existing.get('similarity') is not None else -1.0
+                if float(row['similarity']) > prev_sim:
+                    existing['similarity'] = row['similarity']
+            if row.get('rrf_score') is not None:
+                prev_rrf = float(existing.get('rrf_score')) if existing.get('rrf_score') is not None else -1.0
+                if float(row['rrf_score']) > prev_rrf:
+                    existing['rrf_score'] = row['rrf_score']
+    return grouped
+
+
+def _hydrate_articles_with_canonical_text(cur, articles: List[Dict[str, Any]]) -> None:
+    # Hydrate full canonical statutory text from civil_code_articles so multi-chunk articles never lose clauses.
+    if not articles:
+        return
+    art_ids = list(dict.fromkeys(a['parent_id'] for a in articles if a.get('parent_id')))
+    if not art_ids:
+        return
+    cur.execute("""
+        SELECT article_id, article_number, hierarchy, content
+        FROM civil_code_articles
+        WHERE article_id = ANY(%s);
+    """, (art_ids,))
+    art_meta_map = {row['article_id']: dict(row) for row in cur.fetchall()}
+
+    for a in articles:
+        pid = a.get('parent_id')
+        row = art_meta_map.get(pid)
+        if not row:
+            continue
+        canonical_text = (row.get('content') or '').strip()
+        a['metadata'] = {
+            'article_id': row['article_id'],
+            'article_number': row.get('article_number'),
+            'hierarchy': row.get('hierarchy'),
+        }
+        chunk_text = str(a.get('content') or '').strip()
+        is_multi_chunk = int(a.get('_chunk_count', 1)) > 1
+        if canonical_text and (is_multi_chunk or len(canonical_text) > len(chunk_text)):
+            # Preserve existing "Art. N (HIERARCHY): " header prefix if present on the chunk.
+            prefix_match = re.match(r'^(Art\.\s*\d+\s*\([^)]+\):\s*)', chunk_text)
+            if prefix_match and not canonical_text.startswith("Art."):
+                a['content'] = f"{prefix_match.group(1)}{canonical_text}"
+            elif row.get('article_number') and int(row['article_number']) > 0 and not canonical_text.startswith("Art."):
+                a['content'] = f"Art. {row['article_number']}: {canonical_text}"
+            else:
+                a['content'] = canonical_text
+        a.pop('_chunk_count', None)
+
+
 def fetch_article_citations(
     art_nums: List[int],
     query: str = "",
@@ -1152,26 +1264,15 @@ def fetch_article_citations(
                     WHERE parent_id = ANY(%s) AND parent_type = 'article';
                 """, (target_ids,))
             chunk_rows = cur.fetchall()
+            chunk_by_pid = _collapse_article_chunk_rows(chunk_rows)
 
-            cur.execute("""
-                SELECT article_id, article_number, hierarchy
-                FROM civil_code_articles
-                WHERE article_id = ANY(%s);
-            """, (target_ids,))
-            meta_map = {row['article_id']: dict(row) for row in cur.fetchall()}
-
-            chunk_by_pid = {}
-            for row in chunk_rows:
-                pid = row['parent_id']
-                if pid not in chunk_by_pid:
-                    chunk_by_pid[pid] = row
+            ordered_rows = [chunk_by_pid[pid] for pid in target_ids if pid in chunk_by_pid]
+            _hydrate_articles_with_canonical_text(cur, ordered_rows)
 
             citations = []
-            for idx, pid in enumerate(target_ids):
-                row = chunk_by_pid.get(pid)
-                if not row:
-                    continue
-                meta = meta_map.get(pid, {})
+            for idx, row in enumerate(ordered_rows):
+                pid = row['parent_id']
+                meta = row.get('metadata') or {}
                 art_num = meta.get('article_number')
                 if pid.startswith("EO209-"):
                     title_str = f"Article {art_num} (Executive Order No. 209 - Family Code of the Philippines)" if art_num else f"Family Code Provision ({pid})"
@@ -1286,7 +1387,14 @@ def _detect_article_statute_preference(full_text: str, art_num: int, query: str 
 
 
 def _normalize_gr_token(raw: str) -> str:
-    cleaned = re.sub(r'^(?:G\.?\s*R\.?\s*(?:NOS?\.?|NUMBER)?\s*)', '', str(raw or '').strip(), flags=re.IGNORECASE)
+    # Strip fused month/date suffixes and trailing slash artifacts before alphanumeric normalization.
+    cleaned = strip_dates_from_docket(str(raw or '').strip())
+    cleaned = re.sub(
+        r'^(?:(?:G\.?\s*R\.?|A\.?\s*[MC]\.?|B\.?\s*M\.?)(?:\s+OCA\s+IPI)?\s*(?:NOS?\.?|NUMBER)?\s*)',
+        '',
+        cleaned,
+        flags=re.IGNORECASE,
+    )
     return re.sub(r'[^A-Za-z0-9]', '', cleaned).upper()
 
 
@@ -1295,33 +1403,55 @@ def _is_case_cited_in_text(cit: Dict[str, Any], full_text: str, cited_gr_tokens:
     gr_raw = str(meta.get("gr_number") or "").strip()
     pid = str(cit.get("parent_id") or "").strip()
 
-    # 1. Exact boundary-safe G.R. number match
+    # 1. Exact boundary-safe G.R. number match (handles fused months, L-series hyphens, and ranges)
     gr_candidates = set()
     if gr_raw:
+        date_stripped = strip_dates_from_docket(gr_raw)
+        core_gr = re.sub(
+            r'^(?:(?:G\.?\s*R\.?|A\.?\s*[MC]\.?|B\.?\s*M\.?)(?:\s+OCA\s+IPI)?\s*(?:NOS?\.?|NUMBER)?\s*)',
+            '',
+            date_stripped,
+            flags=re.IGNORECASE,
+        ).strip()
+        for tok in re.findall(r'[A-Za-z]?-?\d+(?:-\d+)?', core_gr):
+            for expanded in expand_docket_range(tok):
+                norm_exp = re.sub(r'[^A-Za-z0-9]', '', expanded).upper()
+                if norm_exp:
+                    gr_candidates.add(norm_exp)
+                    stripped_l = re.sub(r'^L', '', norm_exp)
+                    if stripped_l and len(stripped_l) >= 3:
+                        gr_candidates.add(stripped_l)
         norm_gr = _normalize_gr_token(gr_raw)
         if norm_gr:
             gr_candidates.add(norm_gr)
             stripped_l = re.sub(r'^L', '', norm_gr)
             if stripped_l and len(stripped_l) >= 3:
                 gr_candidates.add(stripped_l)
-    pid_match = re.match(r'^GR[_-]([A-Za-z]?\d+)', pid, re.IGNORECASE)
+
+    pid_match = re.match(r'^GR[_-]([A-Za-z]?[-_]?\d+(?:-\d+)?)', pid, re.IGNORECASE)
     if pid_match:
-        gr_candidates.add(pid_match.group(1).upper())
+        for expanded in expand_docket_range(pid_match.group(1).replace('_', '-')):
+            norm_pid = re.sub(r'[^A-Za-z0-9]', '', expanded).upper()
+            if norm_pid:
+                gr_candidates.add(norm_pid)
+                stripped_l = re.sub(r'^L', '', norm_pid)
+                if stripped_l and len(stripped_l) >= 3:
+                    gr_candidates.add(stripped_l)
 
     if gr_candidates and (gr_candidates & cited_gr_tokens):
         return True
 
-    # 2. Distinctive case title / party match
+    # 2. Distinctive accent-insensitive case title / party match
     title = str(meta.get("title") or "").strip()
     if not title:
         return False
 
-    norm_text = re.sub(r'\s+', ' ', full_text).lower()
-    norm_title = re.sub(r'\s+', ' ', title).lower()
+    norm_text = re.sub(r'\s+', ' ', strip_accents(full_text)).lower()
+    norm_title = re.sub(r'\s+', ' ', strip_accents(title)).lower()
     if len(norm_title) >= 10 and norm_title in norm_text:
         return True
 
-    sides = re.split(r'\s+(?:v\.?|vs\.?|versus|contra)\s+', title, maxsplit=1, flags=re.IGNORECASE)
+    sides = re.split(r'\s+(?:v\.?|vs\.?|versus|contra)\s+', strip_accents(title), maxsplit=1, flags=re.IGNORECASE)
     if len(sides) != 2:
         return False
 
@@ -1779,87 +1909,215 @@ def detect_article_distractor(
 
 LEGAL_DOMAIN_EXPANSIONS = [
     {
+        "tag": "succession",
         "patterns": [
-            r'\b(?:utang|pautang|hiram|pahiram|bayad|nabayaran|nagbayad|singil|paniningil|nagbabanta|banta|kulong|makukulong|estafa|harass|panghaharass|sinisingil|hindi nagbayad|walang pambayad|ipapakulong|tinatakot)\b',
-            r'\b(?:debt|unpaid debt|loan|borrowed money|lender|creditor|debtor|threat|threats|harass|harassment|imprisonment for debt|collection|collection methods)\b',
+            r'\b(?:mana|pamana|testamento|habilin|hati sa lupa ng magulang|tagapagmana|pamanang lupa|namanang ari-arian|namatay na magulang|itinakwil|nakalimutan sa testamento)\b',
+            r'\b(?:inheritance|will|succession|heir|heirs|legitime|(?<!real\s)estate|extrajudicial settlement|probate|disinheritance|disinherit|omitted heir|preterition)\b',
         ],
-        "expansion": "loan mutuum Article 1953 delay Article 1170 damages legal interest Article 2209 abuse of rights Article 19 Article 20 Article 21 no imprisonment for debt"
+        "expansion": "succession transmission Article 777 preterition Article 854 total omission direct line annulment institution of heir legitime Article 886 Article 888"
     },
     {
+        "tag": "fc_psych_incapacity",
         "patterns": [
-            r'\b(?:presumptive\s+death|presumed\s+dead|declaration\s+of\s+presumptive\s+death|absence|absent\s+spouse|remarriage\s+after\s+absence|subsequent\s+marriage\s+due\s+to\s+absence)\b',
+            r'\b(?:psychological\s+incapacity|psychologically\s+incapacitated|essential\s+marital\s+obligations|declaration\s+of\s+(?:absolute\s+)?nullity\s+of\s+marriage|void\s+marriage|walang\s+bisa\s+ang\s+kasal)\b',
+        ],
+        "expansion": "psychological incapacity Article 36 Family Code Executive Order No 209 essential marital obligations void marriage Article 35"
+    },
+    {
+        "tag": "fc_presumptive_death",
+        "patterns": [
+            r'\b(?:presumptive\s+death|presumed\s+dead|declaration\s+of\s+presumptive\s+death|absent\s+spouse|remarriage\s+after\s+absence|subsequent\s+marriage\s+due\s+to\s+absence)\b',
             r'\b(?:nawawalang\s+asawa|deklarasyon\s+ng\s+pagkamatay)\b',
         ],
-        "expansion": "presumptive death Article 41 Family Code well-founded belief absence four years subsequent marriage Article 42 Article 43 Article 390 Article 391 presumption of death"
+        "expansion": "presumptive death Article 41 Family Code well-founded belief absence four years subsequent marriage Article 42 Article 43 Article 390 Article 391"
     },
     {
+        "tag": "fc_foreign_divorce",
+        "patterns": [
+            r'\b(?:foreign\s+divorce|divorce\s+abroad|alien\s+spouse|capacity\s+to\s+remarry|diborsyo)\b',
+        ],
+        "expansion": "foreign divorce Article 26 Family Code Executive Order No 209 alien spouse capacity to remarry"
+    },
+    {
+        "tag": "fortuitous_event",
+        "patterns": [
+            r'\b(?:fortuitous\s+event|force\s+majeure|caso\s+fortuito|act\s+of\s+god|typhoon|earthquake|kalamidad|di-inaasahang\s+pangyayari)\b',
+        ],
+        "expansion": "fortuitous event force majeure Article 1174 unforeseen inevitable loss of thing due Article 1262 Article 1266"
+    },
+    {
+        "tag": "mortgage_pledge",
+        "patterns": [
+            r'\b(?:mortgage|pledge|antichresis|pactum\s+commissorium|foreclosure|collateral|sangla|pagsasangla|remata)\b',
+        ],
+        "expansion": "mortgage pledge Article 2085 pactum commissorium automatic appropriation void Article 2088 real estate mortgage Article 2125"
+    },
+    {
+        "tag": "void_contracts",
+        "patterns": [
+            r'\b(?:void\s+(?:and|vs\.?|versus|or|at|o)\s+voidable|voidable\s+(?:and|vs\.?|versus|or|at|o)\s+void)\b',
+            r'\b(?:void|inexistent)(?:\s+and\s+(?:void|inexistent)|\s+ab\s+initio)?\s+(?:contracts?|agreements?)\b',
+            r'\b(?:contracts?|agreements?)\s+(?:that\s+are\s+|is\s+|are\s+)?(?:inexistent|void\s+ab\s+initio|void\s+from\s+the\s+beginning)\b',
+            r'\b(?:walang\s+bisa\s+na\s+kontrata|kontratang\s+walang\s+bisa)\b',
+        ],
+        "expansion": "void and inexistent contracts Article 1409 Article 1410 cannot be ratified"
+    },
+    {
+        "tag": "voidable_contracts",
+        "patterns": [
+            r'\b(?:voidable|annullable)\s+(?:contracts?|agreements?)\b',
+            r'\b(?:void\s+(?:and|vs\.?|versus|or|at|o)\s+voidable|voidable\s+(?:and|vs\.?|versus|or|at|o)\s+void)\b',
+            r'\b(?:vitiated\s+consent|annulment\s+of\s+(?:a\s+)?(?:voidable\s+)?contract|ratification\s+of\s+(?:a\s+)?(?:voidable\s+)?contract)\b',
+        ],
+        "expansion": "voidable contracts vitiated consent Article 1390 Article 1330 ratification"
+    },
+    {
+        "tag": "unenforceable_rescissible",
+        "patterns": [
+            r'\b(?:unenforceable|rescissible)\s+(?:contracts?|agreements?)\b',
+            r'\bstatute\s+of\s+frauds\b',
+        ],
+        "expansion": "unenforceable contracts Statute of Frauds Article 1403 Article 1405 rescissible contracts Article 1381 Article 1385"
+    },
+    {
+        "tag": "contract_breach_rescission",
+        "patterns": [
+            r'\b(?:cancel\s+(?:the\s+|a\s+)?contract|rescind|rescission|breach\s+of\s+contract|non-performance|non-compliance|reciprocal\s+obligations?)\b',
+            r'\b(?:failed\s+to\s+(?:complete|finish|perform|deliver|comply)|did\s+not\s+(?:complete|finish|comply))\b',
+            r'\b(?:kanselahin\s+ang\s+kontrata|hindi\s+(?:sumunod|tumupad)\s+sa\s+(?:kontrata|napagkasunduan))\b',
+        ],
+        "expansion": "reciprocal obligations rescission Article 1191 breach fault delay damages Article 1170 Article 1169"
+    },
+    {
+        "tag": "hidden_defects_sales",
+        "patterns": [
+            r'\b(?:hidden\s+defect|hidden\s+defects|latent\s+defect|factory\s+(?:\w+\s+)?defect|redhibitory|warranty\s+against\s+eviction|warranty)\b',
+            r'\b(?:nakatagong\s+depekto|depekto|depektibo|sirang\s+gamit|palpak)\b',
+        ],
+        "expansion": "hidden defects warranty Article 1561 Article 1566 accion redhibitoria withdraw price reduction Article 1567"
+    },
+    {
+        "tag": "debt_loan",
+        "patterns": [
+            r'\b(?:utang|pautang|hiram|pahiram|singil|paniningil|sinisingil|hindi\s+nagbayad|walang\s+pambayad)\b',
+            r'\b(?:debt|unpaid\s+debt|loan|borrowed|promissory\s+note|lender|creditor|debtor|refuses\s+to\s+pay|collection\s+methods|imprisonment\s+for\s+debt)\b',
+        ],
+        "expansion": "loan mutuum Article 1953 delay demand Article 1169 breach damages Article 1170 legal interest Article 2209 payment Article 1231"
+    },
+    {
+        "tag": "abuse_of_rights",
+        "patterns": [
+            r'\b(?:abuse\s+of\s+rights?|contra\s+bonus\s+mores|morals\s+(?:and|or)\s+good\s+customs|bad\s+faith\b.{0,30}\b(?:humiliate|injure|harm)|humiliate|harass|harassment|threat|threats)\b',
+            r'\b(?:nagbabanta|banta|tinatakot|pananakot|ipapakulong|pinapahiya|panghaharass)\b',
+        ],
+        "expansion": "abuse of rights justice honesty good faith Article 19 willful negligent damage Article 20 contrary to morals good customs public policy Article 21"
+    },
+    {
+        "tag": "quasi_delict_tort",
         "patterns": [
             r'\b(?:aksidente|bangga|nabangga|nasagasaan|nadisgrasya|pinsala|kapabayaan|danyos|perwisyo)\b',
-            r'\b(?:away|awayan|away-pitasan|pananakit|suntukan|bugbugan|pambubugbog|tumama|tinamaan|tamaan|nasaktan|sinaktan|nanakit|binugbog|sinuntok|biktima|sugat|nasugatan|gulpi|ginulpi|sakitan|kaguluhan|gulo sa kalsada|road rage|nagasgasan|nabaril|nasaksak|saksakan)\b',
-            r'\b(?:patay|napatay|nakapatay|naka\s+patay|pagpatay|pinatay|pagkamatay|kamatayan|namatay|nasawi|buhay|killing|homicide|murder|death|manslaughter|loss of life|fatality)\b',
-            r'\b(?:accident|collision|vehicular accident|negligence|fault|quasi-delict|tort|injury|injuries|altercation|fistfight|brawl|assault|battery|physical injuries|bodily injury|road rage|fight)\b',
+            r'\b(?:away|awayan|pananakit|suntukan|bugbugan|pambubugbog|nasaktan|sinaktan|nanakit|binugbog|sinuntok|biktima|sugat|nasugatan|gulpi|ginulpi|road\s+rage|nabaril|nasaksak)\b',
+            r'\b(?:pagpatay|pinatay|napatay|nakapatay|killing|homicide|murder|manslaughter|fatality)\b',
+            r'\b(?:accident|collision|vehicular|negligence|fault|quasi-delict|tort|physical\s+injur\w*|bodily\s+injury|assault|battery|reckless\s+driv\w*|speeding|vicarious\s+liability|independent\s+civil\s+action)\b',
+            r'\b(?:truck|car|vehicle|driver|motorcycle)\b.{0,45}\b(?:hit|struck|rammed|parked|pedestrian|injured|speeding|employed)\b',
         ],
-        "expansion": "quasi-delict negligence Article 2176 physical injuries independent civil action Article 33 civil liability for death Article 2206 fault negligence damages Article 2180 moral damages physical suffering Article 2217 Article 2219 separate from criminal action Article 2177 indemnification Article 1161 Article 20 Article 21 Article 19"
+        "expansion": "quasi-delict negligence Article 2176 employer vicarious liability Article 2180 independent civil action physical injuries Article 33 actual damages Article 2199 death Article 2206"
     },
     {
+        "tag": "lease_repairs",
         "patterns": [
-            r'\b(?:repair|repairs|deduct\w*\s+(?:repair|from\s+rent)|abate|abatement|withhold\s+rent|suspend\s+rent|maintenance|leak|roof|plumbing|useful\s+improvement|kumpuni|pagpapaayos|bawas\s+sa\s+upa)\b',
+            r'\b(?:repair|repairs|deduct\w*\s+(?:repair|from\s+rent)|abate|abatement|withhold\s+rent|suspend\s+rent|maintenance|leak|leaks|roof|plumbing|useful\s+improvement|kumpuni|pagpapaayos|bawas\s+sa\s+upa)\b',
         ],
         "expansion": "lease necessary repairs Article 1654 suspend payment of rent Article 1658 urgent repairs abatement Article 1662 repairs at lessor cost Article 1663 rescission Article 1659 useful improvements Article 1678"
     },
     {
+        "tag": "lease_general",
         "patterns": [
-            r'\b(?:upa|upahan|nangungupahan|nagpapaupa|palayasin|paalisin|deposito|upang bahay|paupahan|pinaalis|renta|bayad sa upa|layas)\b',
-            r'\b(?:lease|rent|rental|tenant|landlord|ejectment|unlawful detainer|security deposit|eviction|evict)\b',
+            r'\b(?:upa|upahan|paupahan|paupahang|nangungupahan|nagpapaupa|palayasin|paalisin|pinaalis|deposito|renta|bayad\s+sa\s+upa)\b',
+            r'\b(?:lease|rent|rental|tenant|landlord|ejectment|unlawful\s+detainer|security\s+deposit|eviction|evict|eject)\b',
         ],
-        "expansion": "lease contract obligations Article 1654 Article 1657 suspend rent Article 1658 rescission Article 1659 ejectment Article 1673 reimbursement Article 1678"
+        "expansion": "lease contract obligations Article 1654 Article 1657 suspend rent Article 1658 rescission Article 1659 judicial ejectment Article 1673"
     },
     {
+        "tag": "property_ownership",
         "patterns": [
-            r'\b(?:lupa|bahay|bakod|hangganan|nagpatayo sa lupa|inagaw ang lupa|titolo|nakatayo sa lupa|hati sa lupa|agawan ng lupa|karapatan sa lupa|daanan|right of way|pader|pader sa hangganan|party wall)\b',
-            r'\b(?:encroachment|builder in good faith|boundary dispute|land title|co-ownership|property ownership|easement|right of way|party wall|castle\s+doctrine|stand\s+your\s+ground|shoot\s+(?:a\s+)?trespasser|trespasser|intruder)\b',
+            r'\b(?:lupa|bakod|hangganan|nagpatayo\s+sa\s+lupa|inagaw\s+ang\s+lupa|titolo|nakatayo\s+sa\s+lupa|hati\s+sa\s+lupa|agawan\s+ng\s+lupa|karapatan\s+sa\s+lupa|daanan|right\s+of\s+way|pader|party\s+wall)\b',
+            r'\b(?:encroachment|builder\s+in\s+good\s+faith|boundary\s+dispute|land\s+title|co-ownership|co-owners?|partition|property\s+ownership|easement|right\s+of\s+way|party\s+wall|castle\s+doctrine|stand\s+your\s+ground|shoot\s+(?:a\s+)?trespasser|trespasser|intruder)\b',
         ],
-        "expansion": "self-help Article 429 reasonable force to repel invasion not deadly force builder in good faith Article 448 recovery of possession Article 434 co-ownership Article 484 right of way easement Article 649 Article 650"
+        "expansion": "builder in good faith Article 448 co-ownership Article 484 partition Article 494 right of way easement Article 649 Article 650 self-help Article 429 recovery of possession Article 434"
     },
     {
+        "tag": "fc_support_custody",
         "patterns": [
-            r'\b(?:benta|binili|tinda|sirang gamit|depektibo|kontrata|kasulatan|bawiin ang bayad|down payment|kasunduan|bumili|nagbenta|soli|ibalik ang pera|palpak|depekto|warranty)\b',
-            r'\b(?:sale|contract of sale|hidden defect|hidden defects|warranty against eviction|breach of contract|rescission|earnest money|refund)\b',
+            r'\b(?:kustodiya|sustento|sustentuhan|pambababae|panlalalaki|kabit|pangangaliwa|hiwalay|hati\s+sa\s+ari-arian)\b',
+            r'\b(?:custody|child\s+custody|support|child\s+support|spousal\s+support|legal\s+separation|marital\s+infidelity|annulment)\b',
         ],
-        "expansion": "contract of sale Article 1458 earnest money Article 1482 hidden defects warranty Article 1561 Article 1566 rescission Article 1191 Article 1385"
+        "expansion": "legal support Article 194 Article 195 child custody tender age Article 213 conjugal partnership family code"
     },
     {
+        "tag": "sales_general",
         "patterns": [
-            r'\b(?:asawa|hiwalay|kasal|kustodiya|sustento|anak|bata|pambababae|panlalalaki|kabit|pangangaliwa|sustentuhan|hati sa ari-arian|relasyon)\b',
-            r'\b(?:marriage|spouse|custody|child custody|support|child support|annulment|legal separation|marital infidelity)\b',
+            r'\b(?:benta|binili|tinda|bawiin\s+ang\s+bayad|down\s+payment|bumili|nagbenta|soli|ibalik\s+ang\s+pera)\b',
+            r'\b(?:contract\s+of\s+sale|earnest\s+money|refund)\b',
         ],
-        "expansion": "legal support Article 194 Article 195 marriage psychological incapacity child custody tender age Article 213 conjugal partnership family code"
+        "expansion": "contract of sale Article 1458 earnest money Article 1482 hidden defects warranty Article 1561 rescission Article 1191 Article 1385"
     },
-    {
-        "patterns": [
-            r'\b(?:mana|pamana|testamento|namatay|habilin|hati sa lupa ng magulang|tagapagmana|pamanang lupa|namanang ari-arian|namatay na magulang|itinakwil|nakalimutan sa testamento)\b',
-            r'\b(?:inheritance|will|succession|heir|legitime|estate|extrajudicial settlement|probate|disinheritance|disinherit|omitted heir|preterition)\b',
-        ],
-        "expansion": "succession transmission Article 777 preterition Article 854 total omission direct line annulment institution of heir disinheritance Article 915 Article 918 legitime Article 886 Article 888 compulsory heirs Article 996 extrajudicial settlement"
-    }
 ]
 
 def expand_legal_query(query: str) -> str:
-    # Enrich colloquial lay queries with governing Philippine legal concepts
-    expansions = []
+    # Enrich colloquial lay queries with governing Philippine legal concepts using non-overlapping domain routing
+    expansions: List[str] = []
+    matched_tags: set[str] = set()
     q_lower = query.lower()
+
     is_presumptive_death = bool(re.search(r'\b(?:presumptive\s+death|presumed\s+dead|absent\s+spouse)\b', q_lower))
-    has_lease_repair_expansion = False
+    has_marriage_context = bool(re.search(r'\b(?:marriage|spouse|kasal|asawa|family\s+code|custody|support|anak)\b', q_lower))
+    has_contract_context = bool(re.search(r'\b(?:contracts?|agreements?|kontrata|kasunduan)\b', q_lower))
+    has_eviction_cue = bool(re.search(r'\b(?:evict\w*|eject\w*|unlawful\s+detainer|palayasin|paalisin|pinaalis)\b', q_lower))
+    has_negated_negligence = bool(re.search(r'\b(?:without\s+(?:any\s+)?negligence|no\s+negligence|walang\s+kapabayaan)\b', q_lower))
+    has_property_specific = bool(re.search(r'\b(?:encroachment|builder\s+in\s+good\s+faith|boundary|easement|right\s+of\s+way|co-owner\w*|partition|trespasser)\b', q_lower))
+    has_threat_cue = bool(re.search(r'\b(?:threat|harass|humiliate|ipapakulong|nagbabanta|tinatakot|pinapahiya|pananakot)\b', q_lower))
+
     for domain in LEGAL_DOMAIN_EXPANSIONS:
-        if is_presumptive_death and "quasi-delict" in domain["expansion"]:
+        tag = domain["tag"]
+        if tag == "quasi_delict_tort" and (
+            is_presumptive_death
+            or "fortuitous_event" in matched_tags
+            or "succession" in matched_tags
+            or has_negated_negligence
+        ):
             continue
-        if has_lease_repair_expansion and "lease contract obligations" in domain["expansion"]:
+        if tag == "lease_general" and "lease_repairs" in matched_tags and not has_eviction_cue:
             continue
+        if tag == "property_ownership" and (
+            "lease_general" in matched_tags or "lease_repairs" in matched_tags or "mortgage_pledge" in matched_tags
+        ) and not has_property_specific:
+            continue
+        if tag == "debt_loan" and "mortgage_pledge" in matched_tags and not has_threat_cue:
+            continue
+        if tag in ("void_contracts", "voidable_contracts") and has_marriage_context and not has_contract_context:
+            continue
+        if tag == "fc_support_custody" and (
+            (has_contract_context and not has_marriage_context)
+            or "succession" in matched_tags
+            or "fc_psych_incapacity" in matched_tags
+            or "fc_presumptive_death" in matched_tags
+        ):
+            continue
+        if tag == "sales_general" and (
+            "hidden_defects_sales" in matched_tags
+            or "contract_breach_rescission" in matched_tags
+            or "unenforceable_rescissible" in matched_tags
+        ):
+            continue
+
         for pat in domain["patterns"]:
             if re.search(pat, q_lower, re.IGNORECASE):
-                expansions.append(domain["expansion"])
-                if "lease necessary repairs" in domain["expansion"]:
-                    has_lease_repair_expansion = True
+                exp_text = domain["expansion"]
+                if tag == "debt_loan" and has_threat_cue:
+                    exp_text = "loan mutuum Article 1953 no imprisonment for debt"
+                expansions.append(exp_text)
+                matched_tags.add(tag)
                 break
         if len(expansions) >= 2:
             break
@@ -1936,10 +2194,11 @@ def build_contextual_query(query: str, history: List[ChatMessage], document_file
                     snip = f"G.R. No. {g}"
                     if snip not in anchors and snip.lower() not in query.lower():
                         anchors.append(snip)
-                clauses = re.findall(r'\b((?:Clause|Section|Sec\.|Paragraph|Par\.)\s*\d+[a-zA-Z]?)\b', msg.content, re.IGNORECASE)
-                for cl in clauses[:1]:
-                    if cl not in anchors and cl.lower() not in query.lower():
-                        anchors.append(cl)
+                if document_filename:
+                    clauses = re.findall(r'\b((?:Clause|Section|Sec\.|Paragraph|Par\.)\s*\d+[a-zA-Z]?)\b', msg.content, re.IGNORECASE)
+                    for cl in clauses[:1]:
+                        if cl not in anchors and cl.lower() not in query.lower():
+                            anchors.append(cl)
 
             # Extract core legal topic from prior user queries
             prior_user_queries = [m.content for m in recent_msgs if m.role == 'user']
@@ -2027,6 +2286,7 @@ STATUTORY_COMPANION_GRAPH: Dict[str, List[str]] = {
     # Property, Accession & Builder in Good Faith
     "RA386-ART448": ["RA386-ART546", "RA386-ART548"],
     "RA386-ART484": ["RA386-ART494", "RA386-ART500"],
+    "RA386-ART494": ["RA386-ART484", "RA386-ART495"],
     "RA386-ART649": ["RA386-ART650"],
 
     # Succession & Wills
@@ -2653,6 +2913,50 @@ def prune_retrieval_noise(items: List[Dict[str, Any]], max_items: int = 5) -> Li
     return rank_and_stratify_citations(items, context_budget=max_items)
 
 
+_NON_CIVIL_TRIBUNAL_RE = re.compile(
+    r'\b(?:nlrc|national\s+labor\s+relations\s+commission|national\s+wages\s+and\s+productivity|regional\s+tripartite\s+wages|labor\s+arbiter|labor\s+code|minimum\s+wage|wage\s+order|illegal\s+dismissal|unfair\s+labor|dole|bureau\s+of\s+internal\s+revenue|commissioner\s+of\s+internal\s+revenue|court\s+of\s+tax\s+appeals|commission\s+on\s+elections|comelec|sandiganbayan|ombudsman)\b',
+    re.IGNORECASE,
+)
+_CIVIL_STATUTE_SIGNAL_RE = re.compile(
+    r'\b(?:civil\s+code|family\s+code|republic\s+act\s+(?:no\.?\s*)?386|executive\s+order\s+(?:no\.?\s*)?209|legal\s+separation|annulment|nullity\s+of\s+marriage|conjugal|absolute\s+community|quasi[- ]delict|rescission|succession|legitime|usufruct|easement|co-ownership)\b',
+    re.IGNORECASE,
+)
+_ART_BOILERPLATE_STOP = frozenset({
+    'art', 'article', 'book', 'title', 'chapter', 'section', 'philippines', 'republic',
+    'civil', 'code', 'family', 'persons', 'obligations', 'contracts', 'shall', 'thereof',
+    'herein', 'person', 'provided', 'following', 'general', 'provisions', 'case', 'cases',
+    'year', 'years', 'prior', 'filing', 'petition', 'cause', 'legal', 'within', 'unless',
+    'taken', 'place', 'territory', 'entitled', 'other', 'under', 'every', 'thing', 'object',
+})
+
+
+def _extract_article_keywords(exact_articles: List[Dict[str, Any]], max_terms: int = 8) -> List[str]:
+    seen = set()
+    terms: List[str] = []
+    for art in exact_articles:
+        content = str(art.get('content') or '')
+        for w in re.split(r'\W+', content):
+            wl = w.lower()
+            if len(w) <= 3 or wl in SEARCH_STOPWORDS or wl in _ART_BOILERPLATE_STOP or w.isdigit():
+                continue
+            if wl not in seen:
+                seen.add(wl)
+                terms.append(w)
+                if len(terms) >= max_terms:
+                    return terms
+    return terms
+
+
+def _is_cross_code_non_civil_case(title: str, summary: str) -> bool:
+    """Rejects unrelated administrative/labor/tax/election rulings linked only by colliding article numbers."""
+    header = f"{title} {(summary or '')[:2500]}"
+    if not _NON_CIVIL_TRIBUNAL_RE.search(header):
+        return False
+    if _CIVIL_STATUTE_SIGNAL_RE.search(summary or ''):
+        return False
+    return True
+
+
 def search_with_embedding(
     q_emb: list,
     query: str,
@@ -2664,9 +2968,11 @@ def search_with_embedding(
     conn = get_db_connection()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            def hybrid_search(parent_type, limit=20, parent_id=None):
-                raw_words = [w for w in re.split(r'\W+', query) if w]
-                gr_tokens = set(parse_gr_numbers(query))
+            def hybrid_search(parent_type, limit=20, parent_id=None, q_emb_override=None, query_override=None):
+                active_q = query_override or query
+                active_emb = q_emb_override if q_emb_override is not None else q_emb
+                raw_words = [w for w in re.split(r'\W+', active_q) if w]
+                gr_tokens = set(parse_gr_numbers(active_q))
                 filtered_words = [
                     w for w in raw_words 
                     if len(w) > 2 and (not w.isdigit() or (1 <= int(w) <= 2270) or w in gr_tokens or any(w in g for g in gr_tokens)) and w.lower() not in SEARCH_STOPWORDS
@@ -2674,7 +2980,7 @@ def search_with_embedding(
                 search_words = filtered_words if filtered_words else [w for w in raw_words if len(w) > 1]
                 if not search_words:
                     search_words = [w for w in raw_words if len(w) > 1]
-                or_query = " OR ".join(search_words) if search_words else query
+                or_query = " OR ".join(search_words) if search_words else active_q
 
                 # Case chunks exceed 350k rows; OR-queries on generic court terms cause multi-minute seq scans
                 if parent_type == 'case' and not parent_id:
@@ -2684,7 +2990,7 @@ def search_with_embedding(
                         'republic', 'act', 'executive', 'order', 'holding', 'holdings', 'precedent',
                     }
                     case_words = [w for w in search_words if w.lower() not in case_meta_words] or search_words
-                    fts_query = " ".join(case_words[:4]) if case_words else query
+                    fts_query = " ".join(case_words[:4]) if case_words else active_q
                     fts_fn = "plainto_tsquery"
                 else:
                     fts_query = or_query
@@ -2744,7 +3050,7 @@ def search_with_embedding(
                     SELECT chunk_id, parent_type, parent_id, content, similarity, rrf_score FROM rrf
                     ORDER BY rrf_score DESC
                     LIMIT %s;
-                """, (q_emb, *params_v, fts_query, *params_t, limit))
+                """, (active_emb, *params_v, fts_query, *params_t, limit))
                 return cur.fetchall()
 
             if document_id:
@@ -2792,7 +3098,7 @@ def search_with_embedding(
                             FROM document_chunks
                             WHERE parent_id = ANY(%s) AND parent_type = 'article';
                         """, (q_emb, doc_exact_ids))
-                        fetched_doc_exact = {row['parent_id']: row for row in cur.fetchall()}
+                        fetched_doc_exact = _collapse_article_chunk_rows(cur.fetchall())
                         for eid in doc_exact_ids:
                             if eid in fetched_doc_exact:
                                 item_ex = fetched_doc_exact[eid]
@@ -2828,10 +3134,13 @@ def search_with_embedding(
                             FROM document_chunks
                             WHERE parent_id = ANY(%s) AND parent_type = 'article';
                         """, (q_emb, doc_exp_ids))
-                        for erow in cur.fetchall():
-                            epid = erow['parent_id']
+                        for epid, erow in _collapse_article_chunk_rows(cur.fetchall()).items():
                             if epid in doc_art_by_id:
                                 doc_art_by_id[epid]['is_expansion_candidate'] = True
+                                doc_art_by_id[epid]['similarity'] = max(
+                                    float(doc_art_by_id[epid].get('similarity', 0.0) or 0.0),
+                                    float(erow.get('similarity', 0.0) or 0.0),
+                                )
                             else:
                                 erow['is_exact'] = False
                                 erow['is_expansion_candidate'] = True
@@ -2852,22 +3161,12 @@ def search_with_embedding(
                             FROM document_chunks
                             WHERE parent_id = ANY(%s) AND parent_type = 'article';
                         """, (q_emb, doc_comp_ids[:6]))
-                        for comp in cur.fetchall():
+                        for comp_pid, comp in _collapse_article_chunk_rows(cur.fetchall()).items():
                             comp['is_companion'] = True
                             statutory_articles.append(comp)
-                            doc_art_by_id[comp['parent_id']] = comp
+                            doc_art_by_id[comp_pid] = comp
 
-                    if statutory_articles:
-                        art_ids = [a['parent_id'] for a in statutory_articles]
-                        cur.execute("""
-                            SELECT article_id, article_number, hierarchy
-                            FROM civil_code_articles
-                            WHERE article_id = ANY(%s);
-                        """, (art_ids,))
-                        art_meta_map = {row['article_id']: row for row in cur.fetchall()}
-                        for a in statutory_articles:
-                            if a['parent_id'] in art_meta_map:
-                                a['metadata'] = art_meta_map[a['parent_id']]
+                    _hydrate_articles_with_canonical_text(cur, statutory_articles)
                     linked_cases = []
                     if statutory_articles:
                         art_ids = [a['parent_id'] for a in statutory_articles[:6]]
@@ -2882,13 +3181,15 @@ def search_with_embedding(
                             LIMIT 3;
                         """, (art_ids,))
                         for row in cur.fetchall():
+                            clean_gr = format_clean_gr_number(row.get('gr_number') or '')
+                            docket_tag = _format_case_docket_tag(clean_gr, row.get('decision_date') or '')
                             linked_cases.append({
                                 "parent_type": "case",
                                 "parent_id": row['case_uid'],
-                                "content": f"[Supporting Case Doctrine for {row['article_id']}] {row['title']} (GR No. {row['gr_number']}): {row.get('content_summary', '')[:4000]}",
+                                "content": f"[Supporting Case Doctrine for {row['article_id']}] {row['title']} ({docket_tag}): {_build_case_excerpt(row.get('content_summary', ''), max_chars=5000)}",
                                 "metadata": {
                                     "title": row.get('title'),
-                                    "gr_number": row.get('gr_number'),
+                                    "gr_number": clean_gr or row.get('gr_number'),
                                     "source_url": row.get('source_url'),
                                     "decision_date": row.get('decision_date'),
                                     "content_summary": row.get('content_summary'),
@@ -2917,92 +3218,47 @@ def search_with_embedding(
             # 1. Exact match extraction for Civil Code Articles or General Codal Overview
             exact_articles = []
 
-            # Exact jurisprudence cases (by G.R. number or landmark party title)
+            # Exact jurisprudence cases via normalized in-memory docket/acronym/Unicode/IDF matcher
             def resolve_exact_cases(cur_db, q_text: str) -> List[Dict[str, Any]]:
-                gr_numbers = parse_gr_numbers(q_text)
-                case_parties = extract_case_parties(q_text)
-                candidate_title = extract_case_title_candidate(q_text)
-                matched_rows = []
-                seen_uids = set()
+                indexed_hits = search_jurisprudence_cases(conn, q_text, max_results=4)
+                if not indexed_hits:
+                    return []
 
-                if gr_numbers:
-                    for gr in gr_numbers:
-                        clean_digits = re.sub(r'[^A-Za-z0-9]', '', gr)
-                        cur_db.execute("""
-                            SELECT case_uid, title, gr_number, decision_date,
-                                   COALESCE(NULLIF(NULLIF(content_summary, 'Summary unavailable.'), ''), full_text) AS content_summary,
-                                   source_url
-                            FROM jurisprudence_cases
-                            WHERE (gr_number ILIKE %s OR case_uid ILIKE %s)
-                              AND COALESCE(NULLIF(NULLIF(content_summary, 'Summary unavailable.'), ''), full_text) IS NOT NULL
-                            LIMIT 3;
-                        """, (f"%{gr}%", f"%{clean_digits}%"))
-                        for r in cur_db.fetchall():
-                            if r['case_uid'] not in seen_uids:
-                                seen_uids.add(r['case_uid'])
-                                matched_rows.append(r)
-
-                if candidate_title and len(matched_rows) < 3:
-                    cur_db.execute("""
-                        SELECT case_uid, title, gr_number, decision_date,
-                               COALESCE(NULLIF(NULLIF(content_summary, 'Summary unavailable.'), ''), full_text) AS content_summary,
-                               source_url,
-                               similarity(title, %s) AS sim
-                        FROM jurisprudence_cases
-                        WHERE similarity(title, %s) > 0.35
-                          AND COALESCE(NULLIF(NULLIF(content_summary, 'Summary unavailable.'), ''), full_text) IS NOT NULL
-                        ORDER BY sim DESC
-                        LIMIT 3;
-                    """, (candidate_title, candidate_title))
-                    for r in cur_db.fetchall():
-                        if r['case_uid'] not in seen_uids:
-                            seen_uids.add(r['case_uid'])
-                            matched_rows.append(r)
-
-                if case_parties and len(matched_rows) < 3:
-                    pattern = "%" + "%".join(case_parties[:2]) + "%"
-                    cur_db.execute("""
-                        SELECT case_uid, title, gr_number, decision_date,
-                               COALESCE(NULLIF(NULLIF(content_summary, 'Summary unavailable.'), ''), full_text) AS content_summary,
-                               source_url
-                        FROM jurisprudence_cases
-                        WHERE title ILIKE %s
-                          AND COALESCE(NULLIF(NULLIF(content_summary, 'Summary unavailable.'), ''), full_text) IS NOT NULL
-                        LIMIT 3;
-                    """, (pattern,))
-                    for r in cur_db.fetchall():
-                        if r['case_uid'] not in seen_uids:
-                            seen_uids.add(r['case_uid'])
-                            matched_rows.append(r)
+                hit_uids = [h['case_uid'] for h in indexed_hits]
+                cur_db.execute("""
+                    SELECT case_uid, title, gr_number, decision_date,
+                           COALESCE(NULLIF(NULLIF(content_summary, 'Summary unavailable.'), ''), full_text) AS content_summary,
+                           source_url
+                    FROM jurisprudence_cases
+                    WHERE case_uid = ANY(%s)
+                      AND COALESCE(NULLIF(NULLIF(content_summary, 'Summary unavailable.'), ''), full_text) IS NOT NULL;
+                """, (hit_uids,))
+                case_map = {row['case_uid']: dict(row) for row in cur_db.fetchall()}
 
                 items = []
-                for case_idx, r in enumerate(matched_rows):
-                    cur_db.execute("""
-                        SELECT content
-                        FROM document_chunks
-                        WHERE parent_type = 'case' AND parent_id = %s
-                        ORDER BY chunk_id ASC
-                        LIMIT 3;
-                    """, (r['case_uid'],))
-                    chunks = cur_db.fetchall()
-                    chunk_excerpt = ("\n".join([c['content'] for c in chunks])).strip() if chunks else ""
+                for case_idx, hit in enumerate(indexed_hits):
+                    r = case_map.get(hit['case_uid'])
+                    if not r:
+                        continue
+                    clean_gr = format_clean_gr_number(r.get('gr_number') or '') or r.get('gr_number')
+                    docket_tag = _format_case_docket_tag(clean_gr, r.get('decision_date') or '')
                     summary = (r.get('content_summary') or '').strip()
-                    body = f"[Jurisprudence Doctrine] {r['title']} (GR No. {r['gr_number']}): {summary[:4000]}"
-                    if chunk_excerpt:
-                        body += f"\n\n[Case Record Excerpt]:\n{chunk_excerpt[:1500]}"
+                    # Retain full decision up to 14k chars, or head+tail so the SC holding and disposition are never truncated.
+                    excerpt = _build_case_excerpt(summary, max_chars=14000)
+                    body = f"[Jurisprudence Doctrine] {r['title']} ({docket_tag}): {excerpt}"
 
-                    trigram_sim = float(r.get('sim') or 0.0)
+                    match_sim = float(hit.get('sim') or 0.98)
                     items.append({
                         "parent_type": "case",
                         "parent_id": r['case_uid'],
                         "content": body,
-                        "similarity": round(max(0.90, trigram_sim), 3) if trigram_sim > 0 else 0.98,
+                        "similarity": round(max(0.90, match_sim), 3),
                         "rrf_score": 0.08,
                         "is_exact": True,
                         "exact_order": case_idx,
                         "metadata": {
                             "title": r.get('title'),
-                            "gr_number": r.get('gr_number'),
+                            "gr_number": clean_gr,
                             "source_url": r.get('source_url'),
                             "decision_date": r.get('decision_date'),
                             "content_summary": r.get('content_summary'),
@@ -3011,12 +3267,28 @@ def search_with_embedding(
                     })
                 return items
 
-            # Check for general / structural inquiries about the Civil Code
+            # Distinguish user's explicit requested articles from expansion suggestions while preserving contextual follow-up anchors
+            query_without_expansion = re.sub(r'\(Philippine legal context:.*?\)', '', query, flags=re.IGNORECASE).strip()
+            raw_clean = re.sub(r'\([^)]*?\)', '', raw_query or '').strip()
+            if raw_clean and parse_article_numbers(raw_clean):
+                user_facing_q = raw_clean
+            elif raw_clean and parse_article_numbers(query_without_expansion):
+                user_facing_q = query_without_expansion
+            else:
+                user_facing_q = raw_clean or re.sub(r'\([^)]*?\)', '', query_without_expansion).strip() or query
+
+            # Check for pure general / structural inquiries about the Civil Code (never hijack substantive topic disputes).
+            _has_specific_civil_topic = bool(re.search(
+                r'\b(?:utang|pautang|pananakot|tinatakot|nagbabanta|kontrata|lupa|mana|testamento|kasal|asawa|danyos|aksidente|upa|paupahan|depekto|sangla|'
+                r'debt|loan|contract|lease|rent|mortgage|property|damages|accident|defect|fraud|void|voidable|marriage|inheritance|custody|support)\b',
+                user_facing_q,
+                re.IGNORECASE,
+            ))
             is_general_or_structural = bool(re.search(
                 r'\b(total\s+articles?|how\s+many\s+articles?|ilan\s+ang\s+(?:total\s+)?(?:articles?|artikulo)|bilang\s+ng\s+artikulo|number\s+of\s+articles?|articles?\s+count|structure\s+of\s+(?:the\s+)?civil\s+code|books?\s+(?:in|of)\s+(?:the\s+)?civil\s+code|ilan\s+ang\s+libro|mga\s+libro\s+sa\s+civil\s+code|general\s+information|overview\s+of\s+(?:the\s+)?civil\s+(?:code|law)|what\s+is\s+(?:the\s+)?civil\s+(?:code|law)|ano\s+ang\s+civil\s+(?:code|law)|tungkol\s+saan\s+ang\s+civil\s+code|saklaw\s+ng\s+civil\s+code)\b',
-                query,
+                user_facing_q,
                 re.IGNORECASE
-            ))
+            )) and not _has_specific_civil_topic and not is_dispute_query(user_facing_q)
             if is_general_or_structural:
                 general_ids = [
                     "RA386-STRUCTURE-AND-ARTICLES",
@@ -3030,7 +3302,7 @@ def search_with_embedding(
                     FROM document_chunks
                     WHERE parent_id = ANY(%s) AND parent_type = 'article';
                 """, (general_ids,))
-                fetched_gen = {row['parent_id']: row for row in cur.fetchall()}
+                fetched_gen = _collapse_article_chunk_rows(cur.fetchall())
                 for gid in general_ids:
                     if gid in fetched_gen:
                         gen_item = fetched_gen[gid]
@@ -3038,19 +3310,16 @@ def search_with_embedding(
                         gen_item['exact_order'] = len(exact_articles)
                         exact_articles.append(gen_item)
 
-            # Distinguish user's explicit requested articles from expansion suggestions
-            user_facing_q = raw_query or re.sub(r'\(Philippine legal context:.*?\)', '', query, flags=re.IGNORECASE)
-            user_facing_q = re.sub(r'\([^)]*?\)', '', user_facing_q).strip() or query
-
             unique_art_nums = parse_article_numbers(user_facing_q)
             if unique_art_nums:
                 exact_ids = resolve_candidate_article_ids(user_facing_q, unique_art_nums)
                 cur.execute("""
-                    SELECT chunk_id, parent_type, parent_id, content
+                    SELECT chunk_id, parent_type, parent_id, content,
+                           (1 - (embedding <=> %s::vector)) AS similarity
                     FROM document_chunks
                     WHERE parent_id = ANY(%s) AND parent_type = 'article';
-                """, (exact_ids,))
-                fetched_exact = {row['parent_id']: row for row in cur.fetchall()}
+                """, (q_emb, exact_ids))
+                fetched_exact = _collapse_article_chunk_rows(cur.fetchall())
                 for eid in exact_ids:
                     if eid in fetched_exact and eid not in {a['parent_id'] for a in exact_articles}:
                         exact_item = fetched_exact[eid]
@@ -3072,7 +3341,7 @@ def search_with_embedding(
                     FROM document_chunks
                     WHERE parent_id = ANY(%s) AND parent_type = 'article';
                 """, (q_emb, exp_ids))
-                fetched_exp = {row['parent_id']: row for row in cur.fetchall()}
+                fetched_exp = _collapse_article_chunk_rows(cur.fetchall())
                 for eid in exp_ids:
                     if eid in fetched_exp and eid not in {a['parent_id'] for a in exact_articles}:
                         exp_item = fetched_exp[eid]
@@ -3106,8 +3375,12 @@ def search_with_embedding(
             for ea in expansion_articles:
                 ea_pid = ea['parent_id']
                 if ea_pid in article_by_id:
-                    # Dual consensus: article matched both hybrid search and domain ontology
+                    # Dual consensus: preserve real pgvector cosine similarity over FTS fallback (0.72).
                     article_by_id[ea_pid]['is_expansion_candidate'] = True
+                    article_by_id[ea_pid]['similarity'] = max(
+                        float(article_by_id[ea_pid].get('similarity', 0.0) or 0.0),
+                        float(ea.get('similarity', 0.0) or 0.0),
+                    )
                 elif ea_pid not in exact_ids_set:
                     articles.append(ea)
                     article_by_id[ea_pid] = ea
@@ -3132,24 +3405,13 @@ def search_with_embedding(
                         FROM document_chunks
                         WHERE parent_id = ANY(%s) AND parent_type = 'article';
                     """, (q_emb, companion_ids[:6]))
-                    comp_rows = cur.fetchall()
-                    for comp in comp_rows:
+                    for comp_pid, comp in _collapse_article_chunk_rows(cur.fetchall()).items():
                         comp['is_companion'] = True
                         articles.append(comp)
-                        existing_art_ids.add(comp['parent_id'])
+                        existing_art_ids.add(comp_pid)
 
-            # Enrich articles with hierarchy and article_number from civil_code_articles
-            if articles:
-                art_ids = [a['parent_id'] for a in articles]
-                cur.execute("""
-                    SELECT article_id, article_number, hierarchy
-                    FROM civil_code_articles
-                    WHERE article_id = ANY(%s);
-                """, (art_ids,))
-                art_meta_map = {row['article_id']: row for row in cur.fetchall()}
-                for a in articles:
-                    if a['parent_id'] in art_meta_map:
-                        a['metadata'] = art_meta_map[a['parent_id']]
+            # Hydrate full canonical statutory text and metadata from civil_code_articles
+            _hydrate_articles_with_canonical_text(cur, articles)
             
             # Check for simple single-article lookup, multi-article lookup, and false-premise topic distractor
             is_multi_article = len(unique_art_nums) >= 2
@@ -3202,43 +3464,102 @@ def search_with_embedding(
                     is_simple=False
                 )
             
-            # 3. Graph-Augmented RAG: Retrieve linked jurisprudence for the queried or top articles
+            # 3. Graph-Augmented RAG: Retrieve linked jurisprudence scored by real semantic similarity
             linked_cases = []
             is_juris = is_jurisprudence_query(user_facing_q)
             case_limit = 6 if is_juris else 4
+            article_keywords = _extract_article_keywords(exact_articles or articles[:2])
+            case_search_emb = q_emb
+            case_search_query = user_facing_q
+            if is_juris and exact_articles and not parse_gr_numbers(user_facing_q) and not extract_case_parties(user_facing_q):
+                art_snippet = " ".join(
+                    str(a.get('content') or '')[:300] for a in exact_articles[:2]
+                ).strip()
+                if art_snippet:
+                    case_search_query = " ".join(article_keywords[:6]) or user_facing_q
+                    case_search_emb = compute_embedding(f"{user_facing_q} {art_snippet}")
+
             if articles:
                 target_articles = exact_articles if exact_articles else articles[:4]
                 article_ids = [a['parent_id'] for a in target_articles]
-                per_article_cap = 4 if (is_juris and len(target_articles) == 1) else 2
+                candidate_cap = 24 if is_juris else 10
+                min_linked_sim = 0.68 if is_juris else 0.75
+
+                # Rank all graph-linked cases directly by vector cosine similarity rather than alphabetical text dates.
                 cur.execute("""
-                    WITH ranked_cases AS (
+                    SELECT r.article_id, j.case_uid, j.title, j.gr_number,
+                           COALESCE(NULLIF(NULLIF(j.content_summary, 'Summary unavailable.'), ''), j.full_text) AS content_summary,
+                           j.source_url, j.decision_date,
+                           MAX(1 - (dc.embedding <=> %s::vector)) AS sim
+                    FROM article_jurisprudence_relations r
+                    JOIN jurisprudence_cases j ON r.case_uid = j.case_uid
+                    JOIN document_chunks dc ON dc.parent_type = 'case' AND dc.parent_id = r.case_uid
+                    WHERE r.article_id = ANY(%s)
+                      AND COALESCE(NULLIF(NULLIF(j.content_summary, 'Summary unavailable.'), ''), j.full_text) IS NOT NULL
+                      AND j.title !~* '^(G\\.R\\.|A\\.M\\.|A\\.C\\.|B\\.M\\.)'
+                    GROUP BY r.article_id, j.case_uid, j.title, j.gr_number,
+                             j.content_summary, j.full_text, j.source_url, j.decision_date
+                    ORDER BY sim DESC
+                    LIMIT %s;
+                """, (case_search_emb, article_ids, candidate_cap))
+                linked_rows = list(cur.fetchall())
+
+                # Dual-code fallback bridge: if an EO209 article has sparse direct edges, include Family-Code-grounded RA386 edges.
+                eo_ids = [aid for aid in article_ids if aid.startswith("EO209-ART")]
+                if eo_ids and len(linked_rows) < 3:
+                    bridged_ra_ids = [aid.replace("EO209-ART", "RA386-ART", 1) for aid in eo_ids]
+                    seen_linked = {r['case_uid'] for r in linked_rows}
+                    cur.execute("""
                         SELECT r.article_id, j.case_uid, j.title, j.gr_number,
                                COALESCE(NULLIF(NULLIF(j.content_summary, 'Summary unavailable.'), ''), j.full_text) AS content_summary,
                                j.source_url, j.decision_date,
-                               ROW_NUMBER() OVER (PARTITION BY r.article_id ORDER BY j.decision_date DESC NULLS LAST) as rn
+                               MAX(1 - (dc.embedding <=> %s::vector)) AS sim
                         FROM article_jurisprudence_relations r
                         JOIN jurisprudence_cases j ON r.case_uid = j.case_uid
+                        JOIN document_chunks dc ON dc.parent_type = 'case' AND dc.parent_id = r.case_uid
                         WHERE r.article_id = ANY(%s)
                           AND COALESCE(NULLIF(NULLIF(j.content_summary, 'Summary unavailable.'), ''), j.full_text) IS NOT NULL
-                    )
-                    SELECT article_id, case_uid, title, gr_number, content_summary, source_url, decision_date
-                    FROM ranked_cases
-                    WHERE rn <= %s
-                    LIMIT %s;
-                """, (article_ids, per_article_cap, case_limit))
-                
-                for row in cur.fetchall():
+                          AND j.title !~* '^(G\\.R\\.|A\\.M\\.|A\\.C\\.|B\\.M\\.)'
+                          AND (j.content_summary ~* 'family code|executive order no\\.?\\s*209' OR j.full_text ~* 'family code|executive order no\\.?\\s*209')
+                        GROUP BY r.article_id, j.case_uid, j.title, j.gr_number,
+                                 j.content_summary, j.full_text, j.source_url, j.decision_date
+                        ORDER BY sim DESC
+                        LIMIT %s;
+                    """, (case_search_emb, bridged_ra_ids, candidate_cap))
+                    for brow in cur.fetchall():
+                        if brow['case_uid'] not in seen_linked:
+                            seen_linked.add(brow['case_uid'])
+                            linked_rows.append(brow)
+
+                scored_linked = []
+                seen_case_uids = set()
+                for row in linked_rows:
+                    if row['case_uid'] in seen_case_uids:
+                        continue
                     summary = row.get('content_summary') or ''
+                    if _is_cross_code_non_civil_case(row.get('title') or '', summary):
+                        continue
+                    real_sim = float(row.get('sim') or 0.0)
+                    if real_sim < min_linked_sim:
+                        continue
+                    seen_case_uids.add(row['case_uid'])
+                    scored_linked.append((real_sim, row))
+
+                scored_linked.sort(key=lambda pair: pair[0], reverse=True)
+                for real_sim, row in scored_linked[:case_limit]:
+                    summary = row.get('content_summary') or ''
+                    clean_gr = format_clean_gr_number(row.get('gr_number') or '') or row.get('gr_number')
+                    docket_tag = _format_case_docket_tag(clean_gr, row.get('decision_date') or '')
                     linked_cases.append({
                         "parent_type": "case",
                         "parent_id": row['case_uid'],
-                        "content": f"[Supporting Case Doctrine for {row['article_id']}] {row['title']} (GR No. {row['gr_number']}): {summary}",
-                        "similarity": 0.92 if is_juris else 0.85,
-                        "rrf_score": 0.05,
+                        "content": f"[Supporting Case Doctrine for {row['article_id']}] {row['title']} ({docket_tag}): {_build_case_excerpt(summary, max_chars=6000)}",
+                        "similarity": round(real_sim, 4),
+                        "rrf_score": 0.015,
                         "is_linked_jurisprudence": True,
                         "metadata": {
                             "title": row.get('title'),
-                            "gr_number": row.get('gr_number'),
+                            "gr_number": clean_gr,
                             "source_url": row.get('source_url'),
                             "decision_date": row.get('decision_date'),
                             "content_summary": row.get('content_summary'),
@@ -3251,17 +3572,29 @@ def search_with_embedding(
             cases = exact_cases.copy()
             exact_case_uids = {c['parent_id'] for c in exact_cases}
 
-            # Retrieve statutory Civil Code articles linked to the matched jurisprudence case(s)
+            # Retrieve statutory Civil/Family Code articles linked to matched exact case(s), ranked against stored tail-chunk embeddings.
             if exact_cases:
                 case_uids = list(exact_case_uids)
+                primary_case_uid = exact_cases[0]['parent_id']
                 cur.execute("""
-                    SELECT r.article_id, a.article_number, a.hierarchy, a.content
+                    WITH case_tail_chunks AS (
+                        SELECT embedding
+                        FROM document_chunks
+                        WHERE parent_type = 'case' AND parent_id = %s AND length(content) > 200
+                        ORDER BY COALESCE(NULLIF(substring(chunk_id FROM '_c(\\d+)$'), '')::int, 0) DESC
+                        LIMIT 3
+                    )
+                    SELECT r.article_id, a.article_number, a.hierarchy, a.content,
+                           COALESCE(MAX(1 - (dc.embedding <=> ct.embedding)), 0.0) AS holding_sim
                     FROM article_jurisprudence_relations r
                     JOIN civil_code_articles a ON r.article_id = a.article_id
+                    LEFT JOIN document_chunks dc ON dc.parent_type = 'article' AND dc.parent_id = a.article_id
+                    LEFT JOIN case_tail_chunks ct ON TRUE
                     WHERE r.case_uid = ANY(%s)
-                    ORDER BY a.article_number ASC
+                    GROUP BY r.article_id, a.article_number, a.hierarchy, a.content
+                    ORDER BY holding_sim DESC, a.article_number DESC
                     LIMIT 4;
-                """, (case_uids,))
+                """, (primary_case_uid, case_uids))
                 linked_statutes = []
                 for l_art in cur.fetchall():
                     if l_art['article_id'] not in exact_ids_set:
@@ -3269,7 +3602,7 @@ def search_with_embedding(
                             "parent_type": "article",
                             "parent_id": l_art['article_id'],
                             "content": l_art['content'],
-                            "similarity": 0.96,
+                            "similarity": round(max(0.88, float(l_art.get('holding_sim') or 0.90)), 4),
                             "rrf_score": 0.08,
                             "is_exact": True,
                             "is_linked_statute": True,
@@ -3282,8 +3615,13 @@ def search_with_embedding(
                 if linked_statutes:
                     articles = linked_statutes + articles
 
-            if not exact_cases and (len(linked_cases) < 2 or (is_juris and not exact_articles and len(linked_cases) < 3)):
-                hybrid_case_chunks = hybrid_search('case', limit=4)
+            if not exact_cases and (len(linked_cases) < 2 or is_juris):
+                hybrid_case_chunks = hybrid_search(
+                    'case',
+                    limit=10 if is_juris else 4,
+                    q_emb_override=case_search_emb,
+                    query_override=case_search_query,
+                )
                 if hybrid_case_chunks:
                     case_uids = [c['parent_id'] for c in hybrid_case_chunks if c['parent_id'] not in exact_case_uids]
                     if case_uids:
@@ -3299,13 +3637,18 @@ def search_with_embedding(
                             if hc['parent_id'] in exact_case_uids:
                                 continue
                             h_sim = float(hc.get('similarity', 0.0) or 0.0)
-                            if is_juris and h_sim < 0.55:
+                            if is_juris and h_sim < 0.75:
                                 continue
                             if hc['parent_id'] in meta_map:
-                                m = meta_map[hc['parent_id']]
-                                hc['metadata'] = m
+                                m = dict(meta_map[hc['parent_id']])
                                 summary_snip = m.get('content_summary') or hc.get('content', '')
-                                hc['content'] = f"[Jurisprudence Doctrine] {m.get('title', '')} (GR No. {m.get('gr_number', '')}): {summary_snip[:4000]}"
+                                if is_juris and _is_cross_code_non_civil_case(m.get('title') or '', summary_snip):
+                                    continue
+                                clean_gr = format_clean_gr_number(m.get('gr_number') or '') or m.get('gr_number')
+                                m['gr_number'] = clean_gr
+                                docket_tag = _format_case_docket_tag(clean_gr, m.get('decision_date') or '')
+                                hc['metadata'] = m
+                                hc['content'] = f"[Jurisprudence Doctrine] {m.get('title', '')} ({docket_tag}): {_build_case_excerpt(summary_snip, max_chars=6000)}"
                                 cases.append(hc)
                                 exact_case_uids.add(hc['parent_id'])
                 elif not cases:
@@ -3323,14 +3666,16 @@ def search_with_embedding(
                         """, (case_search_query,))
                         for row in cur.fetchall():
                             if row['case_uid'] not in exact_case_uids:
+                                clean_gr = format_clean_gr_number(row.get('gr_number') or '') or row.get('gr_number')
+                                docket_tag = _format_case_docket_tag(clean_gr, row.get('decision_date') or '')
                                 cases.append({
                                     "parent_type": "case",
                                     "parent_id": row['case_uid'],
-                                    "content": f"[Jurisprudence Doctrine] {row['title']} (GR No. {row['gr_number']}): {row.get('content_summary', '')}",
+                                    "content": f"[Jurisprudence Doctrine] {row['title']} ({docket_tag}): {_build_case_excerpt(row.get('content_summary', ''), max_chars=6000)}",
                                     "similarity": 0.82,
                                     "metadata": {
                                         "title": row.get('title'),
-                                        "gr_number": row.get('gr_number'),
+                                        "gr_number": clean_gr,
                                         "source_url": row.get('source_url'),
                                         "decision_date": row.get('decision_date'),
                                         "content_summary": row.get('content_summary'),
@@ -3406,6 +3751,44 @@ def format_context_item(row: dict, doc_filename: Optional[str] = None) -> str:
             content_text = content_text[:max_chars] + "..."
         lines.append(f"CONTENT: {content_text}")
         return "\n".join(lines) + "\n"
+
+
+def build_statutory_context_section(
+    statutory_items: List[Dict[str, Any]],
+    primary_statute_header: str,
+    doc_filename: Optional[str] = None,
+) -> str:
+    """Formats statutory context items in descending relevance order with explicit rank and suitability labels."""
+    if not statutory_items:
+        return ""
+    allowed_labels: List[str] = []
+    blocks: List[str] = []
+    for idx, row in enumerate(statutory_items, 1):
+        s_pid = str(row.get('parent_id') or '')
+        s_num = _extract_article_num_from_citation(row)
+        raw_suit = row.get('display_suitability') if row.get('display_suitability') is not None else row.get('suitability_percent')
+        try:
+            suit_str = f"{float(raw_suit):.1f}%" if raw_suit is not None else ""
+        except (TypeError, ValueError):
+            suit_str = ""
+        if s_num is not None:
+            s_code = "Family Code (EO 209)" if s_pid.upper().startswith("EO209-") else "Civil Code (RA 386)"
+            label = f"Article {s_num} ({s_code}, {suit_str})" if suit_str else f"Article {s_num} ({s_code})"
+            if label not in allowed_labels:
+                allowed_labels.append(label)
+        rank_tier = " — TOP RELEVANCE (PRIORITIZE FIRST)" if idx == 1 else (" — HIGH RELEVANCE" if idx == 2 else "")
+        rel_part = f" | Relevance: {suit_str}" if suit_str else ""
+        blocks.append(f"\n[Statutory Article {idx}{rel_part}{rank_tier}]\n" + format_context_item(row, doc_filename))
+
+    out = f"{primary_statute_header}\n"
+    if allowed_labels:
+        out += (
+            "ALLOWED STATUTORY ARTICLES IN THIS CONTEXT "
+            f"(ORDERED HIGHEST TO LOWEST RELEVANCE; CITE ONLY FROM THIS LIST): {', '.join(allowed_labels)}\n"
+        )
+    out += "".join(blocks) + "\n"
+    return out
+
 
 def save_assistant_message_to_db(
     session_id: Optional[str],
@@ -4268,7 +4651,8 @@ YOUR MANDATORY REFUSAL AND STATUTORY RULES:
                 seen_cit_keys = {get_citation_key(r) for r in active_results}
 
                 is_simple = is_simple_lookup(request.query, canonical_msgs)
-                queried_art_nums = parse_article_numbers(request.query)
+                search_q_no_exp = re.sub(r'\(Philippine legal context:.*?\)', '', search_query, flags=re.IGNORECASE).strip()
+                queried_art_nums = parse_article_numbers(request.query) or parse_article_numbers(search_q_no_exp)
                 is_multi_article = len(queried_art_nums) >= 2
                 is_dispute = is_dispute_query(request.query)
                 is_juris = is_jurisprudence_query(request.query)
@@ -4379,24 +4763,7 @@ YOUR MANDATORY REFUSAL AND STATUTORY RULES:
                 else:
                     primary_statute_header = "[PRIMARY STATUTORY AUTHORITY: PHILIPPINE CIVIL CODE (REPUBLIC ACT NO. 386)]"
 
-                allowed_article_labels = []
-                for s_row in statutory_items:
-                    s_pid = str(s_row.get('parent_id') or '')
-                    s_num = _extract_article_num_from_citation(s_row)
-                    if s_num is not None:
-                        s_code = "Family Code (EO 209)" if s_pid.upper().startswith("EO209-") else "Civil Code (RA 386)"
-                        label = f"Article {s_num} ({s_code})"
-                        if label not in allowed_article_labels:
-                            allowed_article_labels.append(label)
-
-                context_str = ""
-                if statutory_items:
-                    context_str += f"{primary_statute_header}\n"
-                    if allowed_article_labels:
-                        context_str += f"ALLOWED STATUTORY ARTICLES IN THIS CONTEXT (CITE ONLY FROM THIS LIST): {', '.join(allowed_article_labels)}\n"
-                    for idx, row in enumerate(statutory_items, 1):
-                        context_str += f"\n[Statutory Article {idx}]\n" + format_context_item(row, doc_filename)
-                    context_str += "\n"
+                context_str = build_statutory_context_section(statutory_items, primary_statute_header, doc_filename)
 
                 if doc_items:
                     context_str += f"[ACTIVE DOCUMENT EXCERPTS: {doc_filename or 'Uploaded Document'}]\n"
@@ -4413,12 +4780,7 @@ YOUR MANDATORY REFUSAL AND STATUTORY RULES:
                 # Bounded context safety for 80k token context window (205,000 characters safety threshold)
                 # NEVER truncate the primary Civil Code statutory provisions
                 if len(context_str) > 205000:
-                    context_str = ""
-                    if statutory_items:
-                        context_str += "[PRIMARY STATUTORY AUTHORITY: PHILIPPINE CIVIL CODE (REPUBLIC ACT NO. 386)]\n"
-                        for idx, row in enumerate(statutory_items, 1):
-                            context_str += f"\n[Statutory Article {idx}]\n" + format_context_item(row, doc_filename)
-                        context_str += "\n"
+                    context_str = build_statutory_context_section(statutory_items, primary_statute_header, doc_filename)
                     if doc_items:
                         context_str += f"[ACTIVE DOCUMENT EXCERPTS: {doc_filename or 'Uploaded Document'}]\n"
                         for idx, row in enumerate(doc_items, 1):
@@ -4463,22 +4825,23 @@ Your reader is an everyday Filipino citizen who just uploaded this document with
 
 YOUR INITIAL DOCUMENT ANALYSIS DUTIES:
 1. DOCUMENT OVERVIEW & PARTIES: Identify what type of legal instrument "{doc_display_name}" is, who the parties are, and the key obligations, amounts, dates, or terms found in the DOCUMENT EXCERPTS.
-2. STATUTORY ALIGNMENT (PHILIPPINE CIVIL CODE / FAMILY CODE): Ground your review in the governing Civil Code (RA 386) or Family Code (EO 209) articles provided in CONTEXT, quoting core statutory rules verbatim and citing them inline (e.g. [Art. 1654], [Art. 1191]).
+2. STATUTORY ALIGNMENT (PHILIPPINE CIVIL CODE / FAMILY CODE): Statutory articles in CONTEXT are ordered from highest to lowest relevance percentage ([Statutory Article 1] is the top-ranked authority). In `### Philippine Civil Code / Family Code Alignment`, you MUST prioritize and ground your review in the highest-ranked applicable articles FIRST (starting with [Statutory Article 1] and [Statutory Article 2] whenever applicable, in descending relevance order). Do NOT omit the #1 top-ranked article or lead only with lower-percentage articles. Quote their core statutory rules verbatim and cite them inline (e.g. [Art. X], [Art. Y]).
 3. RISKS, VOID CLAUSES & MISSING SAFEGUARDS: Flag any potentially unfair, one-sided, ambiguous, or legally void stipulations under Philippine Civil Law (or explain clearly if the main terms appear standard and what protections may be missing).
 4. PRACTICAL TAKEAWAYS & FOLLOW-UP INVITATION: Summarize concrete next steps in everyday language (such as notarization, written receipts/demand letters, Barangay Conciliation, Small Claims, or PAO) and invite the user to ask specific follow-up questions about any clause.
-5. CLOSED-BOOK & PLAIN-LANGUAGE RULES: State only facts present in DOCUMENT EXCERPTS and cite ONLY Civil Code / Family Code articles and cases explicitly present in CONTEXT (NEVER invent or introduce any article number not in CONTEXT). Explicitly cite every article (`[Art. X]` / `Article X`) and Supreme Court case (`Case Title`, `G.R. No. ...`) from CONTEXT that you rely on, while omitting any unrelated CONTEXT provisions. Write short sentences (10-18 words) with zero archaic words and strict unilingual output.
+5. CLOSED-BOOK & PLAIN-LANGUAGE RULES: State only facts present in DOCUMENT EXCERPTS and cite ONLY Civil Code / Family Code articles and cases explicitly present in CONTEXT (NEVER invent or introduce any article number not in CONTEXT). Explicitly cite every article (`[Art. X]` / `Article X`) and Supreme Court case (`Case Title`, `G.R. No. ...`) from CONTEXT that you rely on, prioritizing the top-ranked articles in CONTEXT while omitting any unrelated CONTEXT provisions. Write short sentences (10-18 words) with zero archaic words and strict unilingual output.
 
 MANDATORY MARKDOWN STRUCTURE:
 ### Document Overview & Parties
 [Summarize the document type, parties, main purpose, and key figures/dates in plain everyday words.]
 
 ### Philippine Civil Code / Family Code Alignment
-> **[Governing Civil Code Article / Provision]**
+(Present the top-ranked applicable Civil Code / Family Code articles from CONTEXT in descending relevance order—starting with [Statutory Article 1] and [Statutory Article 2] whenever directly relevant—giving each top governing article its own verbatim blockquote and alignment bullet:)
+> **[Top-Ranked Governing Civil Code / Family Code Article — Highest Relevance First]**
 > *[Hierarchy / Book Title]*
 >
 > "[Quote the governing statutory text verbatim from CONTEXT]"
 
-- **[Key Obligation or Right]**: [Plain-language explanation grounded with inline citation like [Art. X]]
+- **[Key Obligation, Right, or Remedy]**: [Plain-language explanation grounded with inline citation like [Art. X]]
 
 ### Potential Legal Risks & Clauses to Watch
 - **[Clause / Risk or Standard Compliance Check]**: [Explain any risky, unfair, missing, or void terms in everyday words]
@@ -4506,6 +4869,7 @@ YOUR TASK IN THIS ACTIVE SESSION:
 2. Use the provided DOCUMENT EXCERPTS to identify and explain specific contents, clauses, terms, or obligations in simple everyday words.
 3. PRIMARY STATUTORY GROUNDING & ANCHORED CITATIONS:
    - Ground all legal assessments, rights, obligations, and validity directly on specific Civil Code / Family Code Articles and cases provided in CONTEXT.
+   - TOP-RELEVANCE STATUTORY PRIORITY: Statutory articles in CONTEXT are ordered from highest to lowest relevance percentage ([Statutory Article 1] is the top-ranked authority). Always prioritize, quote, and cite the highest-ranked applicable articles first inside `### Statutory Grounding & Provisions`—do NOT skip the #1 top-ranked article in favor of lower-percentage articles.
    - Explicitly cite every statutory article (`[Art. X]` or `Article X`) and Supreme Court case (`Case Title`, `G.R. No. ...`) from CONTEXT that supports your answer, and omit unrelated CONTEXT noise.
    - STRICT CLOSED-BOOK ARTICLE RULE: ABSOLUTELY FORBIDDEN to invent, guess, or cite ANY Civil Code or Family Code article number that is NOT explicitly present in CONTEXT below (e.g., never cite unrelated articles from memory).
    - CONVERSATION CONTINUITY & FRESH GROUNDING: Use prior chat history only to understand established facts and parties. Answer the user's NEW question directly using the NEW DOCUMENT EXCERPTS and NEW CONTEXT below. NEVER copy-paste unrelated clauses, indemnification/eviction remarks, examples, or statutory blockquotes from earlier replies.
@@ -4524,6 +4888,7 @@ MANDATORY RESPONSE FORMATTING & MARKDOWN STRUCTURE:
 [1-2 clear, direct, and conversational sentences answering the citizen's query in relation to "{doc_display_name}".]
 
 ### Statutory Grounding & Provisions
+(Quote the top-ranked applicable statutory articles from CONTEXT in descending relevance order, starting with [Statutory Article 1]:)
 > **[Governing Civil Code Article / Provision]**
 > *[Hierarchy / Book Title]*
 >
@@ -4642,6 +5007,7 @@ MANDATORY RULES:
      - Keep summaries concise, engaging, and focused.
 4. STRICT CLOSED-BOOK FIDELITY & ZERO-HALLUCINATION DIRECTIVE:
    - Rely strictly and exclusively on the actual case facts, legal issues, and doctrines provided in CONTEXT.
+   - DISTINGUISH LOWER COURT RULINGS FROM THE FINAL SUPREME COURT HOLDING: Always state the FINAL Supreme Court disposition from the closing/dispositive portion of CONTEXT (e.g., whether the petition was granted or denied, or whether the Court of Appeals / trial court judgment was affirmed or reversed). NEVER confuse a trial court ruling, an investigator's recommendation, or a petitioner's claim with the Supreme Court's final decision.
    - ABSOLUTELY FORBIDDEN: NEVER invent facts, legal issues, or personal conditions not stated in CONTEXT (e.g., do NOT invent mental incapacity, unsound mind, fraud, murder, or crimes).
    - If the user did not describe a personal dispute, do NOT invent or assume a client scenario (do NOT say "In your situation, if you were mentally incapacitated...").
    - NEVER cite, invent, mention, or reference ANY statutory articles from other legal codes (especially the Revised Penal Code / RPC, Labor Code, or Tax Code). CIVIL-LEX is exclusively a Philippine Civil Law platform. You MUST ONLY cite and explain Civil Code articles present in CONTEXT.
@@ -4766,6 +5132,7 @@ CITIZEN-CENTRIC GUIDELINES FOR ORDINARY FILIPINOS:
      * Small Claims Court for fast money claims where no lawyers are needed.
 5. STRICT CLOSED-BOOK STATUTORY CONSTRAINT & CIVIL LAW EXCLUSIVITY:
    - Ground your answer strictly on the articles and cases provided in CONTEXT. Quote each governing Civil Code or Family Code article in CONTEXT that you rely on EXACTLY ONCE. Never repeat verbatim quote blocks.
+   - TOP-RELEVANCE STATUTORY PRIORITY: Statutory articles in CONTEXT are ordered from highest to lowest relevance percentage ([Statutory Article 1] is the top-ranked authority). In `### Governing Statutory Basis` and your legal reasoning, prioritize and cite the highest-ranked applicable articles first (especially [Statutory Article 1] and [Statutory Article 2]) rather than skipping the top-ranked article for lower-percentage ones.
    - EXPLICIT CITATION ALIGNMENT: Explicitly cite `[Art. X]` / `Article X` (and `Case Title`, `G.R. No. ...` for any relied-upon case) for every provision from CONTEXT that supports your reasoning, and omit any tangential CONTEXT items you do not rely upon.
    - You MUST ONLY cite, reference, or quote Civil Code / Family Code Articles and Supreme Court cases that are explicitly present in the CONTEXT below.
    - ABSOLUTELY FORBIDDEN: NEVER invent, introduce, or cite ANY Civil Code Article number (e.g. "Article 2176", "Article 1191") that is not present in CONTEXT.
@@ -4790,7 +5157,7 @@ MANDATORY RESPONSE STRUCTURE:
 [Start with a warm, conversational, and direct 1-2 sentences directly answering the citizen's question in plain everyday words. Clarify immediately and reassuringly whether this is purely a civil matter (bayaran, kasunduan, danyos—walang kulong) or involves criminal law.]
 
 ### Governing Statutory Basis
-(For each governing statutory article in CONTEXT, provide a dedicated blockquote EXACTLY ONCE:)
+(For each top-ranked governing statutory article in CONTEXT—ordered from highest to lowest relevance starting with [Statutory Article 1]—provide a dedicated blockquote EXACTLY ONCE:)
 > **[Copy exact PROVISION title verbatim from CONTEXT, e.g., Article 36 (Executive Order No. 209 - Family Code of the Philippines) or Article 1156 (Republic Act No. 386 - Civil Code of the Philippines)]**
 > *[Book / Title / Chapter Hierarchy]*
 >
@@ -5012,6 +5379,26 @@ CONTEXT:
                                 full_text, nli_context_items, "symbolic",
                             )
                             nli_timed_out = True
+                        raw_analysis = getattr(nli_result, 'analysis', None)
+                        nli_analysis_str = raw_analysis.strip() if isinstance(raw_analysis, str) else ''
+                        raw_verdicts = getattr(nli_result, 'verdicts', None)
+                        nli_verdicts_summary = []
+                        if isinstance(raw_verdicts, list):
+                            for v_item in raw_verdicts[:12]:
+                                v_claim = getattr(v_item, 'claim', None)
+                                v_verdict = getattr(v_item, 'verdict', None)
+                                if isinstance(v_claim, str) and isinstance(v_verdict, str):
+                                    v_verifier = getattr(v_item, 'verifier', '')
+                                    v_rule = getattr(v_item, 'rule_fired', '')
+                                    v_reason = getattr(v_item, 'rationale', '')
+                                    nli_verdicts_summary.append({
+                                        'claim': v_claim[:240],
+                                        'verdict': v_verdict,
+                                        'verifier': v_verifier if isinstance(v_verifier, str) else '',
+                                        'rule_fired': v_rule if isinstance(v_rule, str) else '',
+                                        'rationale': v_reason[:240] if isinstance(v_reason, str) else '',
+                                    })
+
                         analytics_payload = {
                             'nli_score': nli_result.score_percent,
                             'nli_score_net': nli_result.score_net_percent,
@@ -5028,6 +5415,8 @@ CONTEXT:
                             'claims_neutral': nli_result.claims_neutral,
                             'claims_contradicted': nli_result.claims_contradicted,
                             'nli_engine': nli_result.engine,
+                            'nli_analysis': nli_analysis_str,
+                            'nli_verdicts': nli_verdicts_summary,
                         }
                         # Emit the verified analytics to the frontend
                         yield f"data: {dumps({'type': 'legal_analytics', 'data': analytics_payload})}\n\n"

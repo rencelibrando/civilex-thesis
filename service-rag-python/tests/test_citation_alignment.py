@@ -312,6 +312,144 @@ class TestCitationAnswerAlignment(unittest.TestCase):
         saved_cits = mock_save.call_args[0][2]
         self.assertEqual([c["parent_id"] for c in saved_cits], ["RA386-ART2176", "RA386-ART2180"])
 
+    def test_build_statutory_context_section_orders_relevance_and_tags_top_article(self):
+        items = [
+            {
+                "parent_type": "article",
+                "parent_id": "RA386-ART1658",
+                "content": "The lessee may suspend the payment of the rent...",
+                "suitability_percent": 95.1,
+                "display_suitability": 95.1,
+                "metadata": {"article_number": 1658, "hierarchy": {"book_name": "Book IV"}},
+            },
+            {
+                "parent_type": "article",
+                "parent_id": "RA386-ART1654",
+                "content": "The lessor is obliged to make all necessary repairs...",
+                "suitability_percent": 91.2,
+                "display_suitability": 91.2,
+                "metadata": {"article_number": 1654, "hierarchy": {"book_name": "Book IV"}},
+            },
+            {
+                "parent_type": "article",
+                "parent_id": "EO209-ART36",
+                "content": "A marriage contracted by any party...",
+                "suitability_percent": 74.5,
+                "display_suitability": 74.5,
+                "metadata": {"article_number": 36, "hierarchy": {"book_name": "Family Code"}},
+            },
+        ]
+        ctx = main.build_statutory_context_section(
+            items,
+            "[PRIMARY STATUTORY AUTHORITY: PHILIPPINE CIVIL CODE (REPUBLIC ACT NO. 386)]",
+        )
+        self.assertIn("ORDERED HIGHEST TO LOWEST RELEVANCE; CITE ONLY FROM THIS LIST", ctx)
+        self.assertIn("Article 1658 (Civil Code (RA 386), 95.1%)", ctx)
+        self.assertIn("Article 36 (Family Code (EO 209), 74.5%)", ctx)
+        self.assertIn("[Statutory Article 1 | Relevance: 95.1% — TOP RELEVANCE (PRIORITIZE FIRST)]", ctx)
+        self.assertIn("[Statutory Article 2 | Relevance: 91.2% — HIGH RELEVANCE]", ctx)
+        self.assertIn("[Statutory Article 3 | Relevance: 74.5%]", ctx)
+        self.assertLess(ctx.index("Article 1658"), ctx.index("Article 1654"))
+        self.assertLess(ctx.index("Article 1654"), ctx.index("Article 36"))
+
+    def test_jurisprudence_related_to_article_and_cross_code_case_filtering(self):
+        from core.article_parser import is_jurisprudence_query
+
+        self.assertTrue(is_jurisprudence_query("whats are the cases related to artilce 99"))
+        self.assertTrue(is_jurisprudence_query("what are the related jurisprudences for article 56"))
+        self.assertFalse(main.is_simple_lookup("whats are the cases related to artilce 99"))
+
+        self.assertTrue(
+            main._is_cross_code_non_civil_case(
+                "Spartan Security & Detective Agency, Inc. vs. National Labor Relations Commission",
+                "Petition for certiorari under Article 99 of the Labor Code and Wage Order No. NCR-01.",
+            )
+        )
+        self.assertFalse(
+            main._is_cross_code_non_civil_case(
+                "David A. Noveras vs. Leticia T. Noveras",
+                "Petition for judicial separation of conjugal property and legal separation under Family Code.",
+            )
+        )
+
+    def test_followup_jurisprudence_inherits_contextual_article_number(self):
+        retrieved = [
+            {
+                "chunk_id": "RA386-ART99_0",
+                "parent_type": "article",
+                "parent_id": "RA386-ART99",
+                "content": "No person shall be entitled to a legal separation...",
+                "is_exact": True,
+                "is_in_context": True,
+                "rank_status": "primary",
+                "suitability_percent": 98.5,
+                "display_suitability": 98.5,
+                "rank": 1,
+                "metadata": {"article_number": 99},
+            },
+            {
+                "chunk_id": "GR_188289_2014_0",
+                "parent_type": "case",
+                "parent_id": "GR_188289_2014",
+                "content": "David A. Noveras vs. Leticia T. Noveras (G.R. No. 188289): legal separation...",
+                "is_in_context": True,
+                "rank_status": "primary",
+                "suitability_percent": 96.5,
+                "display_suitability": 96.5,
+                "rank": 2,
+                "metadata": {"gr_number": "G.R. No. 188289", "title": "David A. Noveras vs. Leticia T. Noveras"},
+            },
+        ]
+
+        captured_prompts = []
+
+        async def _fake_stream(sys_prompt, *args, **kwargs):
+            captured_prompts.append(sys_prompt)
+            yield "### Direct Answer & Legal Conclusion\nUnder Article 99, Noveras v. Noveras (G.R. No. 188289) governs."
+
+        fake_nli = MagicMock(
+            score_percent=95.0,
+            score_net_percent=95.0,
+            score_weighted=0.95,
+            status="Grounded",
+            claims_total=1,
+            claims_entailed=1,
+            claims_neutral=0,
+            claims_contradicted=0,
+            engine="symbolic",
+        )
+
+        hist = [
+            {"role": "user", "content": "whats are the cases related to artilce 99"},
+            {
+                "role": "assistant",
+                "content": 'Article 99 (Republic Act No. 386) "No person shall be entitled to a legal separation... (Sec. 2a, Act No. 2710)."',
+            },
+        ]
+
+        with patch("main.session_memory.load_session_history", return_value=hist), \
+             patch("main.session_memory.load_session_summary", return_value=None), \
+             patch("main.session_memory.load_recent_citations", return_value=[]), \
+             patch("main.session_memory.save_user_message"), \
+             patch("main.check_model_readiness", new=AsyncMock(return_value=(True, "ready"))), \
+             patch("main.compute_embedding", return_value=[0.1] * 768), \
+             patch("main.search_with_embedding", return_value=retrieved), \
+             patch("main.generate_response_stream", side_effect=_fake_stream), \
+             patch("main.nli_score_faithfulness_async", new=AsyncMock(return_value=fake_nli)), \
+             patch("main.followup_svc.generate_followups", new=AsyncMock(return_value=[])), \
+             patch("main.save_assistant_message_to_db"):
+            client = TestClient(main.app)
+            resp = client.post(
+                "/search",
+                json={"query": "i wa the related jurisprudence cases"},
+            )
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(len(captured_prompts), 1)
+        self.assertIn("interpreting Article 99", captured_prompts[0])
+        self.assertIn("Noveras", captured_prompts[0])
+        self.assertNotIn("Corporate & Commercial Law", captured_prompts[0])
+
 
 if __name__ == "__main__":
     unittest.main()

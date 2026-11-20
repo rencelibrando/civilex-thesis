@@ -5,7 +5,7 @@ from dataclasses import dataclass, field, asdict
 from typing import List, Dict, Optional, Any, Tuple
 import numpy as np
 
-from core.article_parser import parse_article_numbers
+from core.article_parser import parse_article_numbers, parse_gr_numbers
 from services.domain_router import get_shared_domain_router, strip_conversational_preamble
 
 logger = logging.getLogger(__name__)
@@ -240,7 +240,8 @@ SUFFICIENT CAUSE-OF-ACTION STANDARD (CRITICAL):
 1. NOT AMBIGUOUS (is_ambiguous: false, questions: []):
    - ANY query that ALREADY states WHAT happened (the underlying act, event, or breach — e.g., pagnanakaw/theft of items, hindi nagbayad ng utang/unpaid debt or loan, nangabit o nagtaksil ang asawa/marital infidelity, lumagpas na bakod/property encroachment, hindi nagbayad ng upa o pinalayas/lease eviction, sirang gamit na nabili/defective item purchased, aksidente o banggaan/car accident or injury, pananakit/physical assault, namatay na walang testamento/death of parent without a will) is NOT AMBIGUOUS.
    - Missing secondary details (such as whether an agreement was written or verbal, exact dates, or exact peso amounts) NEVER make a query ambiguous. The main legal response will explain both written and verbal rules directly.
-   - Statutory, conceptual, definitional, or general legal rule queries (e.g., 'What are the requisites of a valid contract?', 'Can a landlord evict a tenant without a court order?', 'Can a person claim damages for negligence?').
+   - Statutory, conceptual, definitional, jurisprudence, or general legal rule queries (e.g., 'What are the requisites of a valid contract?', 'Can a landlord evict a tenant without a court order?', 'What are the related jurisprudences for Article 56?', 'Cases under Article 1191').
+   - ANY query that cites a specific Civil Code / Family Code article number (e.g., Article 56, Art. 1191) or Supreme Court G.R. number is ALWAYS NOT AMBIGUOUS. (Note: Philippine Civil Code articles are numbered continuously from Article 1 to 2270; never ask which book an article number belongs to.)
    - Follow-ups continuing an active conversation history.
 
 2. AMBIGUOUS (is_ambiguous: true):
@@ -432,6 +433,16 @@ async def detect_ambiguity(
 
     if len(q_clean.split()) <= 2:
         return AmbiguityResult(original_query=q_clean)
+
+    # Explicit article or G.R. number queries already specify their statutory/case target
+    if parse_article_numbers(q_clean, allow_bare_numbers=False) or parse_gr_numbers(q_clean):
+        return AmbiguityResult(
+            is_ambiguous=False,
+            confidence=1.0,
+            category="",
+            original_query=q_clean,
+            reasoning="Query explicitly cites a statutory article or Supreme Court G.R. number.",
+        )
 
     has_user_history = _has_substantive_user_history(history)
     prob_vague, feat_info = predict_ambiguity_probability(

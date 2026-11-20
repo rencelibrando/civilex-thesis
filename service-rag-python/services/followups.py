@@ -27,13 +27,46 @@ _SYSTEM_PROMPT = (
 )
 
 
+_TAGALOG_STRONG_RE = re.compile(
+    r"\b(?:ano\s+ang|anong|paano|bakit|sino|saan|kailan|ilan\s+ang|ipaliwanag|pakipaliwanag|"
+    r"artikulo|mga\s+kaso|hatol\s+sa|desisyon\s+sa|doktrina\s+sa|batas|karapatan|pananagutan|"
+    r"sinasabi|mapapatunayan|ganito|kasong|pwede|maaari|hindi|walang)\b",
+    re.IGNORECASE,
+)
+_TAGALOG_FUNCTION_RE = re.compile(
+    r"\b(?:ang|mga|sa|ng|na|ko|mo|niya|namin|natin|nila|ako|ikaw|siya|kami|tayo|sila|"
+    r"ay|po|opo|ba|naman|kung|kapag|dahil|pero|ngunit|para|laban|tungkol|ukol)\b",
+    re.IGNORECASE,
+)
+
+
+def detect_query_language(text: Optional[str]) -> str:
+    """Deterministically detect whether a query/line is Tagalog ('tl') or English ('en')."""
+    if not text or not text.strip():
+        return "en"
+    if _TAGALOG_STRONG_RE.search(text):
+        return "tl"
+    func_hits = len(_TAGALOG_FUNCTION_RE.findall(text))
+    return "tl" if func_hits >= 2 else "en"
+
+
 def build_messages(
     query: str,
     answer_excerpt: str,
     prior_user_turns: Optional[List[str]] = None,
     doc_filename: Optional[str] = None,
 ) -> List[dict]:
-    user_block = f"User's question: {query[:500]}"
+    target_lang = detect_query_language(query)
+    if target_lang == "tl":
+        lang_instruction = (
+            "TARGET LANGUAGE: TAGALOG ONLY. Write all 3 questions 100% in natural, simple Tagalog."
+        )
+    else:
+        lang_instruction = (
+            "TARGET LANGUAGE: ENGLISH ONLY. Write all 3 questions 100% in simple English with ZERO Tagalog words."
+        )
+
+    user_block = f"{lang_instruction}\nUser's question: {query[:500]}"
     if prior_user_turns:
         earlier = " | ".join(t[:160] for t in prior_user_turns[-2:] if t and t.strip())
         if earlier:
@@ -47,20 +80,45 @@ def build_messages(
     ]
 
 
-def parse_followup_questions(text: Optional[str], limit: int = MAX_SUGGESTIONS) -> List[str]:
-    """Parse raw LLM output into clean questions. Pure function — unit tested."""
+_THINK_BLOCK_RE = re.compile(r"<think>[\s\S]*?</think>", re.IGNORECASE)
+_COT_META_LINE_RE = re.compile(
+    r"(?:^\s*(?:thinking\s+process|thought\s+process|internal\s+monologue|reasoning|analysis|"
+    r"draft(?:ing)?(?:\s+follow[- ]?ups?)?|step\s+\d+|here\s+are\s+(?:the\s+)?\d*\s*follow[- ]?up)|"
+    r"^\s*\*{2}[^*\n]+:?\*{2}\s*:?|"
+    r"\b(?:analyze\s+the\s+request|the\s+user\s+asked|the\s+assistant\s+provided|"
+    r"constraint\s+check|output\s+format|strict\s+unilingual)\b)",
+    re.IGNORECASE,
+)
+
+
+def parse_followup_questions(
+    text: Optional[str],
+    limit: int = MAX_SUGGESTIONS,
+    target_lang: Optional[str] = None,
+) -> List[str]:
+    """Parse raw LLM output into clean questions, stripping reasoning traces and language mismatches."""
     if not text or not text.strip():
+        return []
+    cleaned_text = _THINK_BLOCK_RE.sub("", text).strip()
+    if not cleaned_text:
         return []
     out: List[str] = []
     seen: set = set()
-    for raw_line in text.strip().splitlines():
+    for raw_line in cleaned_text.splitlines():
         line = raw_line.strip()
         # Strip list markers: "1.", "1)", "-", "*", "•"
         line = re.sub(r'^[\s]*(\d+[.)\-:]|[-*•])\s*', '', line).strip()
         line = line.strip('"“”\'').strip()
         if len(line) < 10:
             continue
+        # Reject leaked chain-of-thought headers, markdown meta-labels, and colon-terminated headings.
+        if line.endswith(':') or _COT_META_LINE_RE.search(line):
+            continue
         if not re.search(r'[a-zA-Z\u00c0-\u024f]', line):
+            continue
+        if target_lang == "en" and detect_query_language(line) == "tl":
+            continue
+        if target_lang == "tl" and detect_query_language(line) == "en":
             continue
         key = line.lower()
         if key in seen:
@@ -86,6 +144,7 @@ async def generate_followups(
     """Ask the model for follow-up suggestions. Never raises; returns [] on failure."""
     if not query or not query.strip() or not answer or len(answer.strip()) < 20:
         return []
+    target_lang = detect_query_language(query)
     try:
         from services.llm_client import call_chat_completion_async
 
@@ -93,10 +152,28 @@ async def generate_followups(
         raw = await call_chat_completion_async(
             messages=messages,
             temperature=0.2,
-            max_tokens=200,
+            max_tokens=300,
             timeout_sec=timeout_sec,
+            reasoning_effort="none",
         )
+        parsed = parse_followup_questions(raw, target_lang=target_lang)
+        if not parsed and raw and raw.strip():
+            # Retry once with an explicit strict-language correction when the model drifted languages.
+            retry_note = (
+                "Your previous output used the wrong language. Rewrite all 3 follow-up questions strictly in ENGLISH ONLY."
+                if target_lang == "en"
+                else "Your previous output used the wrong language. Rewrite all 3 follow-up questions strictly in TAGALOG ONLY."
+            )
+            retry_msgs = messages + [{"role": "user", "content": retry_note}]
+            raw_retry = await call_chat_completion_async(
+                messages=retry_msgs,
+                temperature=0.1,
+                max_tokens=300,
+                timeout_sec=timeout_sec,
+                reasoning_effort="none",
+            )
+            parsed = parse_followup_questions(raw_retry, target_lang=target_lang)
+        return parsed
     except Exception as exc:
         logger.warning("follow-up generation failed: %s", exc)
         return []
-    return parse_followup_questions(raw)

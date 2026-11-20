@@ -62,10 +62,11 @@ class FaithfulnessResult:
     claims_neutral: int
     claims_contradicted: int
     verdicts: List[ClaimVerdict] = field(default_factory=list)
-    engine: str = "hybrid" # 'hybrid' (Gemma + Symbolic) or 'symbolic_fallback'
+    engine: str = "hybrid" # 'hybrid' (Gemma + Symbolic), 'symbolic', or 'symbolic_fallback'
     score_weighted: float = 0.0 # Context-aware weighted score Option B
     score_net: float = 0.0         # 0.0 – 1.0 diagnostic: (entailed-contradicted)/total, floored at 0
     score_net_percent: float = 0.0 # 0.0 – 100.0 diagnostic counterpart of score_net
+    analysis: str = ""             # Gemma or deterministic summary analyzing the response score
 
 
 # 2. DEONTIC MODALITY & POLARITY LEXICON
@@ -424,8 +425,9 @@ _LEGAL_ACTION_HEADER = re.compile(
 
 
 def _normalize_text(text: str) -> str:
-    """Lowercase and collapse whitespace."""
-    return re.sub(r'\s+', ' ', text.lower().strip())
+    """Lowercase, normalize curly quotes/apostrophes, and collapse whitespace."""
+    normalized = text.replace('\u2019', "'").replace('\u2018', "'")
+    return re.sub(r'\s+', ' ', normalized.lower().strip())
 
 
 def _extract_article_ids(text: str) -> List[str]:
@@ -473,12 +475,54 @@ def _extract_gr_numbers(text: str) -> List[str]:
     return parse_gr_numbers(text)
 
 
+_MATRIX_NEGATION_BRIDGE_RE = re.compile(
+    r"\b(?:does\s+not|doesn't|do\s+not|don't|did\s+not|didn't|cannot|can't|"
+    r"will\s+not|won't|would\s+not|wouldn't|never|not)\s+"
+    r"(?:(?:automatically|necessarily|inherently)\s+)?"
+    r"(?:mean|imply|make|render|become)\b"
+)
+
+
+_LITOTES_NORMALIZERS = (
+    (re.compile(r'\bnot\s+incompatible\b'), 'compatible'),
+    (re.compile(r'\bnot\s+inconsistent\b'), 'consistent'),
+    (re.compile(r'\bnot\s+inapplicable\b'), 'applicable'),
+    (re.compile(r'\bnot\s+unlawful\b'), 'lawful'),
+    (re.compile(r'\bnot\s+illegal\b'), 'legal'),
+    (re.compile(r'\bnot\s+invalid\b'), 'valid'),
+    (re.compile(r'\bnot\s+void\b'), 'valid'),
+    (re.compile(r'\bnot\s+impossible\b'), 'possible'),
+    (re.compile(r'\bnot\s+prohibited\b'), 'permitted'),
+    (re.compile(r'\bnot\s+barred\b'), 'permitted'),
+    (re.compile(r'\bnot\s+only\s+because\b'), 'because'),
+    (re.compile(r'\bwithout\s+prejudice\b'), 'preserving'),
+)
+
+
 def _has_negation_before(text_lower: str, target_start: int, window: int = 40) -> bool:
-    """Check if any negation token appears within `window` chars before `target_start`."""
-    search_region = text_lower[max(0, target_start - window):target_start]
-    return any(neg in search_region for neg in (
-        'not ', 'no ', 'cannot ', 'never ', 'without ', 'shall not ',
-        'must not ', 'fails ', 'failed ', 'unable ',
+    """Check if any negation token scopes over the predicate within `window` chars before `target_start`."""
+    search_region = text_lower[max(0, target_start - window):target_start].replace('\u2019', "'").replace('\u2018', "'")
+    for pattern, repl in _LITOTES_NORMALIZERS:
+        search_region = pattern.sub(repl, search_region)
+    clause_region = re.split(
+        r'[.;?!,]|\b(?:but|however|whereas|although|though|ngunit|pero)\b'
+        r'|\band\s+(?:before|after|until|unless|when|if)\b',
+        search_region,
+    )[-1]
+    # Matrix negation verbs ("doesn't mean it is...", "does not automatically become...") scope over complement copulas.
+    if _MATRIX_NEGATION_BRIDGE_RE.search(clause_region):
+        return True
+    # Otherwise limit negation scope to the current predicate so subject modifiers ("without consent is valid") stay positive.
+    clause_tail = re.split(
+        r'\b(?:is|are|was|were|remains?|becomes?)\s+(?!not\b|no\b|never\b|neither\b)',
+        clause_region,
+    )[-1]
+    return any(neg in clause_tail for neg in (
+        'not ', 'no ', 'cannot ', "can't ", 'never ', 'without ', 'neither ', 'nor ',
+        'shall not ', 'must not ', 'did not ', "didn't ", 'does not ', "doesn't ",
+        'do not ', "don't ", "isn't ", "aren't ", "wasn't ", "weren't ",
+        "won't ", "wouldn't ", "couldn't ", "shouldn't ",
+        'fails ', 'failed ', 'unable ', 'lacked ', 'lacks ', 'lack of ',
         'hindi ', 'di ', 'walang ', 'wala ', 'bawal ',
     ))
 
@@ -491,19 +535,24 @@ def _get_legal_tokens(text: str) -> set:
 
 def _classify_modality(text_lower: str) -> Optional[str]:
     """Identify the dominant deontic modality in a text fragment."""
-    # Phrases like "shall not be necessary" express dispensation/permission, not prohibition
-    if 'shall not be necessary' in text_lower or 'not necessary' in text_lower or 'need not' in text_lower:
+    # Phrases like "shall not be necessary" or "without prejudice" express dispensation/preservation, not prohibition.
+    if (
+        'shall not be necessary' in text_lower
+        or 'not necessary' in text_lower
+        or 'need not' in text_lower
+        or 'without prejudice' in text_lower
+    ):
         return 'permission'
 
-    # Check prohibition first (compound negation + obligation)
+    # Check prohibition first using word boundaries so "void" never matches "voidable" or "avoid".
     for tok in _PROHIBITION_TOKENS:
-        if tok in text_lower:
+        if re.search(r'\b' + re.escape(tok) + r'\b', text_lower):
             return 'prohibition'
-    # Check for negation + permission = effective prohibition
+    # Check for negation + permission = effective prohibition (word-boundary matched).
     for perm_tok in _PERMISSION_TOKENS:
-        idx = text_lower.find(perm_tok)
-        if idx >= 0 and _has_negation_before(text_lower, idx):
-            return 'prohibition'
+        for m in re.finditer(r'\b' + re.escape(perm_tok) + r'\b', text_lower):
+            if _has_negation_before(text_lower, m.start()):
+                return 'prohibition'
     # Check obligation
     for tok in _OBLIGATION_TOKENS:
         pattern = r'\b' + re.escape(tok) + r'\b'
@@ -523,6 +572,23 @@ def _classify_modality(text_lower: str) -> Optional[str]:
     return None
 
 
+def _extract_contract_defect_categories(text_lower: str) -> set[str]:
+    """Identify mutually exclusive Book IV defective-contract categories referenced in a clause."""
+    cats: set[str] = set()
+    if re.search(r'\b(?:voidable|annullable)\b', text_lower) or 'unless they are annulled' in text_lower:
+        cats.add('voidable')
+    if (
+        re.search(r'\b(?:void|inexistent)\s+(?:and\s+(?:void|inexistent)\s+)?(?:contracts?|agreements?)\b', text_lower)
+        or re.search(r'\bcontracts?\s+(?:are|is)\s+(?:inexistent\s+and\s+)?void\b', text_lower)
+    ):
+        cats.add('void')
+    if re.search(r'\brescissible\b', text_lower):
+        cats.add('rescissible')
+    if re.search(r'\bunenforceable\b', text_lower):
+        cats.add('unenforceable')
+    return cats
+
+
 def _has_polarity_inversion(claim_lower: str, premise_lower: str, coverage: float = 0.0) -> bool:
     """
     Detect if a claim inverts the normative polarity of a premise.
@@ -531,6 +597,12 @@ def _has_polarity_inversion(claim_lower: str, premise_lower: str, coverage: floa
           Premise: "are liable for damages"
           Claim: "cannot be held liable" or "hindi mananagot"
     """
+    # Do not cross-collide disjoint defective-contract categories (e.g. a rule on void contracts vs Art. 1390 on voidable contracts).
+    claim_cats = _extract_contract_defect_categories(claim_lower)
+    premise_cats = _extract_contract_defect_categories(premise_lower)
+    if claim_cats and premise_cats and not (claim_cats & premise_cats):
+        return False
+
     # Direct negation targeting specific shared legal predicates
     direct_refutations = [
         (('not liable', 'no liability', 'exempt from liability', 'hindi mananagot', 'walang pananagutan', 'free from liability'),
@@ -552,15 +624,45 @@ def _has_polarity_inversion(claim_lower: str, premise_lower: str, coverage: floa
         (('no obligation to support', 'exempt from support', 'not entitled to support', 'walang karapatan sa sustento', 'hindi obligado magsustento'),
          ('obliged to support', 'duty to support', 'entitled to support', 'karapatan sa sustento', 'dapat magsustento')),
     ]
+    _ATTRIBUTIVE_SUBJECT_LABEL_RE = re.compile(
+        r'^\s+(?:and\s+(?:void|inexistent)\s+)?(?:contracts?|agreements?|deeds?|sales?|obligations?|marriages?)\b[^.;?!,]*\b(?:is|are|was|were|remains?|becomes?)\b'
+    )
+
+    def _classify_refutation_polarity(text_lower: str, neg_pats: tuple, pos_pats: tuple) -> tuple[bool, bool]:
+        has_neg = False
+        has_pos = False
+        for p in neg_pats:
+            for m in re.finditer(r'\b' + re.escape(p) + r'\b', text_lower):
+                # Skip attributive subject labels ("a void contract is valid...") so the subject adjective does not mask a positive predicate.
+                if p in ('void', 'invalid') and _ATTRIBUTIVE_SUBJECT_LABEL_RE.match(text_lower[m.end():]):
+                    continue
+                if _has_negation_before(text_lower, m.start(), window=50):
+                    has_pos = True
+                else:
+                    has_neg = True
+        for p in pos_pats:
+            for m in re.finditer(r'\b' + re.escape(p) + r'\b', text_lower):
+                if _has_negation_before(text_lower, m.start(), window=50):
+                    has_neg = True
+                else:
+                    has_pos = True
+        return has_neg, (has_pos and not has_neg)
+
+    _PREMISE_EXCEPTION_RE = re.compile(r'\b(?:unless|except|save\s+when|provided\s+(?:that|however))\b')
+    _CLAIM_CONDITIONAL_RE = re.compile(r'\b(?:if|when|provided|unless|except|until|as\s+long\s+as|kapag|kung|maliban)\b')
+    premise_has_exception = bool(_PREMISE_EXCEPTION_RE.search(premise_lower))
+    claim_is_conditional = bool(_CLAIM_CONDITIONAL_RE.search(claim_lower))
+
     for neg_patterns, pos_patterns in direct_refutations:
-        claim_has_neg = any(p in claim_lower for p in neg_patterns)
-        claim_has_pos = any(p in claim_lower for p in pos_patterns) and not claim_has_neg
-        premise_has_neg = any(p in premise_lower for p in neg_patterns)
-        premise_has_pos = any(p in premise_lower for p in pos_patterns) and not premise_has_neg
+        claim_has_neg, claim_has_pos = _classify_refutation_polarity(claim_lower, neg_patterns, pos_patterns)
+        premise_has_neg, premise_has_pos = _classify_refutation_polarity(premise_lower, neg_patterns, pos_patterns)
 
         if (claim_has_neg and premise_has_pos) or (claim_has_pos and premise_has_neg):
             # Guard against double-recovery proviso ("cannot recover damages twice") falsely refuting general damages claims
             if 'twice' in premise_lower and 'twice' not in claim_lower:
+                continue
+            # Guard against statutory-exception contrapositives ("void unless Q" == "valid if Q", e.g., Art. 41 / Art. 1390).
+            if premise_has_exception and claim_is_conditional:
                 continue
             return True
 
@@ -741,6 +843,7 @@ def decompose_claims(text: str) -> List[str]:
     seen_normalized: set = set()
     _STRUCTURAL_HEADER_RE = re.compile(
         r'^(?:direct answer|legal conclusion|governing statutory basis|statutory basis|'
+        r'related supreme court jurisprudence(?:\s*&\s*doctrines)?|practical legal implications|'
         r'application to facts|legal analysis|legal action summary|key statutory requisites|'
         r'requisites & elements|competent court|possible cause of action|'
         r'pre-filing requirement|suggested follow-up|follow-up inquiries|'
@@ -801,6 +904,7 @@ def decompose_claims(text: str) -> List[str]:
             'filing fee', 'docket fee', 'legal fee', 'indigent',
             'pauper litigant', 'notar', 'affidavit of',
             'conciliation proceeding', 'mediation proceeding',
+            'free legal help', "public attorney's office", 'public attorney',
         )) and not _extract_article_ids(frag):
             continue
 
@@ -852,18 +956,67 @@ def decompose_claims(text: str) -> List[str]:
 
 # 7. PER-CLAIM SYMBOLIC VERIFICATION
 
+_CASE_PREMISE_CUE_RE = re.compile(
+    r'(?:^\[(?:supporting case|jurisprudence)|entered\s+into\s+between\s+the\s+parties|\b(?:appellee|appellant|petitioner|respondent)\b)',
+    re.IGNORECASE,
+)
+
+
 def _split_context_to_premises(context: str) -> List[str]:
-    """Split context text into individual premise sentences."""
+    """Split context text into individual premise sentences, including sentences ending inside quotes."""
     if not context:
         return []
-    sentences = re.split(r'(?<=[.!?])\s+|\n+', context)
+    sentences = re.split(r'(?<=[.!?])["\'\u201d\u2019\)]?\s+|\n+', context)
     return [s.strip() for s in sentences if len(s.strip()) > 10]
+
+
+def _extract_structured_premises(context: str | list) -> tuple[List[str], List[tuple[str, str]]]:
+    """Extract premise sentences aligned with (parent_id, parent_type) provenance."""
+    premises: List[str] = []
+    sources: List[tuple[str, str]] = []
+    if isinstance(context, list):
+        for c in context:
+            if isinstance(c, dict):
+                content = c.get('content', '')
+                pid = str(c.get('parent_id') or '')
+                ptype = str(c.get('parent_type') or '')
+                if not ptype:
+                    ptype = 'case' if pid.startswith('GR_') or _CASE_PREMISE_CUE_RE.search(content) else 'article'
+                for sent in _split_context_to_premises(content):
+                    premises.append(sent)
+                    sources.append((pid, ptype))
+            else:
+                for sent in _split_context_to_premises(str(c)):
+                    inferred = 'case' if _CASE_PREMISE_CUE_RE.search(sent) else 'article'
+                    premises.append(sent)
+                    sources.append(('', inferred))
+    else:
+        for sent in _split_context_to_premises(str(context)):
+            inferred = 'case' if _CASE_PREMISE_CUE_RE.search(sent) else 'article'
+            premises.append(sent)
+            sources.append(('', inferred))
+    return premises, sources
+
+
+def _article_matches_source(claim_article_ids: set, source_pid: str) -> bool:
+    """Return True if source_pid matches any cited article (including RA386/EO209 1..257 bridge)."""
+    if not claim_article_ids or not source_pid:
+        return False
+    if source_pid in claim_article_ids:
+        return True
+    m = re.match(r'^(?:RA386|EO209)-ART(\d+)$', source_pid.strip(), re.IGNORECASE)
+    if m:
+        num = int(m.group(1))
+        if f"RA386-ART{num}" in claim_article_ids or f"EO209-ART{num}" in claim_article_ids:
+            return True
+    return False
 
 
 def verify_claim_symbolic(
     claim: str,
     context_premises: List[str],
     context_article_ids: set,
+    premise_sources: Optional[List[tuple[str, str]]] = None,
 ) -> ClaimVerdict:
     """
     Evaluates a single atomic claim against context premises using
@@ -871,15 +1024,16 @@ def verify_claim_symbolic(
 
     Rules (applied in priority order):
         Rule 1: Statutory Anchor Validation
-        Rule 2: Deontic / Polarity Contradiction (checked across all relevant premises)
-        Rule 3: Polarity Inversion Contradiction (checked across all relevant premises)
+        Rule 2: Deontic / Polarity Contradiction (checked across relevant statutory/matching premises)
         Rule 4: Asymmetric Lexical Containment (Entailment, union-aware across premises)
     """
     claim_lower = _normalize_text(claim)
     claim_article_ids = set(_extract_article_ids(claim))
+    claim_is_conditional = bool(
+        re.search(r'\b(?:if|when|provided|unless|except|suppose|for\s+example|kapag|kung)\b', claim_lower)
+    )
 
-    # ── Rule 1: Statutory Anchor Validation ──
-    # If the claim cites a specific Article and that Article is NOT in context
+    # Rule 1: Statutory Anchor Validation
     if claim_article_ids:
         unsupported = claim_article_ids - context_article_ids
         if unsupported:
@@ -892,43 +1046,60 @@ def verify_claim_symbolic(
                 matched_premise='',
             )
 
-    # Find the best matching premise for this claim, retaining ranked coverages
-    # so contradiction can be checked across ALL relevant premises, not just one.
+    sources = premise_sources if (premise_sources and len(premise_sources) == len(context_premises)) else [
+        ('', 'case' if _CASE_PREMISE_CUE_RE.search(p) else 'article')
+        for p in context_premises
+    ]
+
     premise_lowers = [_normalize_text(p) for p in context_premises]
-    ranked_coverages: List[tuple[float, str, str]] = []  # (coverage, premise, premise_lower)
-    for premise, premise_lower in zip(context_premises, premise_lowers):
+    ranked_coverages: List[tuple[float, str, str, str, str]] = []  # (coverage, premise, premise_lower, pid, ptype)
+    for premise, premise_lower, (pid, ptype) in zip(context_premises, premise_lowers, sources):
         coverage = _compute_lexical_coverage(claim_lower, premise_lower)
-        ranked_coverages.append((coverage, premise, premise_lower))
-    ranked_coverages.sort(key=lambda t: t[0], reverse=True)
+        # Prioritize cited statutory article premises first on ties / near-ties.
+        anchor_bonus = 0.05 if (ptype != 'case' and _article_matches_source(claim_article_ids, pid)) else 0.0
+        ranked_coverages.append((coverage, premise, premise_lower, pid, ptype, anchor_bonus))
+
+    ranked_coverages.sort(key=lambda t: t[0] + t[5], reverse=True)
 
     best_coverage = ranked_coverages[0][0] if ranked_coverages else 0.0
     best_premise = ranked_coverages[0][1] if ranked_coverages else ""
 
-
-    # Union coverage over the top relevant premises: evidence split across
-    # several premises (e.g. requisites spread over article paragraphs) can
-    # jointly entail the claim even when no single premise passes the gate.
     union_coverage, union_premises = _compute_union_coverage(claim_lower, premise_lowers)
     eff_coverage = max(best_coverage, union_coverage)
 
-    # ── Rule 2 & 3: Deontic & Polarity Contradiction ──
-    # If the best-matching premise already entails the claim without polarity inversion, do not let a secondary premise's proviso veto it
+    # Rule 2: Deontic & Polarity Contradiction
+    has_supported_anchored_article = bool(
+        claim_article_ids
+        and (claim_article_ids <= context_article_ids)
+        and any(_article_matches_source(claim_article_ids, pid) and ptype != 'case' for _, _, _, pid, ptype, _ in ranked_coverages)
+    )
     best_premise_lower = ranked_coverages[0][2] if ranked_coverages else ""
     best_is_consistent = best_coverage >= 0.45 and not _has_polarity_inversion(
         claim_lower, best_premise_lower, coverage=best_coverage
     )
     if not best_is_consistent:
-        for rel_coverage, rel_premise, rel_premise_lower in ranked_coverages[:3]:
-            if rel_coverage >= 0.25 and rel_premise:
-                if _has_polarity_inversion(claim_lower, rel_premise_lower, coverage=rel_coverage):
-                    return ClaimVerdict(
-                        claim=claim,
-                        verdict='contradicted',
-                        confidence=-1.0,
-                        rule_fired='R2_deontic_polarity_contradiction',
-                        statutory_refs=list(claim_article_ids),
-                        matched_premise=rel_premise[:200],
-                    )
+        for rel_coverage, rel_premise, rel_premise_lower, rel_pid, rel_ptype, _ in ranked_coverages[:4]:
+            if not rel_premise:
+                continue
+            # Require stronger lexical alignment before flagging contradiction so unrelated snippets do not collide.
+            min_cov = 0.55 if rel_ptype == 'case' else 0.35
+            if rel_coverage < min_cov:
+                continue
+            # Do not let an un-anchored case snippet override an explicitly cited statutory article at sub-0.60 overlap.
+            if rel_ptype == 'case' and has_supported_anchored_article and rel_coverage < 0.60:
+                continue
+            # Case-specific factual holdings do not contradict conditional statutory rules unless overlap is high.
+            if rel_ptype == 'case' and claim_is_conditional and rel_coverage < 0.60:
+                continue
+            if _has_polarity_inversion(claim_lower, rel_premise_lower, coverage=rel_coverage):
+                return ClaimVerdict(
+                    claim=claim,
+                    verdict='contradicted',
+                    confidence=-1.0,
+                    rule_fired='R2_deontic_polarity_contradiction',
+                    statutory_refs=list(claim_article_ids),
+                    matched_premise=rel_premise[:200],
+                )
 
     # Premise text for the audit trail: union contributors when the union decided it.
     if union_coverage > best_coverage and union_premises:
@@ -938,8 +1109,7 @@ def verify_claim_symbolic(
         matched_text = best_premise[:200] if best_premise else ''
         union_decided = False
 
-    # ── Rule 4: Asymmetric Lexical Containment (Entailment, union-aware) ──
-    # Case A: Explicitly anchored to supported statutory articles with lexical backing
+    # Rule 4: Asymmetric Lexical Containment (Entailment, union-aware)
     if claim_article_ids and claim_article_ids <= context_article_ids:
         if eff_coverage >= 0.30 or len(_get_legal_tokens(claim_lower)) <= 3:
             return ClaimVerdict(
@@ -951,7 +1121,6 @@ def verify_claim_symbolic(
                 matched_premise=matched_text,
             )
 
-    # Case B: General proposition with high lexical containment
     if eff_coverage >= 0.35:
         return ClaimVerdict(
             claim=claim,
@@ -962,7 +1131,6 @@ def verify_claim_symbolic(
             matched_premise=matched_text,
         )
 
-    # ── Default: Neutral ──
     return ClaimVerdict(
         claim=claim,
         verdict='neutral',
@@ -1019,175 +1187,290 @@ def _select_relevant_context(
     return "\n\n".join(selected).strip()
 
 
-def _build_gemma_nli_prompt(claims_to_verify: List[tuple[int, str]], context_text: str) -> str:
-    # Builds a batched NLI evaluation prompt for Gemma in LM Studio
+def _build_gemma_nli_prompt(
+    claims_to_verify: List[tuple[int, str]],
+    context_text: str,
+    score_hint: str = "",
+) -> str:
+    """Build a compact JSON-only NLI verification and score-analysis prompt for Gemma in LM Studio."""
     selected_context = context_text[:GEMMA_NLI_CONTEXT_BUDGET].strip()
     claims_formatted = "\n".join([f"[{cid}] {claim}" for cid, claim in claims_to_verify])
+    hint_block = f"\nPRELIMINARY SYMBOLIC AUDIT: {score_hint}\n" if score_hint else ""
     return (
-        "You are an expert Philippine Civil Law Natural Language Inference (NLI) evaluator.\n"
-        "Direct JSON output only. Output the JSON array immediately.\n\n"
-        "DEFINITIONS:\n"
-        "- entailed: The premise directly supports or logically necessitates the claim (including valid legal paraphrases, statutory requisites, and direct applications of the statutory rule).\n"
-        "- contradicted: The claim asserts a legal rule or factual conclusion that contradicts or inverts the premise (e.g., claiming a party cannot rescind when the premise permits it, or claiming no liability when the premise imposes it).\n"
-        "- neutral: The premise neither proves nor disproves the claim (e.g., outside facts, unstated procedural steps, or assumptions not found in the premise).\n\n"
-        f"STATUTORY CONTEXT PREMISES:\n{selected_context}\n\n"
-        f"LEGAL CLAIMS TO EVALUATE:\n{claims_formatted}\n\n"
-        "TASK:\n"
-        "Evaluate each claim against the premises. Output strictly valid JSON with a list of objects:\n"
-        "[\n"
-        '  {"id": <int>, "verdict": "entailed"|"neutral"|"contradicted", "reason": "<short 1-sentence reason>"}\n'
-        "]"
+        "You are a Philippine Civil Law Natural Language Inference (NLI) auditor.\n"
+        "Respond ONLY with valid JSON. No markdown commentary outside the JSON object.\n\n"
+        "VERDICT RULES:\n"
+        "- entailed: Supported by or validly paraphrasing the premises (in English or Tagalog), including conditional statutory exceptions (e.g. 'if there is a stipulation...', 'unless absent for 4 years...') that match an exception clause.\n"
+        "- contradicted: ONLY when the claim directly states a legal rule opposite to the governing statutory provision (e.g. saying a party cannot rescind when the statute permits it). Do NOT mark conditional examples or general statutory rules contradicted by specific case-party facts.\n"
+        "- neutral: Unstated procedural steps or external details neither proven nor disproven by the premises.\n\n"
+        f"STATUTORY & JURISPRUDENCE PREMISES:\n{selected_context}\n\n"
+        f"CLAIMS TO EVALUATE:\n{claims_formatted}\n"
+        f"{hint_block}\n"
+        "Output strictly this JSON object:\n"
+        "{\n"
+        '  "verdicts": [{"id": <int>, "verdict": "entailed"|"neutral"|"contradicted", "reason": "<short 1-sentence reason>"}],\n'
+        '  "analysis": "<1-2 sentence assessment analyzing the response faithfulness score and statutory grounding>"\n'
+        "}"
     )
 
 
-def _parse_gemma_nli_response(raw_text: str) -> Dict[int, dict]:
-    """Parses JSON verdicts from Gemma output into a dictionary keyed by claim index."""
-    results = {}
+def _parse_gemma_nli_payload(raw_text: str) -> tuple[Dict[int, dict], str]:
+    """Parse Gemma JSON into (verdicts_by_id, overall_analysis); accepts object or legacy list."""
+    results: Dict[int, dict] = {}
+    analysis = ""
     if not raw_text or not raw_text.strip():
-        return results
+        return results, analysis
 
     text = raw_text.strip()
-    # Strip markdown code block if present
-    match = re.search(r'```(?:json)?\s*(\[\s*\{.*?\}\s*\])\s*```', text, re.DOTALL)
-    if match:
-        json_str = match.group(1)
-    else:
-        array_match = re.search(r'(\[\s*\{.*?\}\s*\])', text, re.DOTALL)
-        json_str = array_match.group(1) if array_match else text
+    fence_match = re.search(r'```(?:json)?\s*([\[{][\s\S]*?[\]}])\s*```', text, re.DOTALL)
+    json_str = fence_match.group(1) if fence_match else text
+    if not fence_match:
+        obj_match = re.search(r'(\{[\s\S]*"verdicts"[\s\S]*\})', text, re.DOTALL)
+        if obj_match:
+            json_str = obj_match.group(1)
+        else:
+            arr_match = re.search(r'(\[\s*\{[\s\S]*\}\s*\])', text, re.DOTALL)
+            if arr_match:
+                json_str = arr_match.group(1)
 
     try:
         data = json.loads(json_str)
-        if isinstance(data, list):
-            for item in data:
-                if isinstance(item, dict) and 'id' in item and 'verdict' in item:
-                    try:
-                        cid = int(item['id'])
-                        v = str(item['verdict']).lower().strip()
-                        if v in ('entailed', 'neutral', 'contradicted'):
-                            results[cid] = {
-                                'verdict': v,
-                                'reason': str(item.get('reason', '')).strip()
-                            }
-                    except (ValueError, TypeError):
-                        continue
+        items = []
+        if isinstance(data, dict):
+            analysis = str(data.get('analysis') or data.get('summary') or '').strip()
+            raw_verdicts = data.get('verdicts')
+            if isinstance(raw_verdicts, list):
+                items = raw_verdicts
+        elif isinstance(data, list):
+            items = data
+
+        for item in items:
+            if isinstance(item, dict) and 'id' in item and 'verdict' in item:
+                try:
+                    cid = int(item['id'])
+                    v = str(item['verdict']).lower().strip()
+                    if v in ('entailed', 'neutral', 'contradicted'):
+                        results[cid] = {
+                            'verdict': v,
+                            'reason': str(item.get('reason', '')).strip(),
+                        }
+                except (ValueError, TypeError):
+                    continue
     except json.JSONDecodeError:
         logging.warning("Failed to parse Gemma NLI JSON response; falling back to symbolic verdicts.")
 
+    return results, analysis
+
+
+def _parse_gemma_nli_response(raw_text: str) -> Dict[int, dict]:
+    """Parse JSON verdicts from Gemma output into a dictionary keyed by claim index."""
+    results, _ = _parse_gemma_nli_payload(raw_text)
     return results
+
+
+def _format_score_hint(verdicts: List[ClaimVerdict]) -> str:
+    n_tot = len(verdicts)
+    n_ent = sum(1 for v in verdicts if v.verdict == 'entailed')
+    n_con = sum(1 for v in verdicts if v.verdict == 'contradicted')
+    return f"{n_ent}/{n_tot} claims lexically matched, {n_con} tentative polarity flags"
+
+
+def _verify_claims_gemma_with_analysis_sync(
+    claims_to_verify: List[tuple[int, str]],
+    context_text: str,
+    timeout: float = 45.0,
+    context_premises: Optional[List[str]] = None,
+    score_hint: str = "",
+) -> tuple[Dict[int, dict], str, bool]:
+    """Query Gemma synchronously with reasoning disabled to verify claims and analyze grounding score."""
+    if not claims_to_verify:
+        return {}, "", False
+
+    from services.llm_client import call_chat_completion_sync
+
+    batch_size = 6
+    all_results: Dict[int, dict] = {}
+    analyses: List[str] = []
+    responded = False
+    for i in range(0, len(claims_to_verify), batch_size):
+        batch = claims_to_verify[i:i + batch_size]
+        curr_context = _select_relevant_context(batch, context_premises) if context_premises else context_text
+        prompt = _build_gemma_nli_prompt(batch, curr_context, score_hint=score_hint)
+        try:
+            raw_text = call_chat_completion_sync(
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.0,
+                max_tokens=900,
+                timeout_sec=timeout,
+                reasoning_effort="none",
+                allow_reasoning_fallback=False,
+            )
+            if raw_text:
+                parsed, batch_analysis = _parse_gemma_nli_payload(raw_text)
+                if parsed or batch_analysis:
+                    responded = True
+                all_results.update(parsed)
+                if batch_analysis:
+                    analyses.append(batch_analysis)
+        except Exception as e:
+            logging.warning(f"Unexpected error calling LLM NLI: {type(e).__name__} - {e}")
+
+    if not responded:
+        logging.info("LLM unavailable for NLI; using symbolic fallback.")
+    return all_results, " ".join(analyses).strip(), responded
+
+
+async def _verify_claims_gemma_with_analysis_async(
+    claims_to_verify: List[tuple[int, str]],
+    context_text: str,
+    timeout: float = 45.0,
+    context_premises: Optional[List[str]] = None,
+    score_hint: str = "",
+) -> tuple[Dict[int, dict], str, bool]:
+    """Query Gemma asynchronously with reasoning disabled to verify claims and analyze grounding score."""
+    if not claims_to_verify:
+        return {}, "", False
+
+    from services.llm_client import call_chat_completion_async
+
+    batch_size = 6
+    all_results: Dict[int, dict] = {}
+    analyses: List[str] = []
+    responded = False
+    for i in range(0, len(claims_to_verify), batch_size):
+        batch = claims_to_verify[i:i + batch_size]
+        curr_context = _select_relevant_context(batch, context_premises) if context_premises else context_text
+        prompt = _build_gemma_nli_prompt(batch, curr_context, score_hint=score_hint)
+        try:
+            raw_text = await call_chat_completion_async(
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.0,
+                max_tokens=900,
+                timeout_sec=timeout,
+                reasoning_effort="none",
+                allow_reasoning_fallback=False,
+            )
+            if raw_text:
+                parsed, batch_analysis = _parse_gemma_nli_payload(raw_text)
+                if parsed or batch_analysis:
+                    responded = True
+                all_results.update(parsed)
+                if batch_analysis:
+                    analyses.append(batch_analysis)
+        except Exception as e:
+            logging.warning(f"Unexpected error calling LLM NLI async: {type(e).__name__} - {e}")
+
+    if not responded:
+        logging.info("LLM unavailable for NLI; using symbolic fallback.")
+    return all_results, " ".join(analyses).strip(), responded
 
 
 def verify_claims_gemma_sync(
     claims_to_verify: List[tuple[int, str]],
     context_text: str,
-    timeout: float = 60.0,
+    timeout: float = 45.0,
     context_premises: Optional[List[str]] = None,
 ) -> Dict[int, dict]:
-    # Synchronously queries Gemma in LM Studio for batched NLI evaluation
-    if not claims_to_verify:
-        return {}
-
-    from services.llm_client import call_chat_completion_sync
-
-    batch_size = 3
-    all_results = {}
-    for i in range(0, len(claims_to_verify), batch_size):
-        batch = claims_to_verify[i:i + batch_size]
-        curr_context = context_text
-        if context_premises:
-            curr_context = _select_relevant_context(batch, context_premises)
-        prompt = _build_gemma_nli_prompt(batch, curr_context)
-        try:
-            raw_text = call_chat_completion_sync(
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.0,
-                max_tokens=3000,
-                timeout_sec=timeout,
-            )
-            if raw_text:
-                parsed = _parse_gemma_nli_response(raw_text)
-                all_results.update(parsed)
-        except Exception as e:
-            logging.warning(f"Unexpected error calling LLM NLI: {type(e).__name__} - {e}")
-
-    if not all_results:
-        logging.info("LLM unavailable for NLI; using symbolic fallback.")
-    return all_results
+    """Synchronously query Gemma in LM Studio for batched NLI evaluation."""
+    results, _, _ = _verify_claims_gemma_with_analysis_sync(
+        claims_to_verify, context_text, timeout=timeout, context_premises=context_premises
+    )
+    return results
 
 
 async def verify_claims_gemma_async(
     claims_to_verify: List[tuple[int, str]],
     context_text: str,
-    timeout: float = 60.0,
+    timeout: float = 45.0,
     context_premises: Optional[List[str]] = None,
 ) -> Dict[int, dict]:
-    # Asynchronously queries Gemma in LM Studio for batched NLI evaluation
-    if not claims_to_verify:
-        return {}
-
-    from services.llm_client import call_chat_completion_async
-
-    batch_size = 3
-    all_results = {}
-    for i in range(0, len(claims_to_verify), batch_size):
-        batch = claims_to_verify[i:i + batch_size]
-        curr_context = context_text
-        if context_premises:
-            curr_context = _select_relevant_context(batch, context_premises)
-        prompt = _build_gemma_nli_prompt(batch, curr_context)
-        try:
-            raw_text = await call_chat_completion_async(
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.0,
-                max_tokens=3000,
-                timeout_sec=timeout,
-            )
-            if raw_text:
-                parsed = _parse_gemma_nli_response(raw_text)
-                all_results.update(parsed)
-        except Exception as e:
-            logging.warning(f"Unexpected error calling LLM NLI async: {type(e).__name__} - {e}")
-
-    if not all_results:
-        logging.info("LLM unavailable for NLI; using symbolic fallback.")
-    return all_results
+    """Asynchronously query Gemma in LM Studio for batched NLI evaluation."""
+    results, _, _ = await _verify_claims_gemma_with_analysis_async(
+        claims_to_verify, context_text, timeout=timeout, context_premises=context_premises
+    )
+    return results
 
 
 # 8. HYBRID ARBITRATION & AGGREGATE FAITHFULNESS SCORING
 
+def _is_neural_contradiction_grounded(claim: str) -> bool:
+    """Require explicit normative negation and statutory anchor before 4B neural NLI marks contradiction."""
+    claim_low = _normalize_text(claim)
+    has_normative_neg = any(
+        bool(re.search(r'\b' + re.escape(tok) + r'\b', claim_low))
+        for tok in _PROHIBITION_TOKENS
+    ) or any(f" {neg} " in f" {claim_low} " for neg in _NEGATION_TOKENS)
+    return bool(has_normative_neg and _extract_article_ids(claim))
+
+
 def _arbitrate_hybrid_verdicts(
     verdicts: List[ClaimVerdict],
     gemma_results: Dict[int, dict],
-) -> tuple[List[ClaimVerdict], str]:
+    gemma_analysis: str = "",
+    gemma_responded: Optional[bool] = None,
+) -> tuple[List[ClaimVerdict], str, str]:
     """
-    Arbitrates between deterministic symbolic rules and Gemma neural verdicts.
+    Arbitrates between symbolic rules and Gemma neural NLI verdicts.
 
     Arbitration Truth Table:
-        1. Symbolic Contradiction (Rule 2) -> Absolute Veto (contradicted).
-        2. Unsupported Statutory Anchor (Rule 1) -> Capped at neutral (cannot ground absent article).
-        3. High Lexical Containment (Rule 4) -> Fast-path confirmed (entailed).
-        4. Borderline / Neutral Symbolic Verdict -> Gemma verdict applied:
-           - Gemma entailed -> Entailed (R_hybrid_gemma_entailment)
-           - Gemma contradicted -> Contradicted (R_hybrid_gemma_contradiction)
-           - Gemma neutral -> Neutral
+        1. Tentative Symbolic R2 Flag + Gemma checked:
+           - Gemma contradicted -> Confirmed Hybrid Contradiction (R_hybrid_confirmed_contradiction).
+           - Gemma entailed / neutral -> Overturns symbolic false positive with Gemma rationale.
+        2. Unsupported Statutory Anchor (Rule 1) -> Capped at neutral (Citation Defense).
+        3. High Lexical Containment (Rule 4) -> Entailed (with Gemma rationale if reviewed).
+        4. Neutral Symbolic Verdict -> Gemma verdict applied (with conditional-exception guard).
     """
-    engine_used = "hybrid" if gemma_results else "symbolic_fallback"
+    is_hybrid = gemma_responded if gemma_responded is not None else bool(gemma_results)
+    engine_used = "hybrid" if is_hybrid else "symbolic_fallback"
 
     for idx, v in enumerate(verdicts):
-        # Rule 1: Symbolic contradiction is an absolute veto
+        g_eval = gemma_results.get(idx)
+
+        # Rule 1: Tentative symbolic polarity flag is adjudicated by Gemma when available
         if v.verdict == 'contradicted' and v.rule_fired == 'R2_deontic_polarity_contradiction':
+            if g_eval is None:
+                continue
+            g_verdict = g_eval['verdict']
+            g_reason = g_eval.get('reason', '')
+            if g_verdict == 'contradicted':
+                v.verifier = 'hybrid'
+                v.rule_fired = 'R_hybrid_confirmed_contradiction'
+                v.rationale = g_reason
+            elif g_verdict == 'entailed':
+                v.verdict = 'entailed'
+                v.confidence = 1.0
+                v.verifier = 'hybrid'
+                v.rule_fired = 'R_hybrid_gemma_resolved_entailment'
+                v.rationale = g_reason
+            else:
+                v.verdict = 'neutral'
+                v.confidence = 0.0
+                v.verifier = 'hybrid'
+                v.rule_fired = 'R_hybrid_gemma_resolved_neutral'
+                v.rationale = g_reason
             continue
 
         # Rule 2: Unsupported statutory anchor cannot be upgraded to entailed
         if v.rule_fired == 'R1_unsupported_statutory_anchor':
             continue
 
-        # Rule 3: High lexical containment fast-path
+        # Rule 3: Fast-path entailed claim (attach Gemma rationale if spot-checked)
         if v.verdict == 'entailed':
+            if g_eval is not None:
+                g_reason = g_eval.get('reason', '')
+                if g_eval['verdict'] == 'contradicted' and _is_neural_contradiction_grounded(v.claim):
+                    v.verdict = 'contradicted'
+                    v.confidence = -1.0
+                    v.rule_fired = 'R_hybrid_gemma_contradiction'
+                    v.verifier = 'gemma_neural'
+                    v.rationale = g_reason
+                elif g_reason and not v.rationale:
+                    v.rationale = g_reason
+                    v.verifier = 'hybrid'
             continue
 
-        # Rule 4: Borderline / neutral claim checked by Gemma
-        if idx in gemma_results:
-            g_eval = gemma_results[idx]
+        # Rule 4: Neutral claim checked by Gemma
+        if g_eval is not None:
             g_verdict = g_eval['verdict']
             g_reason = g_eval.get('reason', '')
 
@@ -1198,12 +1481,7 @@ def _arbitrate_hybrid_verdicts(
                 v.verifier = 'gemma_neural'
                 v.rationale = g_reason
             elif g_verdict == 'contradicted':
-                # Require explicit normative negation or polarity opposition so 4B neural NLI does not misclassify neutral factual summaries as contradictions
-                claim_low = _normalize_text(v.claim)
-                has_normative_neg = any(tok in claim_low for tok in _PROHIBITION_TOKENS) or any(
-                    f" {neg} " in f" {claim_low} " for neg in _NEGATION_TOKENS
-                )
-                if has_normative_neg and _extract_article_ids(v.claim):
+                if _is_neural_contradiction_grounded(v.claim):
                     v.verdict = 'contradicted'
                     v.confidence = -1.0
                     v.rule_fired = 'R_hybrid_gemma_contradiction'
@@ -1216,7 +1494,20 @@ def _arbitrate_hybrid_verdicts(
                 v.verifier = 'gemma_neural'
                 v.rationale = g_reason
 
-    return verdicts, engine_used
+    return verdicts, engine_used, gemma_analysis
+
+
+def _register_dual_code_anchor(article_ids: set, candidate: str) -> None:
+    # Register both RA386 and EO209 IDs for articles 1..257 so Family Code claims never false-veto.
+    if not candidate:
+        return
+    article_ids.add(candidate)
+    m = re.match(r'^(?:RA386|EO209)-ART(\d+)$', str(candidate).strip(), re.IGNORECASE)
+    if m:
+        num = int(m.group(1))
+        article_ids.add(f"RA386-ART{num}")
+        if 1 <= num <= 257:
+            article_ids.add(f"EO209-ART{num}")
 
 
 def _normalize_context_payload(context: str | list) -> tuple[str, set]:
@@ -1228,21 +1519,30 @@ def _normalize_context_payload(context: str | list) -> tuple[str, set]:
         )
         context_article_ids = set()
         has_codal_structure = False
+        has_fc_structure = False
         for c in context:
             if isinstance(c, dict):
                 pid = c.get('parent_id', '')
                 if pid:
-                    context_article_ids.add(pid)
+                    _register_dual_code_anchor(context_article_ids, pid)
                 content = c.get('content', '')
                 if 'RA386-STRUCTURE' in pid or 'Total Articles and Structure' in content:
                     has_codal_structure = True
-                context_article_ids.update(_extract_article_ids(content))
+                if 'EO209-STRUCTURE' in pid or '257 articles' in content.lower():
+                    has_fc_structure = True
+                for extracted_id in _extract_article_ids(content):
+                    _register_dual_code_anchor(context_article_ids, extracted_id)
         if has_codal_structure:
             context_article_ids.add('RA386-ART1')
             context_article_ids.add('RA386-ART2270')
+        if has_fc_structure:
+            _register_dual_code_anchor(context_article_ids, 'EO209-ART1')
+            _register_dual_code_anchor(context_article_ids, 'EO209-ART257')
     else:
         context_text = str(context)
-        context_article_ids = set(_extract_article_ids(context_text))
+        context_article_ids = set()
+        for extracted_id in _extract_article_ids(context_text):
+            _register_dual_code_anchor(context_article_ids, extracted_id)
         if 'RA386-STRUCTURE' in context_text or 'Total Articles and Structure' in context_text:
             context_article_ids.add('RA386-ART1')
             context_article_ids.add('RA386-ART2270')
@@ -1253,6 +1553,7 @@ def _normalize_context_payload(context: str | list) -> tuple[str, set]:
 def _compute_faithfulness_result(
     verdicts: List[ClaimVerdict],
     engine: str,
+    analysis: str = "",
 ) -> FaithfulnessResult:
     """Computes aggregate metrics from arbitrated claim verdicts."""
     n_total = len(verdicts)
@@ -1260,12 +1561,9 @@ def _compute_faithfulness_result(
     n_neutral = sum(1 for v in verdicts if v.verdict == 'neutral')
     n_contradicted = sum(1 for v in verdicts if v.verdict == 'contradicted')
 
-    # Primary: Standard RAGAS Faithfulness = supported (entailed) / total claims.
-    # Net (diagnostic-only): contradiction-penalized variant, floored at zero.
     if n_total > 0:
         f_std = n_entailed / n_total
         f_net = max(0.0, (n_entailed - n_contradicted) / n_total)
-        # Context-aware weighted score Option B (partial credit 0.35 for neutral, 2x contradiction penalty)
         f_weighted = min(100.0, max(0.0, ((n_entailed + 0.35 * n_neutral - 2.0 * n_contradicted) / n_total) * 100.0))
     else:
         f_std = 0.0
@@ -1275,13 +1573,17 @@ def _compute_faithfulness_result(
     score_pct = round(f_std * 100.0, 1)
     net_pct = round(f_net * 100.0, 1)
 
-    # Status determination: Zero tolerance for contradictions
     if n_contradicted > 0:
         status = 'Unverified'
     elif score_pct >= 80.0:
         status = 'Grounded'
     else:
         status = 'Unverified'
+
+    final_analysis = (analysis or "").strip() or (
+        f"Verified {n_entailed} of {n_total} claims ({score_pct}%) against retrieved provisions "
+        f"({n_neutral} neutral, {n_contradicted} contradicted) via {engine}."
+    )
 
     logging.info(
         f"NLI Faithfulness ({engine}): {score_pct}% ({status}) | "
@@ -1302,7 +1604,33 @@ def _compute_faithfulness_result(
         score_weighted=round(f_weighted, 1),
         score_net=f_net,
         score_net_percent=net_pct,
+        analysis=final_analysis,
     )
+
+
+def _select_gemma_audit_candidates(verdicts: List[ClaimVerdict], limit: int = 6) -> List[tuple[int, str]]:
+    """Select tentative contradictions first, then neutral claims, or top claims for Gemma score audit."""
+    tentative_contra = [
+        (idx, v.claim)
+        for idx, v in enumerate(verdicts)
+        if v.verdict == 'contradicted' and v.rule_fired == 'R2_deontic_polarity_contradiction'
+    ]
+    neutral_cands = [
+        (idx, v.claim)
+        for idx, v in enumerate(verdicts)
+        if v.verdict == 'neutral' and v.rule_fired != 'R1_unsupported_statutory_anchor'
+    ]
+    neutral_cands.sort(key=lambda t: len(t[1]), reverse=True)
+    combined = tentative_contra + neutral_cands
+    if combined:
+        return combined[:limit]
+    # When all claims pass symbolic fast-path, let Gemma spot-check & analyze the response score.
+    spot_checks = [
+        (idx, v.claim)
+        for idx, v in enumerate(verdicts)
+        if v.rule_fired != 'R1_unsupported_statutory_anchor'
+    ]
+    return spot_checks[:limit]
 
 
 def score_faithfulness(
@@ -1311,20 +1639,12 @@ def score_faithfulness(
     mode: str = "hybrid",
 ) -> FaithfulnessResult:
     """
-    Synchronously evaluates the faithfulness of a generated answer against the retrieved context.
+    Synchronously evaluate faithfulness of a generated answer against retrieved context.
 
-    Uses the Neuro-Symbolic Hybrid architecture:
-        - Runs fast deterministic symbolic rules.
-        - If mode == 'hybrid', queries Gemma in LM Studio for neutral/paraphrased claims.
-        - Falls back gracefully to pure symbolic verdicts if LM Studio is offline.
-
-    Args:
-        answer: The full generated response text.
-        context: Concatenated context string or list of chunk dicts.
-        mode: 'hybrid' (Gemma + Symbolic) or 'symbolic' (pure deterministic rules).
-
-    Returns:
-        FaithfulnessResult with score, status, verdicts, and engine metadata.
+    Uses Neuro-Symbolic Hybrid NLI:
+        - Runs deterministic source-aware symbolic verification.
+        - In 'hybrid' mode, queries Gemma with reasoning disabled to adjudicate tentative
+          contradictions, verify neutral claims, and analyze the grounding score.
     """
     if not answer or not answer.strip():
         return FaithfulnessResult(
@@ -1351,31 +1671,29 @@ def score_faithfulness(
             score_weighted=100.0, score_net=1.0, score_net_percent=100.0,
         )
 
-    context_premises = _split_context_to_premises(context_text)
+    context_premises, premise_sources = _extract_structured_premises(context)
 
-    # Step 1: Initial symbolic evaluation
-    verdicts: List[ClaimVerdict] = []
-    for claim in claims:
-        v = verify_claim_symbolic(claim, context_premises, context_article_ids)
-        verdicts.append(v)
+    verdicts: List[ClaimVerdict] = [
+        verify_claim_symbolic(claim, context_premises, context_article_ids, premise_sources=premise_sources)
+        for claim in claims
+    ]
 
-    # Step 2: If hybrid mode, gather neutral claims for Gemma neural evaluation
     engine = "symbolic"
+    analysis = ""
     if mode == "hybrid":
-        neutral_candidates = [
-            (idx, v.claim)
-            for idx, v in enumerate(verdicts)
-            if v.verdict == 'neutral' and v.rule_fired != 'R1_unsupported_statutory_anchor'
-        ]
-        if neutral_candidates:
-            neutral_candidates.sort(key=lambda t: len(t[1]), reverse=True)
-            neutral_candidates = neutral_candidates[:6]
-            gemma_results = verify_claims_gemma_sync(
-                neutral_candidates, context_text, context_premises=context_premises
+        audit_candidates = _select_gemma_audit_candidates(verdicts)
+        if audit_candidates:
+            gemma_results, gemma_analysis, responded = _verify_claims_gemma_with_analysis_sync(
+                audit_candidates,
+                context_text,
+                context_premises=context_premises,
+                score_hint=_format_score_hint(verdicts),
             )
-            verdicts, engine = _arbitrate_hybrid_verdicts(verdicts, gemma_results)
+            verdicts, engine, analysis = _arbitrate_hybrid_verdicts(
+                verdicts, gemma_results, gemma_analysis=gemma_analysis, gemma_responded=responded
+            )
 
-    return _compute_faithfulness_result(verdicts, engine)
+    return _compute_faithfulness_result(verdicts, engine, analysis=analysis)
 
 
 async def score_faithfulness_async(
@@ -1383,11 +1701,7 @@ async def score_faithfulness_async(
     context: str | list,
     mode: str = "hybrid",
 ) -> FaithfulnessResult:
-    """
-    Asynchronously evaluates the faithfulness of a generated answer against the retrieved context.
-
-    Non-blocking version for FastAPI streaming pipelines.
-    """
+    """Asynchronously evaluate answer faithfulness against retrieved context for SSE streaming."""
     if not answer or not answer.strip():
         return FaithfulnessResult(
             score=0.0, score_percent=0.0, status='Unverified',
@@ -1413,29 +1727,27 @@ async def score_faithfulness_async(
             score_weighted=100.0, score_net=1.0, score_net_percent=100.0,
         )
 
-    context_premises = _split_context_to_premises(context_text)
+    context_premises, premise_sources = _extract_structured_premises(context)
 
-    # Step 1: Initial symbolic evaluation
-    verdicts: List[ClaimVerdict] = []
-    for claim in claims:
-        v = verify_claim_symbolic(claim, context_premises, context_article_ids)
-        verdicts.append(v)
+    verdicts: List[ClaimVerdict] = [
+        verify_claim_symbolic(claim, context_premises, context_article_ids, premise_sources=premise_sources)
+        for claim in claims
+    ]
 
-    # Step 2: If hybrid mode, gather neutral claims for async Gemma neural evaluation
     engine = "symbolic"
+    analysis = ""
     if mode == "hybrid":
-        neutral_candidates = [
-            (idx, v.claim)
-            for idx, v in enumerate(verdicts)
-            if v.verdict == 'neutral' and v.rule_fired != 'R1_unsupported_statutory_anchor'
-        ]
-        if neutral_candidates:
-            neutral_candidates.sort(key=lambda t: len(t[1]), reverse=True)
-            neutral_candidates = neutral_candidates[:6]
-            gemma_results = await verify_claims_gemma_async(
-                neutral_candidates, context_text, context_premises=context_premises
+        audit_candidates = _select_gemma_audit_candidates(verdicts)
+        if audit_candidates:
+            gemma_results, gemma_analysis, responded = await _verify_claims_gemma_with_analysis_async(
+                audit_candidates,
+                context_text,
+                context_premises=context_premises,
+                score_hint=_format_score_hint(verdicts),
             )
-            verdicts, engine = _arbitrate_hybrid_verdicts(verdicts, gemma_results)
+            verdicts, engine, analysis = _arbitrate_hybrid_verdicts(
+                verdicts, gemma_results, gemma_analysis=gemma_analysis, gemma_responded=responded
+            )
 
-    return _compute_faithfulness_result(verdicts, engine)
+    return _compute_faithfulness_result(verdicts, engine, analysis=analysis)
 

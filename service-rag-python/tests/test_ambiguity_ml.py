@@ -143,6 +143,18 @@ class TestAmbiguityMLClassifier(unittest.TestCase):
                 self.assertFalse(res.is_ambiguous, f"Expected is_ambiguous=False for '{query}'")
             mock_llm.assert_not_called()
 
+    def test_explicit_article_and_jurisprudence_queries_never_trigger_clarification(self):
+        explicit_queries = [
+            "what are the related jurisprudences for article 56",
+            "Cases under Article 1191",
+            "Explain G.R. No. 173441 ruling",
+        ]
+        with patch("services.llm_client.call_chat_completion_async", new=AsyncMock()) as mock_llm:
+            for query in explicit_queries:
+                res = asyncio.run(detect_ambiguity(query))
+                self.assertFalse(res.is_ambiguous, f"Expected is_ambiguous=False for '{query}'")
+            mock_llm.assert_not_called()
+
     def test_truly_vague_queries_consult_llm_and_enforce_bidirectional_unilingual(self):
         vague_queries = [
             "ANONG PWEDENG IKASO SAKIN",
@@ -213,6 +225,19 @@ class TestAmbiguityMLClassifier(unittest.TestCase):
             "Atty / Civil-Lex, paki-klaro: Nanloob ng bahay ang magnanakaw at tinangay ang mga alahas namin."
         )
         self.assertTrue(preamble_stripped.startswith("Nanloob ng bahay"))
+
+    def test_domain_router_does_not_confuse_section_abbreviation_with_sec_agency(self):
+        # Statutory section citations like "Sec. 2a" from prior turns must not route to SEC corporate law
+        followup_with_sec_abbr = self.router.route(
+            "i wa the related jurisprudence cases (Article 99 Sec. 2a)",
+            has_case_ref=True,
+        )
+        self.assertEqual(followup_with_sec_abbr["category"], "in_domain_civil")
+
+        # Actual uppercase SEC corporate inquiries must still route to SEC
+        real_sec_query = self.router.route("How do I amend our corporate bylaws with the SEC?")
+        self.assertEqual(real_sec_query["category"], "out_of_domain_legal")
+        self.assertIn("SEC", real_sec_query["target_domain"])
 
     def test_strict_train_test_model_comparison_and_bootstrap_ci(self):
         held_out_test = [

@@ -165,7 +165,7 @@ class TestAutoAnalyzeRagPipeline(unittest.TestCase):
 
             def execute(self, sql, params=None):
                 s = " ".join(sql.split()).lower()
-                if "from document_chunks" in s and "where parent_id = %s" in s:
+                if "from document_chunks" in s and "parent_id = %s" in s and ("parent_type = 'user_document'" in s or "user_document" in str(params)):
                     self._rows = [{
                         "chunk_id": f"{doc_id}_c0",
                         "parent_type": "user_document",
@@ -310,7 +310,12 @@ class TestAutoAnalyzeRagPipeline(unittest.TestCase):
 
         self.assertEqual(resp.status_code, 200)
         mock_save_user.assert_called_once()
-        self.assertIn("Art. 1654", resp.text)
+        streamed_text = "".join(
+            json.loads(line[6:]).get("text", "")
+            for line in resp.text.splitlines()
+            if line.startswith("data: ") and '"type": "text"' in line
+        )
+        self.assertIn("**Art. 1654**", streamed_text)
 
 
 if __name__ == "__main__":

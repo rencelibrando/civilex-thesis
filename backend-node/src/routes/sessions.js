@@ -159,6 +159,26 @@ router.post('/:id/messages', requireAuth, async (req, res) => {
        return res.status(403).json({ error: 'Unauthorized or session not found' });
     }
 
+    // Prevent duplicate consecutive user messages from concurrent client/RAG writes
+    if (role === 'user' && typeof content === 'string' && content.trim()) {
+      const trimmed = content.trim();
+      const { data: latestMsgs } = await supabaseAdmin
+        .from('chat_messages')
+        .select('*')
+        .eq('session_id', sessionId)
+        .order('created_at', { ascending: false })
+        .limit(1);
+      const latest = Array.isArray(latestMsgs) ? latestMsgs[0] : null;
+      if (
+        latest &&
+        latest.role === 'user' &&
+        String(latest.content || '').trim() === trimmed &&
+        Date.now() - new Date(latest.created_at).getTime() < 15000
+      ) {
+        return res.status(200).json(latest);
+      }
+    }
+
     const messageData = {
       session_id: sessionId,
       role,

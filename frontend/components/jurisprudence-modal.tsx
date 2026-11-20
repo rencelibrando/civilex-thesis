@@ -24,6 +24,7 @@ import {
 } from "lucide-react";
 import { JurisprudenceGavel } from "@/components/icons";
 import { BACKEND_URL } from "@/lib/config";
+import { formatSuitabilityPercent } from "@/lib/citation-utils";
 
 export type JurisprudenceCase = {
   case_uid: string;
@@ -409,7 +410,7 @@ export function JurisprudenceModal({
                         : "text-muted-foreground bg-muted border-border"
                       }`}
                   >
-                    {suitabilityPercent}%
+                    {formatSuitabilityPercent(suitabilityPercent)}
                   </span>
                 </div>
               )}

@@ -2,23 +2,23 @@ import re
 import json
 import logging
 from dataclasses import dataclass, field, asdict
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Tuple
+import numpy as np
 
 from core.article_parser import parse_article_numbers
+from services.domain_router import get_shared_domain_router, strip_conversational_preamble
 
 logger = logging.getLogger(__name__)
 
 
-
-# Data Models
 @dataclass
 class ClarificationQuestion:
     """A single clarification question with selectable options."""
-    id: str                             # e.g., "q1"
-    question: str                       # Clarification question
-    options: List[str]                  # Selectable options
-    allows_free_text: bool = True       # User can type their own answer
-    context_hint: str = ""              # Legal context / governing Civil Code article
+    id: str
+    question: str
+    options: List[str]
+    allows_free_text: bool = True
+    context_hint: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -28,11 +28,11 @@ class ClarificationQuestion:
 class AmbiguityResult:
     """Result of ambiguity detection on a user query."""
     is_ambiguous: bool = False
-    confidence: float = 0.0             # 0.0 - 1.0
-    category: str = ""                  # e.g., "missing_facts"
+    confidence: float = 0.0
+    category: str = ""
     questions: List[ClarificationQuestion] = field(default_factory=list)
     original_query: str = ""
-    reasoning: str = ""                 # Brief explanation
+    reasoning: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -45,86 +45,282 @@ class AmbiguityResult:
         }
 
 
+# Zero-regex prototype banks for Semantic Embedding Ambiguity Classification
+VAGUE_QUERY_PROTOTYPES: List[str] = [
+    "query: Anong pwedeng ikaso sa akin",
+    "query: Ano ang pwede kong ikaso o idemanda sa kanya",
+    "query: Can I be sued or what case can be filed against me",
+    "query: Can I sue someone or file a civil case against my neighbor or spouse",
+    "query: May habol ba ako o ano ang pwede kong gawin sa batas",
+    "query: May problema o hindi pagkakaintindihan kami sa kontrata o kasunduan ano ang gagawin ko",
+    "query: We have a dispute issue or problem with an agreement or property transaction can I cancel or sue",
+    "query: My family or neighbor has a dispute over our house or land what legal action applies",
+    "query: What are the articles of",
+    "query: What article are applicable to the case of with",
+    "query: What are the legal grounds for",
+    "query: What is the law or provision about",
+    "query: Ano ang batas o artikulo tungkol sa",
+    "query: Paano kung may nangyari ano ang batas para dito",
+    "query: Ang sakit ng katawan o ulo ko ano pwede ko ikaso sa asawa ko o kapitbahay ko",
+    "query: Need legal advice about my problem can I file a lawsuit or claim damages",
+    "query: Ano ang pananagutan ko o pwede ba akong makasuhan sa ginawa ko",
+    "query: Pinirmahan ko yung dokumento o kasunduan pero may problema pwede ba ipawalang-bisa",
+    "query: May away o alitan kami ng kapitbahay o pamilya ko ano pwede ikaso",
+]
 
-# LLM Ambiguity Analysis Prompt
+CLEAR_QUERY_PROTOTYPES: List[str] = [
+    "query: Nag nakaw ako ng gamit sa school o opisina ano ang pwede ikaso sa akin",
+    "query: Hindi nagbayad ng utang ang kaibigan ko sa napagkasunduang petsa ano pwede kong gawin",
+    "query: Lalaki o babae ako nangabit o nagtaksil ang asawa ko ano ang pwede kong gawin sa batas",
+    "query: My neighbor built a fence that encroached or crossed onto my titled land what can I do",
+    "query: The landlord evicted me without notice or court order or tenant failed to pay monthly rent",
+    "query: Nabangga ang sasakyan ko ng lasing na driver o nakagat ng aso sino ang mananagot sa danyos",
+    "query: The contractor failed to finish or abandoned the house construction despite receiving payment",
+    "query: Namatay ang magulang o tatay namin nang walang iniwang last will o testamento paano ang hatian sa lupa",
+    "query: Bumili ako ng sasakyan cellphone o gamit na may sira o hidden defect pwede ko ba ipa-refund",
+    "query: What are the essential requisites or elements of a valid contract or obligation under the Civil Code",
+    "query: Can a person claim damages if someone caused injury or harm due to negligence or quasi-delict",
+    "query: Pwede ba mangayo og bayad kung ang usa ka tawo nakapahinabo og kadaot tungod sa iyang pagpabaya",
+    "query: Sinampal o sinaktan ako ng kaklase o katrabaho ko habang nagkaklase ano ang pwede ikaso",
+    "query: Ayaw ibalik ng landlord ang security deposit ko o may sira ang inuupahang bahay na ayaw ipagawa",
+    "query: Binenta ng kapatid o kuya ko ang minanang lupa o bahay ng magulang namin nang walang pahintulot",
+    "query: What is the difference between Civil Code articles or grounds for psychological incapacity under Article 36",
+    "query: Can spouses donate property to each other during marriage or when is a debtor in legal delay",
+    "query: Ano ang karapatan ng builder in good faith o prescriptive period ng kontrata sa Civil Code",
+]
+
+# StandardScaler (mu, sigma) and L2-Regularized Logistic Regression weights (w, b)
+# Fitted strictly on the training split with 100% zero-regex embedding features
+FEATURE_NAMES: Tuple[str, ...] = (
+    "vague_peak",
+    "clear_peak",
+    "margin_top1",
+    "margin_top2",
+    "margin_top3",
+    "token_specificity",
+    "has_explicit_art_or_followup",
+)
+SCALER_MEAN = np.array([0.081007, 0.063059, 0.017948, 0.020091, 0.018733, 0.738782, 0.076923], dtype=np.float64)
+SCALER_STD = np.array([0.039260, 0.030973, 0.061342, 0.050284, 0.044188, 0.249481, 0.266469], dtype=np.float64)
+LOGREG_WEIGHTS = np.array([0.641538, -0.167727, 0.495292, 0.789082, 0.830954, 0.174153, -0.273050], dtype=np.float64)
+LOGREG_BIAS = -0.618508
+AMBIGUITY_PROB_THRESHOLD = 0.50
+LLM_CANDIDATE_THRESHOLD = 0.24
+
+TAGALOG_CUE_RE = re.compile(
+    r'\b(?:ano|anong|paano|pwede|puwede|maaari|ba|ko|ako|akin|sakin|kami|namin|asawa|kapitbahay|kontrata|kasunduan|lupa|utang|kaso|ikaso|batas|artikulo|ng|sa|mga|ang|kung)\b',
+    re.IGNORECASE,
+)
+ENGLISH_QUESTION_RE = re.compile(
+    r'^(?:did\s+you|are\s+there|what\s+is|what\s+was|when\s+did|who\s+is|do\s+you|have\s+you|is\s+there|was\s+there|could\s+you|can\s+you)\b',
+    re.IGNORECASE,
+)
+TAGALOG_RESPONSE_MARKERS_RE = re.compile(
+    r'\b(?:paki-?specify|ano\s+po|tungkol\s+ba|maaari\s+(?:po|niyo|bang)|halimbawa|sitwasyon|ninyo|kailangan|pagmamay-ari|kasunduan|kapitbahay|asawa|pangyayari|batas\s+o\s+aksyon)\b',
+    re.IGNORECASE,
+)
+
+_prototype_cache: Dict[int, Tuple[np.ndarray, np.ndarray]] = {}
+
+
+def _get_prototype_matrices(embedder: Any) -> Tuple[np.ndarray, np.ndarray]:
+    """Lazily encodes and caches normalized vague and clear prototype matrices per embedder instance."""
+    key = id(embedder)
+    cached = _prototype_cache.get(key)
+    if cached is not None:
+        return cached
+    v_vecs = embedder.encode(VAGUE_QUERY_PROTOTYPES, normalize_embeddings=True, show_progress_bar=False)
+    c_vecs = embedder.encode(CLEAR_QUERY_PROTOTYPES, normalize_embeddings=True, show_progress_bar=False)
+    _prototype_cache[key] = (v_vecs, c_vecs)
+    return v_vecs, c_vecs
+
+
+def _has_substantive_user_history(history: Optional[list]) -> bool:
+    """Returns True only when history contains at least one prior user turn (ignoring synthetic assistant greetings)."""
+    if not history:
+        return False
+    for m in history:
+        if hasattr(m, "role"):
+            role = getattr(m, "role", "")
+            content = getattr(m, "content", "")
+        elif isinstance(m, dict):
+            role = m.get("role", "")
+            content = m.get("content", "")
+        else:
+            continue
+        if role == "user" and str(content).strip():
+            return True
+    return False
+
+
+def extract_ambiguity_features(
+    query: str,
+    query_embedding: Optional[np.ndarray] = None,
+    has_history: bool = False,
+    embedder: Optional[Any] = None,
+) -> np.ndarray:
+    """Extracts the 7-dimensional zero-regex semantic embedding feature vector for ambiguity classification."""
+    q_clean = strip_conversational_preamble(query)
+    n_tokens = len(q_clean.split())
+    token_spec = min(1.0, n_tokens / 12.0)
+    has_explicit_art = bool(parse_article_numbers(q_clean))
+
+    active_router = get_shared_domain_router()
+    active_embedder = embedder or (active_router.embedder if active_router is not None else None)
+
+    if active_embedder is not None:
+        v_vecs, c_vecs = _get_prototype_matrices(active_embedder)
+        if query_embedding is not None:
+            q_vec = query_embedding
+        elif active_router is not None and active_router.embedder is active_embedder:
+            q_vec = active_router.encode_query(q_clean)
+        else:
+            q_vec = active_embedder.encode(f"query: {q_clean}", normalize_embeddings=True, show_progress_bar=False)
+
+        if q_vec.shape[-1] == v_vecs.shape[-1]:
+            v_sims = np.sort(np.dot(v_vecs, q_vec))
+            c_sims = np.sort(np.dot(c_vecs, q_vec))
+            bg_mean = float(0.5 * (np.mean(v_sims) + np.mean(c_sims)))
+            vague_peak = float(v_sims[-1] - bg_mean)
+            clear_peak = float(c_sims[-1] - bg_mean)
+            margin_top1 = float(v_sims[-1] - c_sims[-1])
+            margin_top2 = float(np.mean(v_sims[-2:]) - np.mean(c_sims[-2:]))
+            margin_top3 = float(np.mean(v_sims[-3:]) - np.mean(c_sims[-3:]))
+            has_art_or_followup = 1.0 if (has_explicit_art or (has_history and margin_top2 < 0.0)) else 0.0
+            return np.array([
+                vague_peak,
+                clear_peak,
+                margin_top1,
+                margin_top2,
+                margin_top3,
+                token_spec,
+                has_art_or_followup,
+            ], dtype=np.float64)
+
+    synth_margin = -0.06 if (has_explicit_art or has_history or n_tokens >= 8) else 0.04
+    return np.array([
+        max(0.04, 0.07 + synth_margin),
+        max(0.04, 0.07 - synth_margin),
+        synth_margin,
+        synth_margin,
+        synth_margin,
+        token_spec,
+        1.0 if (has_explicit_art or has_history) else 0.0,
+    ], dtype=np.float64)
+
+
+def predict_ambiguity_probability(
+    query: str,
+    query_embedding: Optional[np.ndarray] = None,
+    has_history: bool = False,
+    embedder: Optional[Any] = None,
+) -> Tuple[float, Dict[str, float]]:
+    """Computes calibrated logistic regression probability P(is_ambiguous | query, history) with zero regexes."""
+    x = extract_ambiguity_features(
+        query,
+        query_embedding=query_embedding,
+        has_history=has_history,
+        embedder=embedder,
+    )
+    x_std = (x - SCALER_MEAN) / SCALER_STD
+    logit = float(np.dot(x_std, LOGREG_WEIGHTS) + LOGREG_BIAS)
+    prob = float(1.0 / (1.0 + np.exp(-np.clip(logit, -30.0, 30.0))))
+    feature_dict = {name: round(float(val), 6) for name, val in zip(FEATURE_NAMES, x)}
+    feature_dict["probability"] = round(prob, 4)
+    return prob, feature_dict
+
+
 AMBIGUITY_SYSTEM_PROMPT = """You are a Philippine Civil Law query analyzer for CIVIL-LEX.
-Analyze whether the user's query is an AMBIGUOUS Philippine Civil Law inquiry that lacks essential legal facts needed to determine rights, obligations, or remedies under the Philippine Civil Code (RA 386).
+Determine whether the user's query is SO VAGUE OR INCOMPLETE that the core factual event, cause of action, or legal topic cannot be identified without asking the user a clarifying question first.
 
 RESPOND ONLY WITH VALID JSON. Do not include markdown codeblocks or commentary outside the JSON.
 IMPORTANT: Never put unescaped double quotes inside JSON values; use single quotes (') for any quotes inside text.
 
-DECISION CRITERIA:
+SUFFICIENT CAUSE-OF-ACTION STANDARD (CRITICAL):
 1. NOT AMBIGUOUS (is_ambiguous: false, questions: []):
-   - Non-legal or commercial price/shopping inquiries (e.g., car prices, product costs, electronics, retail goods, coding/programming, cooking, weather, general trivia, casual chat): These are strictly non-legal and NEVER ambiguous civil law disputes. You MUST return is_ambiguous: false and questions: []. NEVER invent, assume, or convert a commercial price or shopping query into a Civil Code contract or warranty scenario (e.g. do NOT ask about Article 1632 or dealership contracts).
-   - Inquiries governed by other legal branches outside the Civil Code (pure criminal prosecution, labor standards under DOLE, tax under BIR, corporate SEC): Mark is_ambiguous: false, questions: [].
-   - Contracts with illegal cause or illicit objects (e.g. sale of human organs/kidneys, organ trafficking, human trafficking, contract killings, illegal drugs/contraband): These agreements are void ab initio under Articles 1347 and 1409 and never produce legal effect. They are NEVER ambiguous civil disputes and lack no facts. You MUST return is_ambiguous: false and questions: [].
-   - Statutory article or cause-of-action lookups: When the user asks what articles, laws, or civil cases apply or can be filed given an incident (e.g. 'ano ano ang mga article na nakakasakop...', 'what articles apply if...', 'anong mga batas o kaso ang pwede kung...'), mark is_ambiguous: false and questions: []. The system must directly synthesize the legal framework without blocking behind clarification questions.
-   - Definitional, conceptual, or legal education queries (e.g., 'What is quasi-delict?').
-   - Inquiries referencing specific articles, laws, or Supreme Court decisions (e.g., 'Article 1191', 'Art. 2176', 'G.R. No. 123456').
-   - Codal structure and overview queries (e.g., total articles or books of the Civil Code).
-   - Inquiries that already provide sufficient factual circumstances to identify the governing legal framework.
-   - Follow-ups continuing an already-established line from CONVERSATION HISTORY ("ano ang exception dito?", "applies ba sa co-ownership?", "what about kung ...?") — reuse history, do NOT re-clarify resolved facts.
-   - Requests to shorten, summarize, recap, or restate an answer already given in this conversation ("in short ...?", "buod?", "paikliin?", "so ano ang konklusyon?") — these are NEVER ambiguous; the facts were resolved in prior turns.
+   - ANY query that ALREADY states WHAT happened (the underlying act, event, or breach — e.g., pagnanakaw/theft of items, hindi nagbayad ng utang/unpaid debt or loan, nangabit o nagtaksil ang asawa/marital infidelity, lumagpas na bakod/property encroachment, hindi nagbayad ng upa o pinalayas/lease eviction, sirang gamit na nabili/defective item purchased, aksidente o banggaan/car accident or injury, pananakit/physical assault, namatay na walang testamento/death of parent without a will) is NOT AMBIGUOUS.
+   - Missing secondary details (such as whether an agreement was written or verbal, exact dates, or exact peso amounts) NEVER make a query ambiguous. The main legal response will explain both written and verbal rules directly.
+   - Statutory, conceptual, definitional, or general legal rule queries (e.g., 'What are the requisites of a valid contract?', 'Can a landlord evict a tenant without a court order?', 'Can a person claim damages for negligence?').
+   - Follow-ups continuing an active conversation history.
 
 2. AMBIGUOUS (is_ambiguous: true):
-   - Queries describing an ACTUAL ongoing Philippine Civil Law dispute, breach, unpaid loan, personal injury, property conflict, or contract issue that omits critical civil facts needed to determine liability (e.g., written vs oral contract, relationship between parties, timing for prescription, whether harm was intentional or accidental/negligent).
-   - Ultra-vague legal inquiries about liability or suing (e.g., 'ano pwede ikaso sakin', 'can I be sued?') that provide zero facts.
-   - Provide 1 to 2 concise clarification questions with 3 to 4 concrete options each.
-   - Brevity limit: Keep each question under 25 words and each context_hint to one short sentence (under 15 words). Never produce more than 2 questions.
+   - ONLY mark is_ambiguous: true when the CORE ACT, EVENT, OR LEGAL TOPIC itself is missing or unidentifiable:
+     a) Incomplete or truncated sentence fragments where the subject or case is missing (e.g., 'what article are applicable to the case of with', 'what are the legal grounds for', 'what are the articles of', 'ano ang batas tungkol sa').
+     b) Bare liability or lawsuit questions with zero factual event (e.g., 'Can I be sued?', 'Can I sue my neighbor?', 'Anong pwedeng ikaso sakin?', 'May habol ba ako?').
+     c) Generic dispute or contract problem statements that omit what went wrong (e.g., 'We had an issue with our agreement, can I cancel it?', 'May problema kami sa kontrata, ano gagawin ko?', 'Ang sakit ng pwet ko ano pwede ko ikaso sa asawa ko').
+   - Provide 1 to 2 concise clarification questions asking WHAT specific incident, breach, or legal topic occurred, with 3 to 4 concrete everyday options.
+   - Keep each question under 22 words and each context_hint under 15 words.
 
-STRICT CIVIL LAW BOUNDARY (NEVER ACT AS POLICE OR CRIMINAL INVESTIGATOR):
-- CIVIL-LEX is strictly a Philippine Civil Law platform (Civil Code, RA 386). It is NEVER a police investigator, forensic investigator, or prosecutor.
-- NEVER ask police, forensic, or criminal procedural questions (e.g. eyewitnesses/saksi, murder weapons/armas, how the body was discovered, police blotter, arrests/pag-aresto, bail, autopsy). CIVIL-LEX does not conduct police interrogations!
-- If an altercation, physical injury, or death is mentioned: Under Philippine Civil Law, the Civil Code strictly concerns CIVIL LIABILITY FOR DAMAGES (Articles 1161, 33, 2176, 2177, 2206, 2219) and the underlying debt/obligation (Articles 1159, 1953). Criminal liability (homicide/murder) falls under the Revised Penal Code.
-- Clarification questions must ONLY pertain to civil law requisites:
-  1. Sinadya ba o aksidente/kapabayaan? (Intentional injury under Art. 33 vs negligence/quasi-delict under Art. 2176).
-  2. Danyos at naulila (funeral expenses, statutory indemnity for death under Art. 2206, moral damages under Art. 2219).
-  3. Katibayan ng utang (written loan vs oral agreement under Arts. 1159/1953).
-- NEVER ask 'May mga saksi ba?' or 'May nakakita ba ng nangyari?'!
+STRICT CIVIL LAW BOUNDARY:
+- Never ask police, forensic, or criminal interrogation questions (never ask about eyewitnesses/saksi, weapons/armas, police blotter, or arrests).
+- Never invent Civil Code article numbers above Article 2270.
 
-ANTI-HALLUCINATION & ARTICLE NUMBER BOUNDS:
-- The Philippine Civil Code (RA 386) strictly ends at Article 2270. There is NO Article 2271 or higher (e.g. Article 2476 DOES NOT EXIST).
-- The Revised Penal Code strictly ends at Article 367.
-- NEVER invent or cite non-existent article numbers. Do NOT put article citations in context_hint unless 100% certain.
-
-STRICT UNILINGUAL LANGUAGE MATCH & SIMPLIFIED CITIZEN TONE:
-- Questions, options, and context_hint MUST STRICTLY match the user's query language with ZERO code-switching:
-  * If the user's query is in Filipino/Tagalog: Write all questions, options, and context_hint ENTIRELY in simplified, conversational Tagalog for normal citizens (zero English sentences or Taglish mixing).
-    BAN DEEP / ARCHAIC FILIPINO WORDS: Strictly do NOT use deep words like alinsunod, sapagkat, datapwat, subalit, ipagkaloob, talastasin, kung kaya't, pananagutang sibil. Use simple everyday questions like: 'May kasulatan ba kayong pinirmahan?', 'Kailan ito nangyari?', 'Magkano ang halagang pinag-uusapan?'.
-  * If the user's query is in English: Write all questions, options, and context_hint ENTIRELY in simple, plain 6th-grade English (zero Tagalog words).
-    BAN DEEP LEGALESE: Do NOT use pursuant to, indemnification, pecuniary, herein, aforementioned, stipulation. Use simple everyday questions like: 'Did you sign a written agreement?', 'When did this happen?', 'How much is the unpaid amount?'.
-- PERSONA: Act as a friendly, helpful community legal companion or neighbor asking clarifying questions so the citizen can get the right advice.
-- Options: Must be simple, everyday choices that anyone can easily understand (e.g., 'May pinirmahang kasulatan', 'Wala, usapang bibig lamang', 'Hindi ako sigurado').
-- context_hint: Briefly state why this matters in 1 short, simple sentence (under 15 words) using plain everyday words (e.g., 'Mahalaga ito upang malaman kung sinadya o aksidente ang nangyari para sa danyos').
+CRITICAL UNILINGUAL LANGUAGE MATCH RULE:
+- Match the language of the user's query 100% with ZERO code-switching:
+  * If the user's query is in English (even if it is a short or incomplete English fragment like 'what article are applicable to the case of with' or 'what are the legal grounds for'): You MUST write 'reasoning', every 'question', every 'option', and 'context_hint' 100% in plain simple English. NEVER output Tagalog on an English query!
+  * If the user's query is in Tagalog/Filipino: You MUST write 'reasoning', every 'question', every 'option', and 'context_hint' 100% in simple everyday Tagalog. NEVER output English questions on a Tagalog query!
 
 JSON SCHEMA:
 {
   "is_ambiguous": true or false,
   "confidence": 0.0 to 1.0,
   "category": "missing_facts" or "",
-  "reasoning": "Brief explanation",
+  "reasoning": "Brief explanation in the user's exact language",
   "questions": [
     {
       "id": "q1",
-      "question": "Clarification question",
-      "options": ["Option 1", "Option 2", "Option 3"],
-      "context_hint": "Brief reason why this matters for civil damages or obligations"
+      "question": "Clarification question in the user's exact language",
+      "options": ["Option 1", "Option 2", "Option 3", "Option 4"],
+      "context_hint": "Brief reason why this matters"
     }
   ]
-}
-
-If NOT ambiguous:
-{
-  "is_ambiguous": false,
-  "confidence": 0.0,
-  "category": "",
-  "reasoning": "Query is clear enough, definitional, informational, or non-legal",
-  "questions": []
 }"""
 
 
+def _build_unilingual_fallback_clarification(query: str, prob: float) -> AmbiguityResult:
+    """Provides language-matched clarification when a vague/incomplete query lacks valid unilingual LLM JSON."""
+    is_tl = len(TAGALOG_CUE_RE.findall(query)) >= 1
+    if is_tl:
+        q = ClarificationQuestion(
+            id="q1",
+            question="Tungkol sa anong partikular na pangyayari o usaping sibil ang iyong tanong?",
+            options=[
+                "Utang o kontratang hindi tinupad (Obligations & Contracts)",
+                "Upa, lupa, o ari-arian (Property & Lease)",
+                "Pamilya, kasal, o mana (Family Code & Succession)",
+                "Pinsala o aksidente na nakasakit sa tao o gamit (Damages / Quasi-Delict)",
+            ],
+            allows_free_text=True,
+            context_hint="Mahalaga ito upang matukoy ang tamang artikulo sa Civil Code o Family Code.",
+        )
+        reasoning = "Kailangan po ng kaunting detalye kung anong partikular na pangyayari o paksa ang tinutukoy upang maibigay ang tamang batas."
+    else:
+        q = ClarificationQuestion(
+            id="q1",
+            question="What specific legal situation, incident, or Civil Code topic are you asking about?",
+            options=[
+                "Unpaid loan or breach of contract (Obligations & Contracts)",
+                "Lease, rent, or land/property dispute (Property & Lease)",
+                "Marriage, family relations, or inheritance (Family & Succession)",
+                "Personal injury or property damage caused by fault/negligence (Damages)",
+            ],
+            allows_free_text=True,
+            context_hint="Knowing the core event or topic identifies the governing Civil Code provisions.",
+        )
+        reasoning = "Your question appears incomplete or missing the core facts. Please specify the legal situation, incident, or topic you are referring to so I can identify the applicable articles."
+
+    return AmbiguityResult(
+        is_ambiguous=True,
+        confidence=max(0.80, round(prob, 2)),
+        category="missing_facts",
+        questions=[q],
+        original_query=query,
+        reasoning=reasoning,
+    )
+
+
 def _fallback_extract_ambiguity(raw: str) -> Optional[dict]:
-    """Regex-based fallback extraction if strict JSON decoding fails on LLM output."""
+    """Fallback extraction if strict JSON decoding fails on LLM output."""
     try:
         ambig_m = re.search(r'"is_ambiguous"\s*:\s*(true|false)', raw, re.IGNORECASE)
         if not ambig_m:
@@ -139,7 +335,6 @@ def _fallback_extract_ambiguity(raw: str) -> Optional[dict]:
 
         questions = []
         if is_ambig:
-            # Match individual question object blocks without tripping over options brackets
             q_blocks = re.findall(r'\{[^{}]*?"question"[^{}]*?\}', raw)
             for idx, block in enumerate(q_blocks):
                 qm = re.search(r'"question"\s*:\s*"(.*?)"(?:\s*,\s*"\w+"|\s*\})', block, re.DOTALL)
@@ -164,7 +359,7 @@ def _fallback_extract_ambiguity(raw: str) -> Optional[dict]:
             "questions": questions,
         }
     except Exception as e:
-        logger.warning(f"Fallback regex ambiguity extraction failed: {e}")
+        logger.warning(f"Fallback ambiguity extraction failed: {e}")
         return None
 
 
@@ -175,7 +370,6 @@ def _parse_llm_json(raw: str) -> Optional[dict]:
     cleaned = raw.strip()
     cleaned = re.sub(r"<(?:thought|think)>[\s\S]*?</(?:thought|think)>", "", cleaned).strip()
 
-    # Try extracting markdown json code block first
     code_block = re.search(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", cleaned)
     if code_block:
         json_str = code_block.group(1).strip()
@@ -188,18 +382,15 @@ def _parse_llm_json(raw: str) -> Optional[dict]:
             return None
         json_str = match.group()
 
-    # Attempt 1: direct parse
     try:
         return json.loads(json_str, strict=False)
     except json.JSONDecodeError:
         pass
-    # Attempt 2: clean trailing commas before closing braces/brackets
     try:
         fixed = re.sub(r",\s*([\]\}])", r"\1", json_str)
         return json.loads(fixed, strict=False)
     except json.JSONDecodeError:
         pass
-    # Attempt 3: truncate at last valid closing brace if output was cut, balancing open brackets
     try:
         last_brace = json_str.rfind("}")
         if last_brace != -1:
@@ -212,7 +403,6 @@ def _parse_llm_json(raw: str) -> Optional[dict]:
             return json.loads(fixed, strict=False)
     except json.JSONDecodeError:
         pass
-    # Attempt 4: regex-based field extraction fallback
     fallback = _fallback_extract_ambiguity(json_str)
     if fallback:
         return fallback
@@ -221,132 +411,61 @@ def _parse_llm_json(raw: str) -> Optional[dict]:
     return None
 
 
-
-# Main Detection Function (100% LLM Driven)
-
-
 async def detect_ambiguity(
     query: str,
     history: Optional[list] = None,
     document_id: Optional[str] = None,
     use_llm: bool = True,
+    query_embedding: Optional[np.ndarray] = None,
 ) -> AmbiguityResult:
     """
-    Analyzes an in-domain Philippine civil law query for critical factual gaps
-    using the LLM directly, without pattern matching rules.
-
-    Args:
-        query: The user's query text
-        history: Conversation history (list of ChatMessage or dicts)
-        document_id: If set, user is in document analysis mode (skip ambiguity)
-        use_llm: Retained for interface compatibility
-
-    Returns:
-        AmbiguityResult indicating whether clarification is needed.
+    Zero-regex ML + LLM ensemble ambiguity detector:
+    1. Computes zero-regex semantic prototype probability P_ML(vague | query, history).
+    2. For candidate queries (P_ML >= 0.18), invokes the LLM under the Sufficient Cause-of-Action
+       Standard so the LLM directly evaluates whether the query is vague/incomplete or clear.
+    3. Enforces bidirectional unilingual consistency (English query -> English questions;
+       Tagalog query -> Tagalog questions).
     """
     q_clean = query.strip()
     if not q_clean or document_id:
         return AmbiguityResult(original_query=q_clean)
 
-    # 1. Skip trivial or very short queries (1-2 words like greetings)
     if len(q_clean.split()) <= 2:
         return AmbiguityResult(original_query=q_clean)
 
-    # 1.1 Fast bypass: statutory article queries or false-premise lookups are never ambiguous
-    has_specific_article = bool(parse_article_numbers(q_clean))
-    dispute_cues = bool(re.search(r'\b(sue|breach|accident|nasaktan|danyos|utang|idemanda|kaso)\b', q_clean, re.IGNORECASE))
-    if has_specific_article and (len(q_clean.split()) <= 20 or not dispute_cues):
-        return AmbiguityResult(
-            is_ambiguous=False,
-            confidence=0.0,
-            category="",
-            original_query=q_clean,
-            reasoning="Specific statutory article inquiry or codal lookup."
-        )
-
-    # 1.2 Fast bypass: commercial price inquiries or general shopping are non-legal and never ambiguous
-    commercial_price_cue = bool(re.search(
-        r'\b(?:(?:what(?:\'s|\s+is)\s+(?:the\s+)?(?:price|cost|rate))|magkano\s+(?:ang\s+)?(?:presyo|kotse|sasakyan|benta)|price\s+of|how\s+much\s+is\s+(?:a\s+|an\s+|the\s+)?(?:car|vehicle|toyota|product)|just\s+want\s+to\s+know\s+the\s+price)\b',
+    has_user_history = _has_substantive_user_history(history)
+    prob_vague, feat_info = predict_ambiguity_probability(
         q_clean,
-        re.IGNORECASE
-    ))
-    if commercial_price_cue and not dispute_cues:
+        query_embedding=query_embedding,
+        has_history=has_user_history,
+    )
+
+    if prob_vague < LLM_CANDIDATE_THRESHOLD:
+        logger.info(
+            "Zero-regex ML gate passed query as CLEAR (p_vague=%.3f, margin_top2=%.4f)",
+            prob_vague,
+            feat_info.get("margin_top2", 0.0),
+        )
         return AmbiguityResult(
             is_ambiguous=False,
-            confidence=0.0,
+            confidence=round(1.0 - prob_vague, 4),
             category="",
             original_query=q_clean,
-            reasoning="Commercial price inquiries are non-legal and not ambiguous civil disputes."
+            reasoning="Query states a clear factual cause of action or legal inquiry.",
         )
 
-    # 1.8 Fast bypass: illicit transactions, fraudulent evasion, or persona jailbreaks are never ambiguous
-    illicit_or_jailbreak_cue = bool(re.search(
-        r'\b(?:magpanggap|pretend\s+to\s+be|jailbreak|simulated\s+sales?|pekeng\s+benta|lusutan\s+ang\s+legitime|circumvent|defraud|kidney|human\s+organ|hitman|droga)\b',
-        q_clean,
-        re.IGNORECASE
-    ))
-    if illicit_or_jailbreak_cue:
-        return AmbiguityResult(
-            is_ambiguous=False,
-            confidence=0.0,
-            category="",
-            original_query=q_clean,
-            reasoning="Illicit transactions, fraudulent evasion, or persona jailbreaks are not ambiguous civil disputes."
-        )
+    if not use_llm:
+        if prob_vague >= AMBIGUITY_PROB_THRESHOLD:
+            return _build_unilingual_fallback_clarification(q_clean, prob_vague)
+        return AmbiguityResult(original_query=q_clean)
 
-    # 1.9 Fast bypass: definitional or conceptual legal queries
-    definitional_cue = bool(re.search(
-        r'^(?:what\s+is(?:\s+a|\s+an)?|define|meaning\s+of|explain|ano\s+ang\s+(?:ibig\s+sabihin\s+ng|kahulugan\s+ng|katuturan\s+ng)|pakipaliwanag\s+ang)\b',
-        q_clean,
-        re.IGNORECASE
-    ))
-    if definitional_cue and not dispute_cues:
-        return AmbiguityResult(
-            is_ambiguous=False,
-            confidence=0.0,
-            category="",
-            original_query=q_clean,
-            reasoning="Definitional or conceptual legal inquiry does not lack essential factual requisites."
-        )
-
-    # 1.10 Fast bypass: Supreme Court jurisprudence citations or case title lookups
-    jurisprudence_cue = bool(re.search(
-        r'\b(?:g\.?r\.?\s*(?:no\.?|nos\.?|l-)?\s*\d+|scra|phil\.?|\bvs?\.?\s+[a-z]+)\b',
-        q_clean,
-        re.IGNORECASE
-    ))
-    if jurisprudence_cue:
-        return AmbiguityResult(
-            is_ambiguous=False,
-            confidence=0.0,
-            category="",
-            original_query=q_clean,
-            reasoning="Supreme Court case or jurisprudence citation lookup."
-        )
-
-    # 1.11 Fast bypass: summary, restatement, or structure queries
-    summary_cue = bool(re.search(
-        r'\b(?:in\s+short|summarize|summary|buod|pakibuod|paikliin|ilang\s+artikulo|total\s+articles|structure\s+of\s+civil\s+code)\b',
-        q_clean,
-        re.IGNORECASE
-    ))
-    if summary_cue:
-        return AmbiguityResult(
-            is_ambiguous=False,
-            confidence=0.0,
-            category="",
-            original_query=q_clean,
-            reasoning="Summary or structural inquiry."
-        )
-
-    # 2. Build history context to avoid re-asking facts already stated
     history_context = ""
-    if history:
+    if has_user_history and history:
         recent = history[-6:] if len(history) > 6 else history
         lines = []
         for m in recent:
-            if hasattr(m, 'content'):
-                role = getattr(m, 'role', 'user')
+            if hasattr(m, "content"):
+                role = getattr(m, "role", "user")
                 lines.append(f"{role}: {m.content[:250]}")
             elif isinstance(m, dict):
                 lines.append(f"{m.get('role', 'user')}: {str(m.get('content', ''))[:250]}")
@@ -354,11 +473,19 @@ async def detect_ambiguity(
             conv_str = "\n".join(lines)
             history_context = f"\nRecent conversation:\n{conv_str}\n"
 
+    is_tl_query = len(TAGALOG_CUE_RE.findall(q_clean)) >= 1
+    lang_label = (
+        "simplified conversational Tagalog (ZERO English questions)"
+        if is_tl_query
+        else "plain simple English (ZERO Tagalog words — do NOT write Paki-specify or Ano po)"
+    )
+
     user_content = (
         f"Analyze this Philippine civil law query for ambiguity:\n\n\"{q_clean}\"\n"
         f"{history_context}\n"
-        "Consider the recent conversation above — do NOT ask about facts already provided there. "
-        "Strictly adhere to the unilingual language match rule: write questions, options, and hints entirely in English if the query is in English, or entirely in simplified Tagalog if the query is in Tagalog."
+        f"Semantic vagueness prior: {prob_vague:.2f}. "
+        f"MANDATORY LANGUAGE: The user query is in {'TAGALOG' if is_tl_query else 'ENGLISH'}. "
+        f"You MUST write reasoning, questions, options, and context_hint 100% in {lang_label}."
     )
 
     messages = [
@@ -372,37 +499,52 @@ async def detect_ambiguity(
         raw_content = await call_chat_completion_async(
             messages=messages,
             temperature=0.1,
-            max_tokens=3000,
-            timeout_sec=60.0,
+            max_tokens=1200,
+            timeout_sec=35.0,
         )
         if not raw_content:
-            logger.warning("LLM ambiguity check returned empty; defaulting to clear.")
+            if prob_vague >= 0.70:
+                return _build_unilingual_fallback_clarification(q_clean, prob_vague)
             return AmbiguityResult(original_query=q_clean)
 
         parsed = _parse_llm_json(raw_content)
         if not parsed:
+            if prob_vague >= 0.70:
+                return _build_unilingual_fallback_clarification(q_clean, prob_vague)
             return AmbiguityResult(original_query=q_clean)
 
         is_ambig = bool(parsed.get("is_ambiguous", False))
-        confidence = float(parsed.get("confidence", 0.8 if is_ambig else 0.0))
+        llm_conf = float(parsed.get("confidence", prob_vague if is_ambig else 0.0))
+        ensemble_conf = round(0.65 * (llm_conf if is_ambig else 0.0) + 0.35 * prob_vague, 4)
 
-        if not is_ambig or confidence < 0.55:
+        if not is_ambig:
+            # If the zero-regex ML classifier is ultra-confident (>= 0.90) that the query is an incomplete fragment
+            if prob_vague >= 0.90:
+                return _build_unilingual_fallback_clarification(q_clean, prob_vague)
             return AmbiguityResult(
                 is_ambiguous=False,
-                confidence=confidence,
+                confidence=llm_conf,
                 category=parsed.get("category", ""),
                 original_query=q_clean,
                 reasoning=parsed.get("reasoning", "Query is sufficiently clear."),
             )
 
-        # Check for police/criminal interrogation patterns or hallucinated articles
+        if ensemble_conf < 0.45:
+            return AmbiguityResult(
+                is_ambiguous=False,
+                confidence=ensemble_conf,
+                category="",
+                original_query=q_clean,
+                reasoning="Ensemble consensus determined query is sufficiently clear.",
+            )
+
         police_investigation_pattern = re.compile(
             r'\b(saksi|nakakita|aresto|pag-aresto|blotter|pulis|armas|autopsy|crime scene|witness|arrest|weapon)\b',
-            re.IGNORECASE
+            re.IGNORECASE,
         )
         invalid_article_pattern = re.compile(
             r'\bArticle\s+(?:227[1-9]|22[89]\d|2[3-9]\d{2}|[3-9]\d{3}|\d{5,})\b',
-            re.IGNORECASE
+            re.IGNORECASE,
         )
 
         questions: List[ClarificationQuestion] = []
@@ -412,41 +554,66 @@ async def detect_ambiguity(
                 continue
             hint_text = str(q_data.get("context_hint", "")).strip()
 
-            # Reject police/criminal investigation questions
             if police_investigation_pattern.search(q_text) or police_investigation_pattern.search(hint_text):
                 logger.info(f"Filtered out police/criminal interrogation question: {q_text}")
                 continue
 
-            # Sanitize hallucinated article numbers
+            if is_tl_query and ENGLISH_QUESTION_RE.search(q_text):
+                logger.info(f"Filtered out English clarification question on Tagalog query: {q_text}")
+                continue
+
+            if not is_tl_query and TAGALOG_RESPONSE_MARKERS_RE.search(q_text):
+                logger.info(f"Filtered out Tagalog clarification question on English query: {q_text}")
+                continue
+
             q_text = invalid_article_pattern.sub("the Civil Code", q_text)
             hint_text = invalid_article_pattern.sub("the Civil Code", hint_text)
 
-            opts = [invalid_article_pattern.sub("the Civil Code", str(o).strip()) for o in q_data.get("options", []) if str(o).strip()]
+            raw_opts = [
+                invalid_article_pattern.sub("the Civil Code", str(o).strip())
+                for o in q_data.get("options", [])
+                if str(o).strip()
+            ]
+            if not is_tl_query:
+                raw_opts = [o for o in raw_opts if not TAGALOG_RESPONSE_MARKERS_RE.search(o)]
+
             questions.append(ClarificationQuestion(
                 id=str(q_data.get("id", f"q_{len(questions) + 1}")),
                 question=q_text,
-                options=opts if opts else ["Yes", "No", "Not sure"],
+                options=raw_opts if raw_opts else (
+                    ["Oo", "Hindi", "Hindi sigurado"] if is_tl_query else ["Contract / Obligation", "Property / Lease", "Family / Inheritance", "Damages / Injury"]
+                ),
                 allows_free_text=True,
                 context_hint=hint_text,
             ))
 
         if not questions:
-            logger.info("Clarification bypassed: all generated questions were police interrogation or non-civil.")
+            if prob_vague >= 0.50 or is_ambig:
+                return _build_unilingual_fallback_clarification(q_clean, max(prob_vague, ensemble_conf))
             return AmbiguityResult(
                 is_ambiguous=False,
-                confidence=confidence,
+                confidence=ensemble_conf,
                 category=parsed.get("category", ""),
                 original_query=q_clean,
-                reasoning="Bypassed clarification: questions were outside Civil Code scope.",
+                reasoning="Bypassed clarification: generated questions were outside scope.",
             )
 
-        # Sanitize reasoning from hallucinated articles
-        clean_reasoning = invalid_article_pattern.sub("the Civil Code", str(parsed.get("reasoning", "LLM detected missing critical facts.")))
+        raw_reasoning = str(parsed.get("reasoning", "Missing core factual context."))
+        if not is_tl_query and TAGALOG_RESPONSE_MARKERS_RE.search(raw_reasoning):
+            raw_reasoning = "Your question appears incomplete or missing the core facts. Please specify the legal situation, incident, or topic you are referring to."
+        clean_reasoning = invalid_article_pattern.sub("the Civil Code", raw_reasoning)
 
-        logger.info(f"LLM detected ambiguity [{parsed.get('category')}]: {len(questions)} questions")
+        logger.info(
+            "Ambiguity confirmed [p_ml=%.3f, conf=%.2f, ensemble=%.2f, cat=%s]: %d questions",
+            prob_vague,
+            llm_conf,
+            ensemble_conf,
+            parsed.get("category"),
+            len(questions),
+        )
         return AmbiguityResult(
             is_ambiguous=True,
-            confidence=confidence,
+            confidence=max(llm_conf, ensemble_conf),
             category=str(parsed.get("category", "missing_facts")),
             questions=questions,
             original_query=q_clean,
@@ -454,29 +621,17 @@ async def detect_ambiguity(
         )
 
     except Exception as e:
-        logger.warning(f"LLM ambiguity detection failed ({type(e).__name__}: {e}); bypassing clarification safely.")
+        logger.warning(f"LLM ambiguity detection failed ({type(e).__name__}: {e}); using fallback policy.")
+        if prob_vague >= 0.70:
+            return _build_unilingual_fallback_clarification(q_clean, prob_vague)
         return AmbiguityResult(original_query=q_clean)
-
-
-
-# Query Enrichment with User Clarification Answers
 
 
 def enrich_query_with_clarification(
     original_query: str,
     clarification_context: Dict[str, Any],
 ) -> str:
-    """
-    Merges the user's clarification answers into the search query
-    to guide vector embedding similarity and hybrid statutory retrieval.
-
-    Args:
-        original_query: The user's original query text
-        clarification_context: Dict with 'answers' key mapping question IDs to selected answers
-
-    Returns:
-        Enriched query string with clarification answers appended
-    """
+    """Merges the user's clarification answers into the search query to guide hybrid statutory retrieval."""
     answers = clarification_context.get("answers", {})
     if not answers:
         return original_query

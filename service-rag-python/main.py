@@ -12,8 +12,8 @@ from dotenv import load_dotenv
 import psycopg2
 from psycopg2 import pool
 from psycopg2.extras import RealDictCursor
-from pydantic import BaseModel
-from typing import List, Dict, Optional, Any
+from pydantic import BaseModel, Field
+from typing import List, Dict, Optional, Any, Literal
 from contextlib import asynccontextmanager
 import sys
 import logging
@@ -24,16 +24,19 @@ from core.config import (
 )
 from core.queue_manager import queue_manager
 from core.article_parser import (
-    parse_article_numbers, 
-    is_dispute_query, 
+    parse_article_numbers,
+    is_dispute_query,
     is_matching_article_id,
     is_compound_or_multi_intent_query,
     is_jurisprudence_query,
     get_out_of_bounds_articles,
     resolve_candidate_article_ids,
+    detect_statute_mention,
+    FAMILY_CODE_PATTERNS,
     parse_gr_numbers,
     extract_case_parties,
-    extract_case_title_candidate
+    extract_case_title_candidate,
+    bold_article_references,
 )
 from services import memory as session_memory
 from services import followups as followup_svc
@@ -51,6 +54,12 @@ logging.basicConfig(
 
 from services.document import extract_and_process_document, reindex_document_text, set_shared_model
 from services.llm_client import generate_response_stream, close_llm_clients, set_model_offline, check_model_readiness
+from services.translator import (
+    MAX_TRANSLATE_CHARS,
+    TranslationServiceError,
+    close_translator_client,
+    translate_legal_markdown,
+)
 from services.nli import score_faithfulness_async as nli_score_faithfulness_async, score_faithfulness as nli_score_faithfulness_sync, _compute_lexical_coverage
 from services.ambiguity import detect_ambiguity, enrich_query_with_clarification
 from services.domain_router import (
@@ -111,6 +120,10 @@ async def lifespan(app: FastAPI):
         await close_llm_clients()
     except Exception as e:
         logging.warning(f"Error closing LLM clients: {e}")
+    try:
+        await close_translator_client()
+    except Exception as e:
+        logging.warning(f"Error closing translator client: {e}")
 
 app = FastAPI(title="CIVIL-LEX RAG Service API", lifespan=lifespan)
 
@@ -847,6 +860,27 @@ async def cancel_generation(cancel_req: CancelRequest):
         return {"status": "cancelled", "session_id": session_id}
     return {"status": "not_found_or_already_done", "session_id": session_id}
 
+class TranslateRequest(BaseModel):
+    text: str = Field(..., min_length=1, max_length=MAX_TRANSLATE_CHARS)
+    target_lang: Literal["en", "tl"]
+    source_lang: Optional[Literal["en", "tl", "auto"]] = "auto"
+
+@app.post("/translate")
+async def translate_text_endpoint(req: TranslateRequest):
+    """Fast non-LLM English <-> Tagalog Markdown translation bypassing the GPU queue."""
+    if not req.text.strip():
+        raise HTTPException(status_code=400, detail="Text to translate cannot be empty.")
+    try:
+        return await translate_legal_markdown(
+            req.text,
+            target_lang=req.target_lang,
+            source_lang=req.source_lang or "auto",
+        )
+    except TranslationServiceError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
 @app.get("/stream/active")
 async def active_stream(session_id: str, raw_req: Request):
     user_id = raw_req.headers.get("x-user-id", "")
@@ -1088,21 +1122,35 @@ def align_refusal_language(text: str, lang: str = "en") -> str:
     return text
 
 
-def fetch_article_citations(art_nums: List[int], query: str = "") -> List[dict]:
+def fetch_article_citations(
+    art_nums: List[int],
+    query: str = "",
+    *,
+    target_ids_override: Optional[List[str]] = None,
+    query_embedding: Optional[list] = None,
+) -> List[dict]:
     # Retrieves formatted citation dicts for valid statutory articles across Civil Code and Family Code
-    if not art_nums:
+    if not art_nums and not target_ids_override:
         return []
-    target_ids = resolve_candidate_article_ids(query, [str(n) for n in art_nums])
+    target_ids = list(target_ids_override) if target_ids_override else resolve_candidate_article_ids(query, [str(n) for n in art_nums])
     if not target_ids:
         target_ids = [f"RA386-ART{n}" for n in art_nums if 1 <= int(n) <= 2270]
     conn = get_db_connection()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("""
-                SELECT chunk_id, parent_type, parent_id, content
-                FROM document_chunks
-                WHERE parent_id = ANY(%s) AND parent_type = 'article';
-            """, (target_ids,))
+            if query_embedding is not None:
+                cur.execute("""
+                    SELECT chunk_id, parent_type, parent_id, content,
+                           (1 - (embedding <=> %s::vector)) AS similarity
+                    FROM document_chunks
+                    WHERE parent_id = ANY(%s) AND parent_type = 'article';
+                """, (query_embedding, target_ids))
+            else:
+                cur.execute("""
+                    SELECT chunk_id, parent_type, parent_id, content
+                    FROM document_chunks
+                    WHERE parent_id = ANY(%s) AND parent_type = 'article';
+                """, (target_ids,))
             chunk_rows = cur.fetchall()
 
             cur.execute("""
@@ -1112,13 +1160,17 @@ def fetch_article_citations(art_nums: List[int], query: str = "") -> List[dict]:
             """, (target_ids,))
             meta_map = {row['article_id']: dict(row) for row in cur.fetchall()}
 
-            citations = []
-            seen_ids = set()
+            chunk_by_pid = {}
             for row in chunk_rows:
                 pid = row['parent_id']
-                if pid in seen_ids:
+                if pid not in chunk_by_pid:
+                    chunk_by_pid[pid] = row
+
+            citations = []
+            for idx, pid in enumerate(target_ids):
+                row = chunk_by_pid.get(pid)
+                if not row:
                     continue
-                seen_ids.add(pid)
                 meta = meta_map.get(pid, {})
                 art_num = meta.get('article_number')
                 if pid.startswith("EO209-"):
@@ -1127,6 +1179,15 @@ def fetch_article_citations(art_nums: List[int], query: str = "") -> List[dict]:
                     title_str = f"Article {art_num} (Republic Act No. 386 - Civil Code of the Philippines)"
                 else:
                     title_str = f"Civil Code Provision ({pid})"
+                real_sim = float(row.get('similarity')) if row.get('similarity') is not None else None
+                if real_sim is not None:
+                    initial_suit = calibrate_suitability_score(real_sim, is_exact=False, is_active=True)
+                    sim_val = real_sim
+                    exact_flag = False
+                else:
+                    initial_suit = calibrate_suitability_score(0.95, is_exact=True, is_active=True, exact_rank=idx)
+                    sim_val = 0.95
+                    exact_flag = True
                 citations.append({
                     'chunk_id': row['chunk_id'],
                     'parent_type': 'article',
@@ -1134,11 +1195,14 @@ def fetch_article_citations(art_nums: List[int], query: str = "") -> List[dict]:
                     'title': title_str,
                     'content': row.get('content', ''),
                     'metadata': meta,
-                    'is_exact': True,
-                    'similarity': 0.95,
-                    'suitability_percent': 98.5,
+                    'is_exact': exact_flag,
+                    'is_in_context': True,
+                    'rank_status': 'primary',
+                    'similarity': sim_val,
+                    'suitability_percent': initial_suit,
+                    'display_suitability': initial_suit,
                 })
-            return citations
+            return enforce_unique_decreasing_suitability(citations)
     except Exception as e:
         logging.error(f"Error fetching article citations for {art_nums}: {e}")
         return []
@@ -1146,60 +1210,366 @@ def fetch_article_citations(art_nums: List[int], query: str = "") -> List[dict]:
         conn.close()
 
 
+_GENERIC_CASE_PARTY_TOKENS = frozenset({
+    "heirs", "spouses", "estate", "republic", "philippines", "philippine", "people",
+    "court", "appeals", "supreme", "intermediate", "appellate", "regional", "trial",
+    "municipal", "metropolitan", "city", "province", "municipality", "government",
+    "honorable", "judge", "justice", "secretary", "director", "commissioner",
+    "office", "department", "bureau", "board", "commission", "authority",
+    "corporation", "corp", "company", "incorporated", "inc", "limited", "ltd",
+    "bank", "national", "development", "investment", "commercial", "insurance",
+    "petitioner", "petitioners", "respondent", "respondents", "plaintiff", "defendant",
+    "versus", "contra", "matter", "petition", "deceased", "represented", "minor",
+    "jose", "juan", "maria", "pedro", "santos", "reyes", "cruz", "dela", "garcia",
+})
+_PUBLIC_PARTY_PATTERN = re.compile(
+    r'\b(?:republic\s+of\s+the\s+philippines|people\s+of\s+the\s+philippines|court\s+of\s+appeals|intermediate\s+appellate\s+court|sandiganbayan|hon\.?\s+judge)\b',
+    re.IGNORECASE,
+)
+_CASE_CONTEXT_CUE_PATTERN = re.compile(
+    r'\b(?:v\.|vs\.|versus|g\.r\.|supreme\s+court|korte\s+suprema|case|kaso|ruling|held|decided|doctrine|doktrina|hatol|desisyon)\b',
+    re.IGNORECASE,
+)
+_FAMILY_CODE_EXPLICIT_PATTERN = re.compile(
+    r'\b(?:family\s+code|executive\s+order\s+(?:no\.?\s*)?209|e\.?o\.?\s*209)\b',
+    re.IGNORECASE,
+)
+_CIVIL_CODE_EXPLICIT_PATTERN = re.compile(
+    r'\b(?:civil\s+code|republic\s+act\s+(?:no\.?\s*)?386|r\.?a\.?\s*386|kodigo\s+sibil)\b',
+    re.IGNORECASE,
+)
+
+
+def _extract_article_num_from_citation(cit: Dict[str, Any]) -> Optional[int]:
+    meta = cit.get("metadata") or {}
+    art_no = meta.get("article_number") or cit.get("article_number")
+    try:
+        if art_no is not None and int(art_no) > 0:
+            return int(art_no)
+    except (ValueError, TypeError):
+        pass
+    pid = str(cit.get("parent_id") or "")
+    m = re.search(r'(?:RA386|EO209)-ART(\d+)', pid, re.IGNORECASE)
+    return int(m.group(1)) if m else None
+
+
+def _detect_article_statute_preference(full_text: str, art_num: int, query: str = "") -> str:
+    # Disambiguates EO 209 (Family Code) vs RA 386 (Civil Code) for overlapping articles 1..257
+    if art_num > 257:
+        return "CC"
+    pat = re.compile(
+        rf'(?:\b(?:articles?|arts?\.?|artikulo)\s*(?:no\.?\s*)?){art_num}(?!\d)',
+        re.IGNORECASE,
+    )
+    windows = []
+    for m in pat.finditer(full_text):
+        start = max(0, m.start() - 120)
+        end = min(len(full_text), m.end() + 140)
+        windows.append(full_text[start:end])
+
+    fc_explicit = any(_FAMILY_CODE_EXPLICIT_PATTERN.search(w) for w in windows)
+    cc_explicit = any(_CIVIL_CODE_EXPLICIT_PATTERN.search(w) for w in windows)
+    if fc_explicit and not cc_explicit:
+        return "FC"
+    if cc_explicit and not fc_explicit:
+        return "CC"
+    if fc_explicit and cc_explicit:
+        return "BOTH"
+
+    q_statute = detect_statute_mention(query)
+    if q_statute in ("FC", "CC"):
+        return q_statute
+    combined_local = " ".join(windows) + " " + (query or "")
+    if any(re.search(p, combined_local, re.IGNORECASE) for p in FAMILY_CODE_PATTERNS):
+        return "FC"
+    return "CC"
+
+
+def _normalize_gr_token(raw: str) -> str:
+    cleaned = re.sub(r'^(?:G\.?\s*R\.?\s*(?:NOS?\.?|NUMBER)?\s*)', '', str(raw or '').strip(), flags=re.IGNORECASE)
+    return re.sub(r'[^A-Za-z0-9]', '', cleaned).upper()
+
+
+def _is_case_cited_in_text(cit: Dict[str, Any], full_text: str, cited_gr_tokens: set) -> bool:
+    meta = cit.get("metadata") or {}
+    gr_raw = str(meta.get("gr_number") or "").strip()
+    pid = str(cit.get("parent_id") or "").strip()
+
+    # 1. Exact boundary-safe G.R. number match
+    gr_candidates = set()
+    if gr_raw:
+        norm_gr = _normalize_gr_token(gr_raw)
+        if norm_gr:
+            gr_candidates.add(norm_gr)
+            stripped_l = re.sub(r'^L', '', norm_gr)
+            if stripped_l and len(stripped_l) >= 3:
+                gr_candidates.add(stripped_l)
+    pid_match = re.match(r'^GR[_-]([A-Za-z]?\d+)', pid, re.IGNORECASE)
+    if pid_match:
+        gr_candidates.add(pid_match.group(1).upper())
+
+    if gr_candidates and (gr_candidates & cited_gr_tokens):
+        return True
+
+    # 2. Distinctive case title / party match
+    title = str(meta.get("title") or "").strip()
+    if not title:
+        return False
+
+    norm_text = re.sub(r'\s+', ' ', full_text).lower()
+    norm_title = re.sub(r'\s+', ' ', title).lower()
+    if len(norm_title) >= 10 and norm_title in norm_text:
+        return True
+
+    sides = re.split(r'\s+(?:v\.?|vs\.?|versus|contra)\s+', title, maxsplit=1, flags=re.IGNORECASE)
+    if len(sides) != 2:
+        return False
+
+    def distinctive_tokens(side: str) -> List[str]:
+        raw_toks = re.findall(r'[A-Za-z][A-Za-z\'-]{2,}', side)
+        out = []
+        for tok in raw_toks:
+            low = tok.lower().strip("'-")
+            if len(low) >= 4 and low not in _GENERIC_CASE_PARTY_TOKENS:
+                out.append(low)
+        return out
+
+    def has_word(tok: str) -> bool:
+        return bool(re.search(rf'(?<![a-z0-9]){re.escape(tok)}(?![a-z0-9])', norm_text))
+
+    toks_a = distinctive_tokens(sides[0])
+    toks_b = distinctive_tokens(sides[1])
+    hit_a = any(has_word(t) for t in toks_a)
+    hit_b = any(has_word(t) for t in toks_b)
+    if hit_a and hit_b:
+        return True
+
+    # Handle public-party cases (e.g. "Chi Ming Tsoi vs. Court of Appeals")
+    a_public = bool(_PUBLIC_PARTY_PATTERN.search(sides[0])) or not toks_a
+    b_public = bool(_PUBLIC_PARTY_PATTERN.search(sides[1])) or not toks_b
+    if _CASE_CONTEXT_CUE_PATTERN.search(full_text):
+        if b_public and any(len(t) >= 5 and has_word(t) for t in toks_a):
+            return True
+        if a_public and any(len(t) >= 5 and has_word(t) for t in toks_b):
+            return True
+    return False
+
+
+def _is_structural_article_referenced(cit: Dict[str, Any], full_text: str) -> bool:
+    if not is_active_citation(cit):
+        return False
+    pid = str(cit.get("parent_id") or "").upper()
+    low = full_text.lower()
+    if "STRUCTURE" in pid:
+        return bool(re.search(r'\b(?:2,?270|four\s+books|apat\s+na\s+aklat|preliminary\s+title|book\s+i\b|structure)\b', low))
+    if "GENERAL-INFO" in pid or "PREAMBLE" in pid:
+        return bool(re.search(r'\b(?:1949|1950|1987|1988|june\s+18|august\s+30|enacted|effectivity|overview|saklaw\s+ng\s+civil\s+code)\b', low))
+    if "SPECIAL-LAWS" in pid:
+        return bool(re.search(r'\b(?:special\s+laws?|amendments?|maceda|recto|small\s+claims|bp\s*22)\b', low))
+    return False
+
+
 def reconcile_response_citations(
-    full_text: str, 
-    existing_citations: Optional[List[dict]] = None
+    full_text: str,
+    existing_citations: Optional[List[dict]] = None,
+    *,
+    query: str = "",
+    document_id: Optional[str] = None,
+    prior_citations: Optional[List[dict]] = None,
+    query_embedding: Optional[list] = None,
 ) -> List[dict]:
-    # Extracts all valid Civil Code article references from full_text and ensures citations exist
-    cits = list(existing_citations or [])
-    if not full_text.strip():
-        return cits
+    # Bidirectional answer-grounded reconciliation: keeps only authorities cited in full_text
+    # (plus active uploaded document excerpts), reuses prior-turn session citations before refetching,
+    # and places cited statutory/jurisprudence authorities ahead of document excerpts.
+    cits = [dict(c) for c in (existing_citations or [])]
+    if not full_text or not full_text.strip():
+        return enforce_unique_decreasing_suitability([c for c in cits if is_active_citation(c)])
 
     try:
-        mentioned_raw = parse_article_numbers(full_text)
-        if not mentioned_raw:
-            return cits
-
-        mentioned_nums = []
+        mentioned_raw = parse_article_numbers(
+            full_text,
+            allow_bare_numbers=False,
+            strict_external_exclusion=False,
+        )
+        mentioned_nums: List[int] = []
         for n in mentioned_raw:
             try:
-                mentioned_nums.append(int(n))
+                val = int(n)
+                if 1 <= val <= 2270 and val not in mentioned_nums:
+                    mentioned_nums.append(val)
             except (ValueError, TypeError):
                 pass
+        mentioned_set = set(mentioned_nums)
 
-        if not mentioned_nums:
-            return cits
+        cited_gr_tokens = set()
+        for raw_gr in parse_gr_numbers(full_text):
+            norm = _normalize_gr_token(raw_gr)
+            if norm:
+                cited_gr_tokens.add(norm)
+                stripped_l = re.sub(r'^L', '', norm)
+                if stripped_l and len(stripped_l) >= 3:
+                    cited_gr_tokens.add(stripped_l)
 
-        existing_art_nums = set()
+        statute_prefs = {
+            num: _detect_article_statute_preference(full_text, num, query)
+            for num in mentioned_nums
+        }
+
+        matched_existing: List[dict] = []
+        matched_art_nums: set = set()
+        matched_pids: set = set()
+
+        # Group existing numeric articles by number to resolve EO209 vs RA386 cleanly
+        existing_articles_by_num: Dict[int, List[dict]] = {}
         for c in cits:
-            art_no = (c.get("metadata") or {}).get("article_number") or c.get("article_number")
-            if art_no:
-                try:
-                    existing_art_nums.add(int(art_no))
-                except (ValueError, TypeError):
-                    pass
+            if c.get("parent_type") == "article":
+                anum = _extract_article_num_from_citation(c)
+                if anum is not None:
+                    existing_articles_by_num.setdefault(anum, []).append(c)
+
+        for c in cits:
+            ptype = c.get("parent_type")
             pid = str(c.get("parent_id") or "")
-            m = re.search(r'(?:RA386|EO209)-ART(\d+)', pid)
-            if m:
-                existing_art_nums.add(int(m.group(1)))
 
-        missing_nums = [n for n in mentioned_nums if n not in existing_art_nums]
-        new_cits = fetch_article_citations(missing_nums, full_text) if missing_nums else []
-
-        # Deduplicate final citations list by parent_id
-        final_cits = []
-        seen_pids = set()
-        for c in (cits + new_cits):
-            pid = c.get("parent_id")
-            if pid and pid in seen_pids:
+            if ptype == "user_document":
+                if is_active_citation(c) and (not document_id or pid == str(document_id)):
+                    matched_existing.append(c)
                 continue
+
+            if ptype == "case" or ptype == "jurisprudence" or pid.startswith("GR_"):
+                if _is_case_cited_in_text(c, full_text, cited_gr_tokens):
+                    was_oor = not is_active_citation(c)
+                    promoted = dict(c)
+                    promoted["is_in_context"] = True
+                    promoted["rank_status"] = "primary"
+                    if was_oor:
+                        recal = calibrate_suitability_score(
+                            similarity=float(promoted.get("similarity", 0.0) or 0.0),
+                            rrf_score=float(promoted.get("rrf_score", 0.0) or 0.0),
+                            is_exact=bool(promoted.get("is_exact", False)),
+                            is_active=True,
+                        )
+                        promoted["suitability_percent"] = recal
+                        promoted["display_suitability"] = recal
+                    matched_existing.append(promoted)
+                    if pid:
+                        matched_pids.add(pid)
+                continue
+
+            if ptype == "article":
+                anum = _extract_article_num_from_citation(c)
+                if anum is None:
+                    if _is_structural_article_referenced(c, full_text):
+                        matched_existing.append(c)
+                        if pid:
+                            matched_pids.add(pid)
+                    continue
+
+                if anum not in mentioned_set:
+                    continue
+
+                pref = statute_prefs.get(anum, "CC")
+                siblings = existing_articles_by_num.get(anum, [])
+                has_fc_sibling = any(str(s.get("parent_id") or "").upper().startswith("EO209-") for s in siblings)
+                has_cc_sibling = any(str(s.get("parent_id") or "").upper().startswith("RA386-") for s in siblings)
+
+                pid_upper = pid.upper()
+                if pref == "FC" and pid_upper.startswith("RA386-") and has_fc_sibling:
+                    continue
+                if pref == "CC" and pid_upper.startswith("EO209-") and has_cc_sibling:
+                    continue
+
+                was_oor = not is_active_citation(c)
+                promoted = dict(c)
+                promoted["is_in_context"] = True
+                promoted["rank_status"] = "primary"
+                if was_oor:
+                    recal = calibrate_suitability_score(
+                        similarity=float(promoted.get("similarity", 0.0) or 0.0),
+                        rrf_score=float(promoted.get("rrf_score", 0.0) or 0.0),
+                        is_exact=bool(promoted.get("is_exact", False)),
+                        is_active=True,
+                    )
+                    promoted["suitability_percent"] = recal
+                    promoted["display_suitability"] = recal
+                matched_existing.append(promoted)
+                matched_art_nums.add(anum)
+                if pid:
+                    matched_pids.add(pid)
+
+        # Resolve remaining cited articles from prior turns of the same conversation before hitting DB
+        for pc in (prior_citations or []):
+            if not isinstance(pc, dict) or pc.get("parent_type") != "article":
+                continue
+            anum = _extract_article_num_from_citation(pc)
+            if anum is None or anum not in mentioned_set or anum in matched_art_nums:
+                continue
+            pid = str(pc.get("parent_id") or "")
+            pid_upper = pid.upper()
+            pref = statute_prefs.get(anum, "CC")
+            if pref == "FC" and pid_upper.startswith("RA386-"):
+                continue
+            if pref == "CC" and pid_upper.startswith("EO209-"):
+                continue
+            reused = dict(pc)
+            reused["is_in_context"] = True
+            reused["rank_status"] = "primary"
+            reused["_from_prior_session"] = True
+            matched_existing.append(reused)
+            matched_art_nums.add(anum)
             if pid:
-                seen_pids.add(pid)
-            final_cits.append(c)
-        return final_cits
+                matched_pids.add(pid)
+
+        missing_nums = [n for n in mentioned_nums if n not in matched_art_nums]
+        new_cits: List[dict] = []
+        if missing_nums:
+            disambiguated_ids: List[str] = []
+            for n in missing_nums:
+                pref = statute_prefs.get(n, "CC")
+                if pref == "FC" and 1 <= n <= 257:
+                    disambiguated_ids.append(f"EO209-ART{n}")
+                elif pref == "BOTH" and 1 <= n <= 257:
+                    disambiguated_ids.append(f"EO209-ART{n}")
+                    disambiguated_ids.append(f"RA386-ART{n}")
+                else:
+                    disambiguated_ids.append(f"RA386-ART{n}")
+            fetch_kwargs: Dict[str, Any] = {"target_ids_override": disambiguated_ids}
+            if query_embedding is not None:
+                fetch_kwargs["query_embedding"] = query_embedding
+            new_cits = fetch_article_citations(
+                missing_nums,
+                full_text,
+                **fetch_kwargs,
+            )
+
+        deduped: List[dict] = []
+        seen_keys: set = set()
+        for c in (matched_existing + new_cits):
+            if c.get("parent_type") == "user_document":
+                ckey = str(c.get("chunk_id") or f"doc_{c.get('parent_id')}_{str(c.get('content', ''))[:40]}")
+            else:
+                ckey = str(c.get("parent_id") or c.get("chunk_id") or "")
+            if ckey and ckey in seen_keys:
+                continue
+            if ckey:
+                seen_keys.add(ckey)
+            deduped.append(c)
+
+        # Place cited statutory articles & jurisprudence ahead of uploaded document excerpts so statutes lead in UI
+        statutes_and_cases = [c for c in deduped if c.get("parent_type") != "user_document"]
+        doc_excerpts = [c for c in deduped if c.get("parent_type") == "user_document"]
+        final_cits = statutes_and_cases + doc_excerpts
+
+        # Safety fallback: retain only the #1 primary active authority if an in-domain response omitted explicit article refs
+        if not final_cits and cits:
+            primary_fallback = next((dict(c) for c in cits if is_active_citation(c)), None)
+            if primary_fallback is not None:
+                final_cits = [primary_fallback]
+
+        return enforce_unique_decreasing_suitability(final_cits, preserve_active_first=True, reassign_ranks=True)
     except Exception as e:
         logging.error(f"Error reconciling citations from text: {e}")
-        return cits
+        return enforce_unique_decreasing_suitability([c for c in cits if is_active_citation(c)])
 
 
 def classify_query_intent(
@@ -1433,10 +1803,16 @@ LEGAL_DOMAIN_EXPANSIONS = [
     },
     {
         "patterns": [
+            r'\b(?:repair|repairs|deduct\w*\s+(?:repair|from\s+rent)|abate|abatement|withhold\s+rent|suspend\s+rent|maintenance|leak|roof|plumbing|useful\s+improvement|kumpuni|pagpapaayos|bawas\s+sa\s+upa)\b',
+        ],
+        "expansion": "lease necessary repairs Article 1654 suspend payment of rent Article 1658 urgent repairs abatement Article 1662 repairs at lessor cost Article 1663 rescission Article 1659 useful improvements Article 1678"
+    },
+    {
+        "patterns": [
             r'\b(?:upa|upahan|nangungupahan|nagpapaupa|palayasin|paalisin|deposito|upang bahay|paupahan|pinaalis|renta|bayad sa upa|layas)\b',
             r'\b(?:lease|rent|rental|tenant|landlord|ejectment|unlawful detainer|security deposit|eviction|evict)\b',
         ],
-        "expansion": "lease contract Article 1654 Article 1657 ejectment unlawful detainer Article 1673 lease duration Article 1687 reimbursement of expenses Article 1678"
+        "expansion": "lease contract obligations Article 1654 Article 1657 suspend rent Article 1658 rescission Article 1659 ejectment Article 1673 reimbursement Article 1678"
     },
     {
         "patterns": [
@@ -1473,12 +1849,17 @@ def expand_legal_query(query: str) -> str:
     expansions = []
     q_lower = query.lower()
     is_presumptive_death = bool(re.search(r'\b(?:presumptive\s+death|presumed\s+dead|absent\s+spouse)\b', q_lower))
+    has_lease_repair_expansion = False
     for domain in LEGAL_DOMAIN_EXPANSIONS:
         if is_presumptive_death and "quasi-delict" in domain["expansion"]:
+            continue
+        if has_lease_repair_expansion and "lease contract obligations" in domain["expansion"]:
             continue
         for pat in domain["patterns"]:
             if re.search(pat, q_lower, re.IGNORECASE):
                 expansions.append(domain["expansion"])
+                if "lease necessary repairs" in domain["expansion"]:
+                    has_lease_repair_expansion = True
                 break
         if len(expansions) >= 2:
             break
@@ -1519,9 +1900,15 @@ def build_contextual_query(query: str, history: List[ChatMessage], document_file
             re.IGNORECASE
         ))
         is_very_short = len(query.split()) <= 7
+        has_standalone_legal_topic = bool(re.search(
+            r'\b(lease|rent|rental|tenant|landlord|repair|repairs|ejectment|eviction|mortgage|foreclosure|loan|debt|interest|contract|sale|buyer|seller|marriage|annulment|custody|support|inheritance|will|succession|heir|legitime|donation|co-ownership|easement|accident|negligence|quasi-delict|tort|upa|utang|lupa|kasal|asawa|mana|testamento|donasyon|sangla|aksidente|kontrata|benta)\b',
+            query,
+            re.IGNORECASE,
+        ))
+        short_needs_context = is_very_short and not has_standalone_legal_topic
 
         is_followup = (not (has_art_in_query or has_case_in_query) or has_pronoun_or_relative) and (
-            has_pronoun_or_relative or has_fragment_ref or is_conversational_followup or is_very_short or document_filename
+            has_pronoun_or_relative or has_fragment_ref or is_conversational_followup or short_needs_context or bool(document_filename)
         )
 
         if is_followup:
@@ -1647,13 +2034,19 @@ STATUTORY_COMPANION_GRAPH: Dict[str, List[str]] = {
     "RA386-ART887": ["RA386-ART888", "RA386-ART892", "RA386-ART960"],
 
     # Family Code (Psychological Incapacity & Marriage)
+    "EO209-ART36": ["EO209-ART68", "EO209-ART69"],
     "RA386-ART36": ["RA386-ART68", "RA386-ART69"],
 
-    # Lease & Tenancy
+    # Lease & Tenancy (Repairs, Rent Suspension, Rescission, Improvements, Ejectment)
     "RA386-ART1643": ["RA386-ART1654", "RA386-ART1657", "RA386-ART1673"],
-    "RA386-ART1654": ["RA386-ART1657", "RA386-ART1673"],
-    "RA386-ART1657": ["RA386-ART1654", "RA386-ART1673"],
+    "RA386-ART1654": ["RA386-ART1657", "RA386-ART1658", "RA386-ART1659", "RA386-ART1662", "RA386-ART1663"],
+    "RA386-ART1657": ["RA386-ART1654", "RA386-ART1659", "RA386-ART1673"],
+    "RA386-ART1658": ["RA386-ART1654", "RA386-ART1659", "RA386-ART1662", "RA386-ART1663"],
+    "RA386-ART1659": ["RA386-ART1654", "RA386-ART1657", "RA386-ART1658", "RA386-ART1663"],
+    "RA386-ART1662": ["RA386-ART1654", "RA386-ART1658", "RA386-ART1663", "RA386-ART1659"],
+    "RA386-ART1663": ["RA386-ART1654", "RA386-ART1658", "RA386-ART1662", "RA386-ART1678"],
     "RA386-ART1673": ["RA386-ART1654", "RA386-ART1657", "RA386-ART1670"],
+    "RA386-ART1678": ["RA386-ART1654", "RA386-ART1663", "RA386-ART1657"],
 
     # Donation
     "RA386-ART725": ["RA386-ART748", "RA386-ART749", "RA386-ART760", "RA386-ART765"],
@@ -1843,23 +2236,78 @@ def sanitize_external_statute_hallucinations(text: str) -> str:
     return text
 
 
+def is_active_citation(cit: Optional[Dict[str, Any]]) -> bool:
+    if not isinstance(cit, dict):
+        return False
+    return cit.get('is_in_context') is not False and cit.get('rank_status') != 'out_of_rank'
+
+
+def enforce_unique_decreasing_suitability(
+    citations: List[Dict[str, Any]],
+    *,
+    preserve_active_first: bool = True,
+    reassign_ranks: bool = True,
+) -> List[Dict[str, Any]]:
+    # Enforces strictly decreasing 1-decimal suitability percentages using integer tenths to prevent ties
+    if not citations:
+        return []
+
+    copied = [dict(c) for c in citations]
+    if preserve_active_first:
+        active = [c for c in copied if is_active_citation(c)]
+        out_of_rank = [c for c in copied if not is_active_citation(c)]
+        ordered = active + out_of_rank
+    else:
+        ordered = copied
+
+    prev_tenths = 1000
+    for idx, item in enumerate(ordered):
+        is_oor = not is_active_citation(item)
+        max_allowed = 68.5 if is_oor else 99.5
+        raw_val = item.get('suitability_percent')
+        if raw_val is None:
+            raw_val = item.get('display_suitability')
+        try:
+            score_f = float(raw_val)
+        except (TypeError, ValueError):
+            score_f = 65.0 if is_oor else 72.0
+
+        tenths = int(round(min(max_allowed, max(1.0, score_f)) * 10))
+        if tenths >= prev_tenths:
+            step_tenths = 5 if prev_tenths >= 850 else (4 if prev_tenths >= 720 else (3 if prev_tenths > 15 else 1))
+            tenths = max(10, prev_tenths - step_tenths) if prev_tenths > 10 else max(1, prev_tenths - 1)
+
+        prev_tenths = tenths
+        final_score = tenths / 10.0
+        item['suitability_percent'] = final_score
+        item['display_suitability'] = final_score
+        if reassign_ranks:
+            item['rank'] = idx + 1
+
+    return ordered
+
+
 def calibrate_suitability_score(
-    similarity: float, 
-    rrf_score: float = 0.0, 
-    is_exact: bool = False, 
-    is_active: bool = True
+    similarity: float,
+    rrf_score: float = 0.0,
+    is_exact: bool = False,
+    is_active: bool = True,
+    exact_rank: int = 0,
 ) -> float:
-    """
-    Calibrates vector similarity and RRF fusion into an interpretable relevance score [0.0 - 100.0%].
-    Replaces heuristic point subtractions with logistic sigmoid scaling.
-    """
+    # Calibrates similarity, RRF fusion, and exact match order into a bounded suitability score
     if is_exact:
-        return 98.5
+        if not is_active:
+            return round(max(35.0, min(68.5, 68.5 - (max(0, exact_rank) * 0.5))), 1)
+        if exact_rank <= 0:
+            return 98.5
+        sim_bonus = min(0.2, max(0.0, (similarity - 0.80) * 1.0)) if similarity > 0.0 else 0.0
+        return round(max(85.0, min(98.4, 98.5 - (exact_rank * 0.6) + sim_bonus)), 1)
 
     if similarity > 0.0:
-        # Logistic sigmoid centered at 0.68 with slope 14.0
+        # Logistic sigmoid centered at 0.68 with bounded RRF lift for hybrid rank alignment
         prob = 1.0 / (1.0 + math.exp(-14.0 * (similarity - 0.68)))
-        base_pct = prob * 100.0
+        rrf_lift = min(3.5, rrf_score * 80.0) if rrf_score > 0.0 else 0.0
+        base_pct = (prob * 100.0) + rrf_lift
     elif rrf_score > 0.0:
         base_pct = min(88.0, rrf_score * 2500.0)
     else:
@@ -1872,21 +2320,14 @@ def calibrate_suitability_score(
 
 
 def rank_and_stratify_citations(
-    items: List[Dict[str, Any]], 
+    items: List[Dict[str, Any]],
     query: str = "",
-    context_budget: int = 15,
+    context_budget: int = 5,
     distractor_info: Optional[Dict[str, Any]] = None,
-    is_simple: bool = False
+    is_simple: bool = False,
+    max_doc_chunks: int = 6,
 ) -> List[Dict[str, Any]]:
-    """
-    Unified high-accuracy ranking, scoring, and context stratification.
-    
-    1. Deduplicates candidate authorities by parent_id (articles) and case_id/gr_number (cases).
-    2. Computes composite relevance scores prioritizing exact statutory matches and hybrid fusion.
-    3. Handles distractor queries, simple lookups, and jurisprudence inquiries with strict caps.
-    4. Calibrates suitability using logistic sigmoid relevance scaling.
-    5. Tags each item with sequential rank, calibrated suitability percentage, and context status.
-    """
+    # Deduplicates, ranks, stratifies into precision active/out-of-rank tiers, and assigns unique decreasing scores
     if not items:
         return []
 
@@ -1939,13 +2380,26 @@ def rank_and_stratify_citations(
                     item['is_linked_jurisprudence'] = True
                 if existing.get('is_companion'):
                     item['is_companion'] = True
+                if existing.get('exact_order') is not None and item.get('exact_order') is None:
+                    item['exact_order'] = existing['exact_order']
                 item['metadata'] = item.get('metadata') or existing.get('metadata')
                 dedup_map[k] = item
 
     unique_items = list(dedup_map.values())
 
-    explicit_art_nums = set(parse_article_numbers(query)) if query else set()
-    is_juris = is_jurisprudence_query(query) if query else False
+    # Strip synthetic legal-expansion parenthetical so expansion hints never become exact matches
+    clean_query = re.sub(r'\(Philippine legal context:.*?\)', '', query or '', flags=re.IGNORECASE).strip() or (query or '')
+    explicit_art_nums = parse_article_numbers(clean_query) if clean_query else []
+    resolved_target_ids = resolve_candidate_article_ids(clean_query, explicit_art_nums) if explicit_art_nums else []
+    explicit_target_ids = set(resolved_target_ids)
+    explicit_order_map = {art_id: i for i, art_id in enumerate(resolved_target_ids)}
+    is_juris = is_jurisprudence_query(clean_query) if clean_query else False
+
+    def is_explicit_article_match(pid: str) -> bool:
+        if not pid or not explicit_target_ids:
+            return False
+        base_pid = re.sub(r'(?:[_-](?:c\d+|\d+|P\d+)|#\d+)$', '', pid, flags=re.IGNORECASE)
+        return base_pid in explicit_target_ids
 
     if distractor_info and distractor_info.get("is_mismatch"):
         queried_id = distractor_info.get("queried_article_id")
@@ -1970,13 +2424,13 @@ def rank_and_stratify_citations(
             unique_items = filtered_items
 
     elif is_simple and len(explicit_art_nums) == 1:
-        single_num = list(explicit_art_nums)[0]
+        single_num = explicit_art_nums[0]
         exact_match = None
         structural_cands = []
         other_cands = []
         for it in unique_items:
             pid = str(it.get('parent_id') or '')
-            if is_matching_article_id(pid, single_num):
+            if is_explicit_article_match(pid) or is_matching_article_id(pid, single_num):
                 if exact_match is None:
                     it['is_exact'] = True
                     exact_match = it
@@ -1991,24 +2445,29 @@ def rank_and_stratify_citations(
         ptype = it.get('parent_type', 'source')
         pid = str(it.get('parent_id') or '')
         is_exact = it.get('is_exact', False)
-        
-        art_match = re.search(r'RA386-ART(\d+)', pid)
-        if art_match and art_match.group(1) in explicit_art_nums:
+
+        if is_explicit_article_match(pid):
             is_exact = True
             it['is_exact'] = True
 
+        base_sim = float(it.get('similarity', 0.0) or 0.0)
+        rrf = float(it.get('rrf_score', 0.0) or 0.0)
+
         if is_exact:
-            base_exact = 1000.0 + float(it.get('suitability_percent', 98.5))
+            priority_base = 980.0 if it.get('is_linked_statute') else 1000.0
+            base_pid = re.sub(r'(?:[_-](?:c\d+|\d+|P\d+)|#\d+)$', '', pid, flags=re.IGNORECASE)
+            order_idx = int(it.get('exact_order', explicit_order_map.get(base_pid, 0)) or 0)
+            base_exact = priority_base + (rrf * 100.0) + (base_sim * 10.0) - (order_idx * 0.05)
             if is_juris:
                 return base_exact + (50.0 if ptype == 'case' else 10.0)
             return base_exact
 
-        base_sim = float(it.get('similarity', 0.0) or 0.0)
-        rrf = float(it.get('rrf_score', 0.0) or 0.0)
         score = (rrf * 100.0) + (base_sim * 10.0)
 
         if it.get('is_companion'):
-            score += 10.0
+            score += 2.0
+        if it.get('is_expansion_candidate') and not is_juris and base_sim >= 0.78:
+            score += 3.0
 
         if ptype == 'article':
             score += 30.0 if not is_juris else 5.0
@@ -2021,20 +2480,50 @@ def rank_and_stratify_citations(
 
     unique_items.sort(key=calculate_sort_score, reverse=True)
 
+    has_user_doc = any(it.get('parent_type') == 'user_document' for it in unique_items)
+    article_sims = [
+        float(it.get('similarity', 0.0) or 0.0)
+        for it in unique_items
+        if it.get('parent_type') == 'article'
+    ]
+    top_article_sim = max(article_sims, default=0.0)
+    has_strong_case = any(
+        it.get('parent_type') == 'case'
+        and (it.get('is_exact') or it.get('is_linked_jurisprudence') or float(it.get('similarity', 0.0) or 0.0) >= 0.72)
+        for it in unique_items
+    )
+
+    effective_budget = max(context_budget, len(explicit_art_nums)) if explicit_art_nums else context_budget
+    if is_juris:
+        max_active_statutes = len(explicit_art_nums) if explicit_art_nums else min(2, effective_budget)
+        max_active_cases = min(3, effective_budget)
+        max_active_docs = 0
+    elif has_user_doc:
+        max_active_docs = min(max_doc_chunks, effective_budget)
+        max_active_statutes = min(4, max(len(explicit_art_nums), 4))
+        max_active_cases = 1
+    elif effective_budget <= 5 and has_strong_case and effective_budget >= 4:
+        max_active_statutes = max(len(explicit_art_nums), effective_budget - 1)
+        max_active_cases = min(2, max(1, effective_budget - min(3, max(len(explicit_art_nums), 3))))
+        max_active_docs = 0
+    else:
+        max_active_statutes = effective_budget
+        max_active_cases = min(2, effective_budget) if effective_budget <= 5 else effective_budget
+        max_active_docs = 0
+
+    active_total = 0
     active_statute_count = 0
     active_case_count = 0
-    max_active_statutes = (len(explicit_art_nums) if explicit_art_nums else 3) if is_juris else context_budget
-    max_active_cases = 4 if is_juris else context_budget
+    active_doc_count = 0
+    sim_floor = max(0.68, top_article_sim - 0.09) if top_article_sim >= 0.75 else 0.55
 
-    prev_suitability = 100.0
     for idx, item in enumerate(unique_items):
-        item['rank'] = idx + 1
         ptype = item.get('parent_type', 'source')
         base_sim = float(item.get('similarity', 0.0) or 0.0)
+        rrf_val = float(item.get('rrf_score', 0.0) or 0.0)
         is_exact = item.get('is_exact', False)
         pid = str(item.get('parent_id') or '')
-        art_match = re.search(r'RA386-ART(\d+)', pid)
-        if art_match and art_match.group(1) in explicit_art_nums:
+        if is_explicit_article_match(pid):
             is_exact = True
             item['is_exact'] = True
 
@@ -2042,16 +2531,18 @@ def rank_and_stratify_citations(
             if is_exact or idx == 0:
                 item['is_in_context'] = True
                 item['rank_status'] = 'primary'
+                active_total += 1
             else:
                 item['is_in_context'] = False
                 item['rank_status'] = 'out_of_rank'
 
-        elif is_exact or (idx == 0 and item.get('parent_type') == 'article' and (is_simple or len(explicit_art_nums) > 0)):
+        elif is_exact or (idx == 0 and ptype == 'article' and (is_simple or len(explicit_art_nums) > 0)):
             if ptype == 'case':
                 if active_case_count < max_active_cases:
                     item['is_in_context'] = True
                     item['rank_status'] = 'primary'
                     active_case_count += 1
+                    active_total += 1
                 else:
                     item['is_in_context'] = False
                     item['rank_status'] = 'out_of_rank'
@@ -2063,21 +2554,35 @@ def rank_and_stratify_citations(
                     item['is_in_context'] = True
                     item['rank_status'] = 'primary'
                     active_statute_count += 1
+                    active_total += 1
+
+        elif ptype == 'user_document':
+            if base_sim >= 0.55 and active_doc_count < max_active_docs and active_total < effective_budget:
+                item['is_in_context'] = True
+                item['rank_status'] = 'primary'
+                active_doc_count += 1
+                active_total += 1
+            else:
+                item['is_in_context'] = False
+                item['rank_status'] = 'out_of_rank'
 
         elif item.get('is_linked_jurisprudence'):
-            if active_case_count < max_active_cases and idx < context_budget:
+            if active_case_count < max_active_cases and active_total < effective_budget:
                 item['is_in_context'] = True
                 item['rank_status'] = 'primary'
                 active_case_count += 1
+                active_total += 1
             else:
                 item['is_in_context'] = False
                 item['rank_status'] = 'out_of_rank'
 
         elif ptype == 'case':
-            if base_sim >= 0.55 and active_case_count < max_active_cases and idx < context_budget:
+            case_sim_ok = base_sim >= (0.55 if is_juris else 0.72)
+            if case_sim_ok and active_case_count < max_active_cases and active_total < effective_budget:
                 item['is_in_context'] = True
                 item['rank_status'] = 'primary'
                 active_case_count += 1
+                active_total += 1
             else:
                 item['is_in_context'] = False
                 item['rank_status'] = 'out_of_rank'
@@ -2087,40 +2592,63 @@ def rank_and_stratify_citations(
                 item['is_in_context'] = False
                 item['rank_status'] = 'out_of_rank'
             else:
-                passes_gate = base_sim >= 0.55 or item.get('is_companion') or item.get('is_expansion_candidate') or (item.get('rrf_score', 0) > 0)
-                if passes_gate and active_statute_count < max_active_statutes and idx < context_budget:
+                passes_precision_gap = (
+                    active_statute_count < 2
+                    or base_sim >= sim_floor
+                    or rrf_val >= 0.025
+                )
+                passes_gate = (base_sim >= 0.55 or item.get('is_companion') or item.get('is_expansion_candidate') or (rrf_val > 0)) and passes_precision_gap
+                if passes_gate and active_statute_count < max_active_statutes and active_total < effective_budget:
                     item['is_in_context'] = True
                     item['rank_status'] = 'primary'
                     active_statute_count += 1
+                    active_total += 1
                 else:
                     item['is_in_context'] = False
                     item['rank_status'] = 'out_of_rank'
 
         else:
-            passes_gate = base_sim >= 0.55
-            if passes_gate and idx < context_budget:
+            if base_sim >= 0.55 and active_total < effective_budget:
                 item['is_in_context'] = True
                 item['rank_status'] = 'primary'
+                active_total += 1
             else:
                 item['is_in_context'] = False
                 item['rank_status'] = 'out_of_rank'
 
+    # Group active authorities ahead of out-of-rank so out-of-rank caps never depress active scores
+    active_items = [it for it in unique_items if is_active_citation(it)]
+    oor_items = [it for it in unique_items if not is_active_citation(it)]
+    ordered_items = active_items + oor_items
+
+    active_exact_idx = 0
+    oor_exact_idx = 0
+    for item in ordered_items:
+        is_exact = bool(item.get('is_exact', False))
+        is_active = is_active_citation(item)
+        if is_exact:
+            e_rank = active_exact_idx if is_active else oor_exact_idx
+            if is_active:
+                active_exact_idx += 1
+            else:
+                oor_exact_idx += 1
+        else:
+            e_rank = 0
+
         raw_suitability = calibrate_suitability_score(
-            similarity=base_sim,
+            similarity=float(item.get('similarity', 0.0) or 0.0),
             rrf_score=float(item.get('rrf_score', 0.0) or 0.0),
             is_exact=is_exact,
-            is_active=item['is_in_context']
+            is_active=is_active,
+            exact_rank=e_rank,
         )
-        suitability = round(min(prev_suitability, raw_suitability), 1)
-        prev_suitability = suitability
+        item['suitability_percent'] = raw_suitability
+        item['display_suitability'] = raw_suitability
 
-        item['suitability_percent'] = suitability
-        item['display_suitability'] = suitability
-
-    return unique_items
+    return enforce_unique_decreasing_suitability(ordered_items, preserve_active_first=True, reassign_ranks=True)
 
 
-def prune_retrieval_noise(items: List[Dict[str, Any]], max_items: int = 15) -> List[Dict[str, Any]]:
+def prune_retrieval_noise(items: List[Dict[str, Any]], max_items: int = 5) -> List[Dict[str, Any]]:
     """Backward compatibility wrapper delegating to rank_and_stratify_citations."""
     return rank_and_stratify_citations(items, context_budget=max_items)
 
@@ -2147,17 +2675,31 @@ def search_with_embedding(
                 if not search_words:
                     search_words = [w for w in raw_words if len(w) > 1]
                 or_query = " OR ".join(search_words) if search_words else query
-                
+
+                # Case chunks exceed 350k rows; OR-queries on generic court terms cause multi-minute seq scans
+                if parent_type == 'case' and not parent_id:
+                    case_meta_words = {
+                        'supreme', 'court', 'jurisprudence', 'case', 'cases', 'decision', 'decisions',
+                        'ruling', 'rulings', 'doctrine', 'doctrines', 'philippine', 'philippines',
+                        'republic', 'act', 'executive', 'order', 'holding', 'holdings', 'precedent',
+                    }
+                    case_words = [w for w in search_words if w.lower() not in case_meta_words] or search_words
+                    fts_query = " ".join(case_words[:4]) if case_words else query
+                    fts_fn = "plainto_tsquery"
+                else:
+                    fts_query = or_query
+                    fts_fn = "websearch_to_tsquery"
+
                 if parent_id:
-                    where_clause_v = "parent_id = %s"
-                    where_clause_t = "parent_id = %s AND fts @@ websearch_to_tsquery('simple', %s)"
-                    params_v = (parent_id,)
-                    params_t = (parent_id, or_query)
+                    where_clause_v = "parent_type = %s AND parent_id = %s"
+                    where_clause_t = f"parent_type = %s AND parent_id = %s AND fts @@ {fts_fn}('simple', %s)"
+                    params_v = (parent_type, parent_id)
+                    params_t = (parent_type, parent_id, fts_query)
                 else:
                     where_clause_v = "parent_type = %s"
-                    where_clause_t = "parent_type = %s AND fts @@ websearch_to_tsquery('simple', %s)"
+                    where_clause_t = f"parent_type = %s AND fts @@ {fts_fn}('simple', %s)"
                     params_v = (parent_type,)
-                    params_t = (parent_type, or_query)
+                    params_t = (parent_type, fts_query)
 
                 cur.execute(f"""
                     WITH vector_ranked AS (
@@ -2176,7 +2718,7 @@ def search_with_embedding(
                     ),
                     text_ranked AS (
                         SELECT chunk_id, parent_type, parent_id, content,
-                               ts_rank(fts, websearch_to_tsquery('simple', %s)) AS text_sim
+                               ts_rank(fts, {fts_fn}('simple', %s)) AS text_sim
                         FROM document_chunks
                         WHERE {where_clause_t}
                         ORDER BY text_sim DESC
@@ -2202,7 +2744,7 @@ def search_with_embedding(
                     SELECT chunk_id, parent_type, parent_id, content, similarity, rrf_score FROM rrf
                     ORDER BY rrf_score DESC
                     LIMIT %s;
-                """, (q_emb, *params_v, or_query, *params_t, limit))
+                """, (q_emb, *params_v, fts_query, *params_t, limit))
                 return cur.fetchall()
 
             if document_id:
@@ -2210,7 +2752,7 @@ def search_with_embedding(
                     cur.execute("""
                         SELECT chunk_id, parent_type, parent_id, content, 0.92 AS similarity, 0.03 AS rrf_score
                         FROM document_chunks
-                        WHERE parent_id = %s
+                        WHERE parent_type = 'user_document' AND parent_id = %s
                         ORDER BY chunk_id ASC
                         LIMIT 12;
                     """, (document_id,))
@@ -2224,7 +2766,7 @@ def search_with_embedding(
                     cur.execute("""
                         SELECT chunk_id, parent_type, parent_id, content, 0.90 AS similarity
                         FROM document_chunks
-                        WHERE parent_id = %s
+                        WHERE parent_type = 'user_document' AND parent_id = %s
                         ORDER BY chunk_id ASC
                         LIMIT 20;
                     """, (document_id,))
@@ -2237,7 +2779,84 @@ def search_with_embedding(
                 has_explicit_article = bool(parse_article_numbers(query))
                 needs_statutory = is_doc_legal or has_explicit_article or auto_analyze
                 if needs_statutory:
-                    statutory_articles = hybrid_search('article', limit=12)
+                    doc_user_facing_q = raw_query or re.sub(r'\(Philippine legal context:.*?\)', '', query, flags=re.IGNORECASE)
+                    doc_user_facing_q = re.sub(r'\([^)]*?\)', '', doc_user_facing_q).strip() or query
+
+                    doc_exact_articles = []
+                    doc_exact_nums = parse_article_numbers(doc_user_facing_q)
+                    if doc_exact_nums:
+                        doc_exact_ids = resolve_candidate_article_ids(doc_user_facing_q, doc_exact_nums)
+                        cur.execute("""
+                            SELECT chunk_id, parent_type, parent_id, content,
+                                   (1 - (embedding <=> %s::vector)) AS similarity
+                            FROM document_chunks
+                            WHERE parent_id = ANY(%s) AND parent_type = 'article';
+                        """, (q_emb, doc_exact_ids))
+                        fetched_doc_exact = {row['parent_id']: row for row in cur.fetchall()}
+                        for eid in doc_exact_ids:
+                            if eid in fetched_doc_exact:
+                                item_ex = fetched_doc_exact[eid]
+                                item_ex['is_exact'] = True
+                                item_ex['exact_order'] = len(doc_exact_articles)
+                                doc_exact_articles.append(item_ex)
+
+                    statutory_articles = list(doc_exact_articles)
+                    doc_art_by_id = {a['parent_id']: a for a in statutory_articles}
+                    for ha in hybrid_search('article', limit=12):
+                        ha_pid = ha['parent_id']
+                        if ha_pid in doc_art_by_id:
+                            doc_art_by_id[ha_pid]['similarity'] = max(
+                                float(doc_art_by_id[ha_pid].get('similarity', 0.0) or 0.0),
+                                float(ha.get('similarity', 0.0) or 0.0),
+                            )
+                            doc_art_by_id[ha_pid]['rrf_score'] = max(
+                                float(doc_art_by_id[ha_pid].get('rrf_score', 0.0) or 0.0),
+                                float(ha.get('rrf_score', 0.0) or 0.0),
+                            )
+                        else:
+                            statutory_articles.append(ha)
+                            doc_art_by_id[ha_pid] = ha
+
+                    # Score domain-expansion articles with real pgvector cosine similarity
+                    doc_all_nums = parse_article_numbers(query)
+                    doc_exp_nums = [n for n in doc_all_nums if n not in doc_exact_nums]
+                    if doc_exp_nums:
+                        doc_exp_ids = resolve_candidate_article_ids(query, doc_exp_nums) or [f"RA386-ART{n}" for n in doc_exp_nums]
+                        cur.execute("""
+                            SELECT chunk_id, parent_type, parent_id, content,
+                                   (1 - (embedding <=> %s::vector)) AS similarity
+                            FROM document_chunks
+                            WHERE parent_id = ANY(%s) AND parent_type = 'article';
+                        """, (q_emb, doc_exp_ids))
+                        for erow in cur.fetchall():
+                            epid = erow['parent_id']
+                            if epid in doc_art_by_id:
+                                doc_art_by_id[epid]['is_expansion_candidate'] = True
+                            else:
+                                erow['is_exact'] = False
+                                erow['is_expansion_candidate'] = True
+                                erow['rrf_score'] = 0.018
+                                statutory_articles.append(erow)
+                                doc_art_by_id[epid] = erow
+
+                    # Expand statutory companions for top retrieved articles so repair/remedy peers surface
+                    doc_comp_ids = []
+                    for a in statutory_articles[:3]:
+                        for comp_id in STATUTORY_COMPANION_GRAPH.get(a.get('parent_id', ''), []):
+                            if comp_id not in doc_art_by_id and comp_id not in doc_comp_ids:
+                                doc_comp_ids.append(comp_id)
+                    if doc_comp_ids:
+                        cur.execute("""
+                            SELECT chunk_id, parent_type, parent_id, content,
+                                   (1 - (embedding <=> %s::vector)) AS similarity
+                            FROM document_chunks
+                            WHERE parent_id = ANY(%s) AND parent_type = 'article';
+                        """, (q_emb, doc_comp_ids[:6]))
+                        for comp in cur.fetchall():
+                            comp['is_companion'] = True
+                            statutory_articles.append(comp)
+                            doc_art_by_id[comp['parent_id']] = comp
+
                     if statutory_articles:
                         art_ids = [a['parent_id'] for a in statutory_articles]
                         cur.execute("""
@@ -2251,7 +2870,7 @@ def search_with_embedding(
                                 a['metadata'] = art_meta_map[a['parent_id']]
                     linked_cases = []
                     if statutory_articles:
-                        art_ids = [a['parent_id'] for a in statutory_articles]
+                        art_ids = [a['parent_id'] for a in statutory_articles[:6]]
                         cur.execute("""
                             SELECT r.article_id, j.case_uid, j.title, j.gr_number,
                                    COALESCE(NULLIF(NULLIF(j.content_summary, 'Summary unavailable.'), ''), j.full_text) AS content_summary,
@@ -2277,10 +2896,22 @@ def search_with_embedding(
                                 }
                             })
                     all_found = doc_results + statutory_articles + linked_cases
-                    all_found = rank_and_stratify_citations(all_found, query, context_budget=15)
+                    doc_budget = 10 if auto_analyze else 7
+                    doc_chunk_cap = 6 if auto_analyze else 3
+                    all_found = rank_and_stratify_citations(
+                        all_found,
+                        doc_user_facing_q,
+                        context_budget=doc_budget,
+                        max_doc_chunks=doc_chunk_cap,
+                    )
                     return all_found
 
-                doc_results = rank_and_stratify_citations(doc_results, query, context_budget=15)
+                doc_results = rank_and_stratify_citations(
+                    doc_results,
+                    raw_query or query,
+                    context_budget=6 if auto_analyze else 4,
+                    max_doc_chunks=6 if auto_analyze else 4,
+                )
                 return doc_results
 
             # 1. Exact match extraction for Civil Code Articles or General Codal Overview
@@ -2345,7 +2976,7 @@ def search_with_embedding(
                             matched_rows.append(r)
 
                 items = []
-                for r in matched_rows:
+                for case_idx, r in enumerate(matched_rows):
                     cur_db.execute("""
                         SELECT content
                         FROM document_chunks
@@ -2360,15 +2991,15 @@ def search_with_embedding(
                     if chunk_excerpt:
                         body += f"\n\n[Case Record Excerpt]:\n{chunk_excerpt[:1500]}"
 
+                    trigram_sim = float(r.get('sim') or 0.0)
                     items.append({
                         "parent_type": "case",
                         "parent_id": r['case_uid'],
                         "content": body,
-                        "similarity": 0.98,
+                        "similarity": round(max(0.90, trigram_sim), 3) if trigram_sim > 0 else 0.98,
                         "rrf_score": 0.08,
                         "is_exact": True,
-                        "suitability_percent": 98.5,
-                        "display_suitability": 98.5,
+                        "exact_order": case_idx,
                         "metadata": {
                             "title": r.get('title'),
                             "gr_number": r.get('gr_number'),
@@ -2404,8 +3035,7 @@ def search_with_embedding(
                     if gid in fetched_gen:
                         gen_item = fetched_gen[gid]
                         gen_item['is_exact'] = True
-                        gen_item['display_suitability'] = 98.5
-                        gen_item['suitability_percent'] = 98.5
+                        gen_item['exact_order'] = len(exact_articles)
                         exact_articles.append(gen_item)
 
             # Distinguish user's explicit requested articles from expansion suggestions
@@ -2425,44 +3055,63 @@ def search_with_embedding(
                     if eid in fetched_exact and eid not in {a['parent_id'] for a in exact_articles}:
                         exact_item = fetched_exact[eid]
                         exact_item['is_exact'] = True
-                        exact_item['display_suitability'] = 98.5
-                        exact_item['suitability_percent'] = 98.5
+                        exact_item['exact_order'] = len(exact_articles)
                         exact_articles.append(exact_item)
 
-            # Query expansion articles (domain suggestions) fetched with is_exact = False
+            # Query expansion articles (domain suggestions) scored with real vector similarity
             all_query_art_nums = parse_article_numbers(query)
             expansion_art_nums = [n for n in all_query_art_nums if n not in unique_art_nums]
             expansion_articles = []
             if expansion_art_nums:
-                exp_ids = [f"RA386-ART{num}" for num in expansion_art_nums]
+                exp_ids = resolve_candidate_article_ids(query, expansion_art_nums)
+                if not exp_ids:
+                    exp_ids = [f"RA386-ART{num}" for num in expansion_art_nums]
                 cur.execute("""
-                    SELECT chunk_id, parent_type, parent_id, content
+                    SELECT chunk_id, parent_type, parent_id, content,
+                           (1 - (embedding <=> %s::vector)) AS similarity
                     FROM document_chunks
                     WHERE parent_id = ANY(%s) AND parent_type = 'article';
-                """, (exp_ids,))
+                """, (q_emb, exp_ids))
                 fetched_exp = {row['parent_id']: row for row in cur.fetchall()}
                 for eid in exp_ids:
                     if eid in fetched_exp and eid not in {a['parent_id'] for a in exact_articles}:
                         exp_item = fetched_exp[eid]
                         exp_item['is_exact'] = False
                         exp_item['is_expansion_candidate'] = True
-                        exp_item['rrf_score'] = 0.03
-                        exp_item['similarity'] = 0.78
+                        exp_item['rrf_score'] = 0.016
                         expansion_articles.append(exp_item)
-                    
-            # 2. Top article matches (Civil Code statutes) via Hybrid Search - PRIORITIZED
+
             articles = exact_articles.copy()
-            art_limit = 3 if is_jurisprudence_query(query) else 20
+            art_limit = 3 if is_jurisprudence_query(user_facing_q) else 20
             hybrid_articles = hybrid_search('article', limit=art_limit)
-            exact_ids_set = {a['parent_id'] for a in exact_articles}
+            exact_by_id = {a['parent_id']: a for a in exact_articles}
+            article_by_id = dict(exact_by_id)
+            exact_ids_set = set(exact_by_id.keys())
             for ha in hybrid_articles:
-                if ha['parent_id'] not in exact_ids_set:
+                ha_pid = ha['parent_id']
+                if ha_pid in exact_by_id:
+                    # Retain hybrid vector/RRF signals on exact matches for relevance differentiation
+                    exact_by_id[ha_pid]['similarity'] = max(
+                        float(exact_by_id[ha_pid].get('similarity', 0.0) or 0.0),
+                        float(ha.get('similarity', 0.0) or 0.0),
+                    )
+                    exact_by_id[ha_pid]['rrf_score'] = max(
+                        float(exact_by_id[ha_pid].get('rrf_score', 0.0) or 0.0),
+                        float(ha.get('rrf_score', 0.0) or 0.0),
+                    )
+                elif ha_pid not in exact_ids_set:
                     articles.append(ha)
-                    exact_ids_set.add(ha['parent_id'])
+                    article_by_id[ha_pid] = ha
+                    exact_ids_set.add(ha_pid)
             for ea in expansion_articles:
-                if ea['parent_id'] not in exact_ids_set:
+                ea_pid = ea['parent_id']
+                if ea_pid in article_by_id:
+                    # Dual consensus: article matched both hybrid search and domain ontology
+                    article_by_id[ea_pid]['is_expansion_candidate'] = True
+                elif ea_pid not in exact_ids_set:
                     articles.append(ea)
-                    exact_ids_set.add(ea['parent_id'])
+                    article_by_id[ea_pid] = ea
+                    exact_ids_set.add(ea_pid)
 
             # 2.5 Statutory Companion Expansion (Codified Association Graph for Context Recall)
             # Skip for jurisprudence inquiries to prevent context pollution
@@ -2478,10 +3127,11 @@ def search_with_embedding(
                 
                 if companion_ids:
                     cur.execute("""
-                        SELECT chunk_id, parent_type, parent_id, content
+                        SELECT chunk_id, parent_type, parent_id, content,
+                               (1 - (embedding <=> %s::vector)) AS similarity
                         FROM document_chunks
                         WHERE parent_id = ANY(%s) AND parent_type = 'article';
-                    """, (companion_ids[:6],))
+                    """, (q_emb, companion_ids[:6]))
                     comp_rows = cur.fetchall()
                     for comp in comp_rows:
                         comp['is_companion'] = True
@@ -2527,26 +3177,26 @@ def search_with_embedding(
                     is_simple=True
                 )
 
-            if simple_lookup and exact_articles and not is_jurisprudence_query(query):
-                logging.info(f"Simple lookup detected for query: {query}")
+            if simple_lookup and exact_articles and not is_jurisprudence_query(user_facing_q):
+                logging.info(f"Simple lookup detected for query: {user_facing_q}")
                 exact_articles[0]['is_simple_lookup'] = True
                 top_hybrid = [ha for ha in hybrid_articles if ha.get('parent_id') not in exact_ids_set]
                 all_found = exact_articles + top_hybrid[:2]
                 return rank_and_stratify_citations(
-                    all_found, 
-                    query, 
-                    context_budget=max(len(exact_articles), 3), 
-                    distractor_info=None, 
+                    all_found,
+                    user_facing_q,
+                    context_budget=len(exact_articles),
+                    distractor_info=None,
                     is_simple=True
                 )
 
-            is_dispute = is_dispute_query(query)
-            if is_multi_article and exact_articles and not is_dispute and not is_jurisprudence_query(query):
+            is_dispute = is_dispute_query(user_facing_q)
+            if is_multi_article and exact_articles and not is_dispute and not is_jurisprudence_query(user_facing_q):
                 logging.info(f"Multi-article statutory lookup detected for articles: {unique_art_nums}")
                 all_found = articles
                 return rank_and_stratify_citations(
                     all_found,
-                    query,
+                    user_facing_q,
                     context_budget=len(exact_articles),
                     distractor_info=None,
                     is_simple=False
@@ -2554,11 +3204,12 @@ def search_with_embedding(
             
             # 3. Graph-Augmented RAG: Retrieve linked jurisprudence for the queried or top articles
             linked_cases = []
-            is_juris = is_jurisprudence_query(query)
+            is_juris = is_jurisprudence_query(user_facing_q)
             case_limit = 6 if is_juris else 4
             if articles:
                 target_articles = exact_articles if exact_articles else articles[:4]
                 article_ids = [a['parent_id'] for a in target_articles]
+                per_article_cap = 4 if (is_juris and len(target_articles) == 1) else 2
                 cur.execute("""
                     WITH ranked_cases AS (
                         SELECT r.article_id, j.case_uid, j.title, j.gr_number,
@@ -2572,9 +3223,9 @@ def search_with_embedding(
                     )
                     SELECT article_id, case_uid, title, gr_number, content_summary, source_url, decision_date
                     FROM ranked_cases
-                    WHERE rn <= 2
+                    WHERE rn <= %s
                     LIMIT %s;
-                """, (article_ids, case_limit))
+                """, (article_ids, per_article_cap, case_limit))
                 
                 for row in cur.fetchall():
                     summary = row.get('content_summary') or ''
@@ -2631,7 +3282,7 @@ def search_with_embedding(
                 if linked_statutes:
                     articles = linked_statutes + articles
 
-            if not exact_cases and (is_juris or len(linked_cases) < 2):
+            if not exact_cases and (len(linked_cases) < 2 or (is_juris and not exact_articles and len(linked_cases) < 3)):
                 hybrid_case_chunks = hybrid_search('case', limit=4)
                 if hybrid_case_chunks:
                     case_uids = [c['parent_id'] for c in hybrid_case_chunks if c['parent_id'] not in exact_case_uids]
@@ -2688,9 +3339,10 @@ def search_with_embedding(
                                 })
                                 exact_case_uids.add(row['case_uid'])
 
-            # Merge and apply unified high-accuracy ranking without discarding lower-ranked citations
+            # Merge and apply precision-focused ranking (top 5 active authorities by default)
             all_found = articles + linked_cases + cases
-            all_found = rank_and_stratify_citations(all_found, query, context_budget=15)
+            precision_budget = max(5, len(exact_articles) + 1) if exact_articles else 5
+            all_found = rank_and_stratify_citations(all_found, user_facing_q, context_budget=precision_budget)
             return all_found
     finally:
         conn.close()
@@ -2893,14 +3545,26 @@ async def search_documents(request: SearchRequest, raw_req: Request = None):
                     ),
                 )
                 _client_dicts = [{"role": m.role, "content": m.content} for m in (request.history or [])]
-                canonical_history = session_memory.resolve_history(_client_dicts, _db_history)
+                # Keep prior-turn history strictly separate from the current incoming query
+                prior_history = session_memory.resolve_history(_client_dicts, _db_history)
+                if not is_auto_analyze and (request.query or "").strip():
+                    curr_q_norm = request.query.strip().lower()
+                    while (
+                        prior_history
+                        and prior_history[-1]["role"] == "user"
+                        and prior_history[-1]["content"].strip().lower() == curr_q_norm
+                    ):
+                        prior_history.pop()
+                canonical_history = list(prior_history)
                 canonical_msgs = session_memory.to_chat_messages(canonical_history)
-                # Snapshot before the current turn is persisted for history-recall queries
-                _recall_base = list(canonical_history)
-                merged_prior_citations = session_memory.merge_prior_citations(
-                    server_citations, request.prior_citations
-                )
-                # Persist the incoming user turn unless running automatic upload analysis
+                _recall_base = list(prior_history)
+                merged_prior_citations = enforce_unique_decreasing_suitability([
+                    c for c in session_memory.merge_prior_citations(
+                        server_citations, request.prior_citations
+                    )
+                    if is_active_citation(c)
+                ])
+                # Persist the incoming user turn without polluting prior_history used by retrieval and LLM
                 if not is_auto_analyze and (request.query or "").strip():
                     await asyncio.to_thread(
                         session_memory.save_user_message,
@@ -2908,17 +3572,6 @@ async def search_documents(request: SearchRequest, raw_req: Request = None):
                         request.query,
                         get_db_connection,
                     )
-                    if _db_history is not None:
-                        _db_history2 = await asyncio.to_thread(
-                            session_memory.load_session_history,
-                            request.session_id,
-                            session_memory.HISTORY_LIMIT,
-                            user_identifier if user_identifier != "anon" else None,
-                            get_db_connection,
-                        )
-                        if _db_history2:
-                            canonical_history = session_memory.resolve_history(_client_dicts, _db_history2)
-                            canonical_msgs = session_memory.to_chat_messages(canonical_history)
 
                 # History-recall shortcut: deterministic response without GPU queue
                 if not is_auto_analyze and session_memory.is_history_recall_query(request.query):
@@ -3530,7 +4183,12 @@ YOUR MANDATORY REFUSAL AND STATUTORY RULES:
                     )
                     if ambiguity_result.is_ambiguous and ambiguity_result.confidence >= 0.55:
                         logging.info(f"Ambiguity detected [{ambiguity_result.category}] confidence={ambiguity_result.confidence:.2f}: {ambiguity_result.reasoning}")
-                        clarification_text = f"I need a bit more context for an accurate legal analysis.\n\n{ambiguity_result.reasoning}"
+                        clarification_intro = (
+                            "Kailangan ko pa po ng kaunting detalye para sa tumpak na pagsusuring legal."
+                            if detected_lang == "tl"
+                            else "I need a bit more context for an accurate legal analysis."
+                        )
+                        clarification_text = f"{clarification_intro}\n\n{ambiguity_result.reasoning}"
                         if ambiguity_result.questions:
                             q_texts = [f"- {q.question}" for q in ambiguity_result.questions]
                             clarification_text += "\n\n" + "\n".join(q_texts)
@@ -3606,9 +4264,8 @@ YOUR MANDATORY REFUSAL AND STATUTORY RULES:
                         return str(cid)
                     return str(pid or cit.get('content', '')[:60].strip())
 
-                seen_cit_keys = set()
-                for r in results:
-                    seen_cit_keys.add(get_citation_key(r))
+                active_results = [r for r in results if is_active_citation(r)]
+                seen_cit_keys = {get_citation_key(r) for r in active_results}
 
                 is_simple = is_simple_lookup(request.query, canonical_msgs)
                 queried_art_nums = parse_article_numbers(request.query)
@@ -3627,36 +4284,35 @@ YOUR MANDATORY REFUSAL AND STATUTORY RULES:
                         if exact_cand:
                             distractor_info = detect_article_distractor(request.query, exact_cand, results)
 
-                if (is_simple or distractor_info or (is_multi_article and not is_dispute and not is_juris)) and not request.document_id:
-                    retained_prior = []
-                    accumulated_citations = results
-                else:
-                    retained_prior = []
-                    for pc in merged_prior_citations:
-                        ckey = get_citation_key(pc)
-                        if ckey not in seen_cit_keys:
-                            seen_cit_keys.add(ckey)
-                            dampened = dict(pc)
-                            dampened['is_in_context'] = False
-                            dampened['rank_status'] = 'out_of_rank'
-                            old_suit = float(dampened.get('suitability_percent', 65.0) or 65.0)
-                            dampened['suitability_percent'] = round(min(68.0, max(40.0, old_suit * 0.7)), 1)
-                            dampened['display_suitability'] = dampened['suitability_percent']
-                            retained_prior.append(dampened)
+                # Preserve all active prior-turn citations (excluding current pre-reconcile only for the status count)
+                all_active_prior = []
+                seen_prior_keys = set()
+                for pc in merged_prior_citations:
+                    if not is_active_citation(pc):
+                        continue
+                    ckey = get_citation_key(pc)
+                    if ckey and ckey not in seen_prior_keys:
+                        seen_prior_keys.add(ckey)
+                        prior_copy = dict(pc)
+                        prior_copy['is_in_context'] = True
+                        prior_copy['rank_status'] = 'retained'
+                        all_active_prior.append(prior_copy)
 
-                    retained_prior = retained_prior[:6]
-                    accumulated_citations = results + retained_prior
-                    accumulated_citations.sort(key=lambda x: float(x.get('suitability_percent', 0.0)), reverse=True)
-                    for rank_idx, item in enumerate(accumulated_citations):
-                        item['rank'] = rank_idx + 1
+                retained_prior = [
+                    p for p in all_active_prior
+                    if get_citation_key(p) not in seen_cit_keys
+                ][:session_memory.PRIOR_CITATIONS_LIMIT]
+                accumulated_citations = enforce_unique_decreasing_suitability(
+                    active_results + retained_prior
+                )
 
                 # Send retrieval completion status (Citations are deferred until streaming starts)
                 ret_done_msg = (
-                    f"Retrieved {len(results)} relevant clauses & statutory authorities ({len(accumulated_citations)} retained in active chat)"
+                    f"Retrieved {len(active_results)} relevant clauses & statutory authorities ({len(accumulated_citations)} retained in active chat)"
                     if is_doc_analysis
-                    else f"Retrieved {len(results)} relevant legal provisions & doctrines ({len(accumulated_citations)} retained in active chat)"
+                    else f"Retrieved {len(active_results)} relevant legal provisions & doctrines ({len(accumulated_citations)} retained in active chat)"
                 )
-                yield f"data: {dumps({'type': 'status', 'stage': 'retrieving_done', 'message': ret_done_msg, 'count': len(results)})}\n\n"
+                yield f"data: {dumps({'type': 'status', 'stage': 'retrieving_done', 'message': ret_done_msg, 'count': len(active_results)})}\n\n"
 
                 # Pre-generation: set initial analytics state (real NLI is computed post-generation)
                 nli_score_val = None
@@ -3689,12 +4345,8 @@ YOUR MANDATORY REFUSAL AND STATUTORY RULES:
                 doc_items = []
                 case_items = []
 
-                # Combine results and retained prior citations
-                all_citations = results + retained_prior
-                for item in all_citations:
-                    # In a 80k context window, prioritize in-context authorities for the model prompt
-                    if item.get('is_in_context') is False:
-                        continue
+                # Prompt context uses only current-turn active authorities (never prior turns or out_of_rank)
+                for item in active_results:
                     ptype = item.get('parent_type', 'source')
                     if ptype == 'article':
                         statutory_items.append(item)
@@ -3717,10 +4369,31 @@ YOUR MANDATORY REFUSAL AND STATUTORY RULES:
                     other_in_ctx = [c for c in case_items if not c.get('is_exact') and not c.get('is_linked_jurisprudence')]
                     case_items = (exact_in_ctx + linked_in_ctx + other_in_ctx)[:4]
 
-                # Construct context: STATUTORY CIVIL CODE ALWAYS LEADS FIRST
+                # Construct context: STATUTORY AUTHORITIES ALWAYS LEAD FIRST
+                has_fc_statute = any(str(s.get('parent_id') or '').upper().startswith('EO209-') for s in statutory_items)
+                has_cc_statute = any(str(s.get('parent_id') or '').upper().startswith('RA386-') for s in statutory_items)
+                if has_fc_statute and not has_cc_statute:
+                    primary_statute_header = "[PRIMARY STATUTORY AUTHORITY: FAMILY CODE OF THE PHILIPPINES (EXECUTIVE ORDER NO. 209)]"
+                elif has_fc_statute and has_cc_statute:
+                    primary_statute_header = "[PRIMARY STATUTORY AUTHORITY: PHILIPPINE CIVIL CODE (RA 386) & FAMILY CODE (EO 209)]"
+                else:
+                    primary_statute_header = "[PRIMARY STATUTORY AUTHORITY: PHILIPPINE CIVIL CODE (REPUBLIC ACT NO. 386)]"
+
+                allowed_article_labels = []
+                for s_row in statutory_items:
+                    s_pid = str(s_row.get('parent_id') or '')
+                    s_num = _extract_article_num_from_citation(s_row)
+                    if s_num is not None:
+                        s_code = "Family Code (EO 209)" if s_pid.upper().startswith("EO209-") else "Civil Code (RA 386)"
+                        label = f"Article {s_num} ({s_code})"
+                        if label not in allowed_article_labels:
+                            allowed_article_labels.append(label)
+
                 context_str = ""
                 if statutory_items:
-                    context_str += "[PRIMARY STATUTORY AUTHORITY: PHILIPPINE CIVIL CODE (REPUBLIC ACT NO. 386)]\n"
+                    context_str += f"{primary_statute_header}\n"
+                    if allowed_article_labels:
+                        context_str += f"ALLOWED STATUTORY ARTICLES IN THIS CONTEXT (CITE ONLY FROM THIS LIST): {', '.join(allowed_article_labels)}\n"
                     for idx, row in enumerate(statutory_items, 1):
                         context_str += f"\n[Statutory Article {idx}]\n" + format_context_item(row, doc_filename)
                     context_str += "\n"
@@ -3793,7 +4466,7 @@ YOUR INITIAL DOCUMENT ANALYSIS DUTIES:
 2. STATUTORY ALIGNMENT (PHILIPPINE CIVIL CODE / FAMILY CODE): Ground your review in the governing Civil Code (RA 386) or Family Code (EO 209) articles provided in CONTEXT, quoting core statutory rules verbatim and citing them inline (e.g. [Art. 1654], [Art. 1191]).
 3. RISKS, VOID CLAUSES & MISSING SAFEGUARDS: Flag any potentially unfair, one-sided, ambiguous, or legally void stipulations under Philippine Civil Law (or explain clearly if the main terms appear standard and what protections may be missing).
 4. PRACTICAL TAKEAWAYS & FOLLOW-UP INVITATION: Summarize concrete next steps in everyday language (such as notarization, written receipts/demand letters, Barangay Conciliation, Small Claims, or PAO) and invite the user to ask specific follow-up questions about any clause.
-5. CLOSED-BOOK & PLAIN-LANGUAGE RULES: State only facts present in DOCUMENT EXCERPTS and cite only Civil Code articles and cases in CONTEXT. Write short sentences (10-18 words) with zero archaic words and strict unilingual output.
+5. CLOSED-BOOK & PLAIN-LANGUAGE RULES: State only facts present in DOCUMENT EXCERPTS and cite ONLY Civil Code / Family Code articles and cases explicitly present in CONTEXT (NEVER invent or introduce any article number not in CONTEXT). Explicitly cite every article (`[Art. X]` / `Article X`) and Supreme Court case (`Case Title`, `G.R. No. ...`) from CONTEXT that you rely on, while omitting any unrelated CONTEXT provisions. Write short sentences (10-18 words) with zero archaic words and strict unilingual output.
 
 MANDATORY MARKDOWN STRUCTURE:
 ### Document Overview & Parties
@@ -3832,9 +4505,11 @@ YOUR TASK IN THIS ACTIVE SESSION:
 1. Examine the user's questions in direct relation to the uploaded document "{doc_display_name}".
 2. Use the provided DOCUMENT EXCERPTS to identify and explain specific contents, clauses, terms, or obligations in simple everyday words.
 3. PRIMARY STATUTORY GROUNDING & ANCHORED CITATIONS:
-   - Ground all legal assessments, rights, obligations, and validity directly on specific Civil Code Articles provided in CONTEXT.
-   - Anchor every substantive legal rule or finding with its bracketed citation (e.g. [Art. 1654] or [Art. 1191]).
-4. FACTUAL INTEGRITY & CLOSED-BOOK CONSTRAINT: State clearly what is in the document excerpts. Do not fabricate clauses not found in the excerpts.
+   - Ground all legal assessments, rights, obligations, and validity directly on specific Civil Code / Family Code Articles and cases provided in CONTEXT.
+   - Explicitly cite every statutory article (`[Art. X]` or `Article X`) and Supreme Court case (`Case Title`, `G.R. No. ...`) from CONTEXT that supports your answer, and omit unrelated CONTEXT noise.
+   - STRICT CLOSED-BOOK ARTICLE RULE: ABSOLUTELY FORBIDDEN to invent, guess, or cite ANY Civil Code or Family Code article number that is NOT explicitly present in CONTEXT below (e.g., never cite unrelated articles from memory).
+   - CONVERSATION CONTINUITY & FRESH GROUNDING: Use prior chat history only to understand established facts and parties. Answer the user's NEW question directly using the NEW DOCUMENT EXCERPTS and NEW CONTEXT below. NEVER copy-paste unrelated clauses, indemnification/eviction remarks, examples, or statutory blockquotes from earlier replies.
+4. FACTUAL INTEGRITY & CLOSED-BOOK CONSTRAINT: State clearly what is in the document excerpts (e.g., exact maintenance/repair, damage, or rent clauses present in DOCUMENT EXCERPTS). Do not claim the agreement is silent if a clause in DOCUMENT EXCERPTS addresses the question. Do not fabricate clauses not found in the excerpts.
 5. LIVELY CONVERSATIONAL EXPLANATION & CITIZEN-TAILORED PRACTICAL EXAMPLE:
    - Speak directly with the citizen in a warm, lively, and conversational tone (gamitin ang magalang na 'po/opo' sa Tagalog).
    - Your reader is an everyday citizen, not a lawyer. Write in short, simple sentences (10-18 words max).
@@ -3866,7 +4541,7 @@ MANDATORY RESPONSE FORMATTING & MARKDOWN STRUCTURE:
 
 ### Legal Action Summary
 (Include this section ONLY if the document review reveals actionable violations, contractual breaches, or enforceable remedies. Omit completely if the inquiry is purely descriptive or informational.)
-- **Governing Civil Code Article(s)**: [List specific RA 386 articles] + one plain sentence on what it means for the citizen.
+- **Governing Civil Code / Family Code Article(s)**: [List ONLY exact article numbers from ALLOWED STATUTORY ARTICLES in CONTEXT that you actually applied above — NEVER invent or add any other article number] + one plain sentence on what it means for the citizen.
 - **Competent Court / Jurisdiction**: [MTC (≤ ₱2M), RTC (> ₱2M or incapable of pecuniary estimation), Family Court, or Small Claims] + one plain sentence on where to go.
 - **Pre-filing Requirement**: [Barangay Conciliation mandatory or exempt] + concrete first step (patawag sa Barangay).
 - **Free Legal Assistance**: [Public Attorney's Office (PAO) for citizens who cannot afford a private lawyer].
@@ -3981,7 +4656,7 @@ MANDATORY MARKDOWN FORMAT:
 [1-2 clear, direct sentences summarizing the judicial doctrine and governing Civil Code articles in plain words based strictly on CONTEXT without addressing the user as a party.]
 
 ### Governing Statutory Basis
-> **Article [Number] (Republic Act No. 386 - Civil Code of the Philippines)**
+> **[Copy exact PROVISION title verbatim from CONTEXT, e.g., Article 36 (Executive Order No. 209 - Family Code of the Philippines) or Article 1156 (Republic Act No. 386 - Civil Code of the Philippines)]**
 > "[Quote statutory text verbatim from CONTEXT]"
 
 ### Related Supreme Court Jurisprudence & Doctrines
@@ -4020,7 +4695,7 @@ MANDATORY MARKDOWN FORMAT:
 [1-2 clear, lively, and direct sentences explaining the provision conversationally in plain words, followed by a short practical example (e.g., "Halimbawa sa totoong buhay: ...") illustrating it simply.]
 
 ### Governing Statutory Basis
-> **Article [Number] (Republic Act No. 386 - Civil Code of the Philippines)**
+> **[Copy the exact PROVISION line from CONTEXT including the statute code name, e.g., Article 36 (Executive Order No. 209 - Family Code of the Philippines) or Article 1156 (Republic Act No. 386 - Civil Code of the Philippines)]**
 > "[Quote the core statutory text verbatim from CONTEXT]"
 
 CONTEXT:
@@ -4046,7 +4721,7 @@ MANDATORY MARKDOWN FORMAT:
 
 ### Governing Statutory Basis
 (Provide a dedicated quote block for EACH queried article found in CONTEXT:)
-> **Article [Number] (Republic Act No. 386 - Civil Code of the Philippines)**
+> **[Copy exact PROVISION title verbatim from CONTEXT, e.g., Article 36 (Executive Order No. 209 - Family Code of the Philippines) or Article 1156 (Republic Act No. 386 - Civil Code of the Philippines)]**
 > *[Book / Title / Chapter Hierarchy]*
 >
 > "[Quote the core statutory text verbatim from CONTEXT]"
@@ -4090,8 +4765,9 @@ CITIZEN-CENTRIC GUIDELINES FOR ORDINARY FILIPINOS:
      * Public Attorney's Office (PAO) for free legal assistance if the citizen cannot afford a private lawyer.
      * Small Claims Court for fast money claims where no lawyers are needed.
 5. STRICT CLOSED-BOOK STATUTORY CONSTRAINT & CIVIL LAW EXCLUSIVITY:
-   - Ground your answer strictly on the articles and cases provided in CONTEXT. Quote each governing Civil Code article in CONTEXT EXACTLY ONCE. Never repeat verbatim quote blocks.
-   - You MUST ONLY cite, reference, or quote Civil Code Articles and Supreme Court cases that are explicitly present in the CONTEXT below.
+   - Ground your answer strictly on the articles and cases provided in CONTEXT. Quote each governing Civil Code or Family Code article in CONTEXT that you rely on EXACTLY ONCE. Never repeat verbatim quote blocks.
+   - EXPLICIT CITATION ALIGNMENT: Explicitly cite `[Art. X]` / `Article X` (and `Case Title`, `G.R. No. ...` for any relied-upon case) for every provision from CONTEXT that supports your reasoning, and omit any tangential CONTEXT items you do not rely upon.
+   - You MUST ONLY cite, reference, or quote Civil Code / Family Code Articles and Supreme Court cases that are explicitly present in the CONTEXT below.
    - ABSOLUTELY FORBIDDEN: NEVER invent, introduce, or cite ANY Civil Code Article number (e.g. "Article 2176", "Article 1191") that is not present in CONTEXT.
    - ABSOLUTELY FORBIDDEN: NEVER cite, invent, mention, or reference ANY statutory articles from other legal codes—most especially the Revised Penal Code (RPC), Labor Code, Tax Code, or other non-civil laws. CIVIL-LEX is exclusively a Philippine Civil Law platform. If an issue involves criminal acts, state in plain words that criminal prosecution belongs to criminal law, but DO NOT cite specific Revised Penal Code articles, sections, or penalties. Only cite Civil Code articles and Supreme Court cases that are explicitly present in CONTEXT.
    - NEVER write phrases such as "(na hindi kasama sa aking pinagkukunan)", "(wala man sa aking database)", or "(not included in my sources)". If an article is not in CONTEXT, do NOT cite or invoke it.
@@ -4114,8 +4790,8 @@ MANDATORY RESPONSE STRUCTURE:
 [Start with a warm, conversational, and direct 1-2 sentences directly answering the citizen's question in plain everyday words. Clarify immediately and reassuringly whether this is purely a civil matter (bayaran, kasunduan, danyos—walang kulong) or involves criminal law.]
 
 ### Governing Statutory Basis
-(For each governing Civil Code article in CONTEXT, provide a dedicated blockquote EXACTLY ONCE:)
-> **Article [Number] (Republic Act No. 386 - Civil Code of the Philippines)**
+(For each governing statutory article in CONTEXT, provide a dedicated blockquote EXACTLY ONCE:)
+> **[Copy exact PROVISION title verbatim from CONTEXT, e.g., Article 36 (Executive Order No. 209 - Family Code of the Philippines) or Article 1156 (Republic Act No. 386 - Civil Code of the Philippines)]**
 > *[Book / Title / Chapter Hierarchy]*
 >
 > "[Quote the core statutory text verbatim from CONTEXT]"
@@ -4132,7 +4808,7 @@ MANDATORY RESPONSE STRUCTURE:
 
 ### Practical Next Steps & Remedies
 (Include ONLY when the inquiry presents an actionable dispute, breach, claim, injury, or lawsuit requiring resolution. Omit entirely for purely informational, educational, structural, or single-article lookups.)
-- **Governing Civil Code Article(s)**: [List specific RA 386 articles] + plain-language explanation.
+- **Governing Civil Code / Family Code Article(s)**: [List ONLY exact article numbers from ALLOWED STATUTORY ARTICLES in CONTEXT that you actually applied above — NEVER invent or add any other article number] + plain-language explanation.
 - **Competent Court / Jurisdiction**: [MTC (≤ ₱2M), RTC (> ₱2M or incapable of pecuniary estimation), Family Court, or Small Claims] + plain explanation.
 - **Pre-filing Requirement**: [Barangay conciliation mandatory or exempt] + first community step (patawag sa Barangay).
 - **Free Legal Help**: [Public Attorney's Office (PAO) for indigent citizens who cannot afford a private lawyer].
@@ -4154,6 +4830,12 @@ CONTEXT:
                 system_prompt = session_memory.inject_summary_into_system_prompt(
                     system_prompt, session_summary
                 )
+                if canonical_history and not request.document_id:
+                    system_prompt += (
+                        "\n\nCONVERSATION CONTINUITY: Prior turns are summarized for context only "
+                        "(established facts, parties, and follow-up references). Answer the user's NEW question "
+                        "directly using the NEW CONTEXT above. Do NOT copy-paste unrelated paragraphs or blockquotes from earlier replies."
+                    )
 
                 # Stage 4: Thinking / Reasoning
                 think_msg = (
@@ -4195,6 +4877,7 @@ CONTEXT:
                 full_text = align_refusal_language(full_text, detected_lang)
                 if not is_refusal_or_out_of_scope(full_text):
                     full_text = ensure_mandatory_legal_disclaimer(full_text, detected_lang)
+                full_text = bold_article_references(full_text)
 
                 yield f"data: {dumps({'type': 'status', 'stage': 'streaming', 'message': 'Streaming legal analysis...'})}\n\n"
                 # Batch stream the clean text to client to ensure smooth animation
@@ -4204,9 +4887,7 @@ CONTEXT:
                     yield f"data: {dumps({'type': 'text', 'text': sub_chunk})}\n\n"
                     await asyncio.sleep(0.015)
 
-                # ── Post-Synthesis Citation & Safety Determination ─────
-                # Citations are emitted if the response is an in-domain civil law analysis,
-                # or if a refusal/redirection specifically mentions Civil Code articles.
+                # Emit citations for in-domain responses or refusals mentioning Civil Code articles
                 if is_refusal_or_out_of_scope(full_text):
                     logging.info("Model response detected as refusal/out-of-scope.")
                     is_out_of_domain = True
@@ -4229,7 +4910,36 @@ CONTEXT:
                     yield f"data: {dumps({'type': 'accumulated_citations', 'data': merged_prior_citations})}\n\n"
                     yield f"data: {dumps({'type': 'legal_analytics', 'data': analytics_payload})}\n\n"
                 else:
-                    results = reconcile_response_citations(full_text, results)
+                    results = reconcile_response_citations(
+                        full_text,
+                        results,
+                        query=effective_query,
+                        document_id=request.document_id,
+                        prior_citations=all_active_prior,
+                        query_embedding=q_emb,
+                    )
+                    top_display = max(
+                        [float(c.get('display_suitability', c.get('suitability_percent', 0.0))) for c in results],
+                        default=0.0,
+                    )
+                    result_keys = {get_citation_key(r) for r in results}
+                    # Recompute remaining prior citations AFTER reconciliation so prior turns' cited
+                    # articles are never lost if they were retrieved and pruned on the current turn.
+                    remaining_prior = [
+                        c for c in all_active_prior
+                        if is_active_citation(c) and get_citation_key(c) not in result_keys
+                    ]
+                    remaining_prior_statutes = [c for c in remaining_prior if c.get('parent_type') != 'user_document']
+                    remaining_prior_docs = [c for c in remaining_prior if c.get('parent_type') == 'user_document']
+                    remaining_prior = (remaining_prior_statutes + remaining_prior_docs)[:session_memory.PRIOR_CITATIONS_LIMIT]
+                    accumulated_citations = enforce_unique_decreasing_suitability(
+                        results + remaining_prior
+                    )
+                    # Strip internal reconciliation markers before emitting/persisting
+                    for item in results:
+                        item.pop('_from_prior_session', None)
+                    for item in accumulated_citations:
+                        item.pop('_from_prior_session', None)
                     yield f"data: {dumps({'type': 'citations', 'data': results})}\n\n"
                     yield f"data: {dumps({'type': 'accumulated_citations', 'data': accumulated_citations})}\n\n"
 
@@ -4263,16 +4973,18 @@ CONTEXT:
                     yield f"data: {dumps({'type': 'legal_analytics', 'data': evaluating_payload})}\n\n"
 
                     try:
-                        # RAGAS-compliant: score against the FULL in-context evidence
-                        # actually given to the generator (statutory + doc + case items),
-                        # not just this turn's `results` (which omits retained priors and
-                        # may include out-of-context ranked items never shown to the LLM).
-                        nli_context_items = statutory_items + doc_items + case_items
+                        # RAGAS-compliant: score against the FULL in-context evidence given to the generator
+                        # plus any prior-turn session citations explicitly carried over into the response.
+                        nli_context_items = list(statutory_items + doc_items + case_items)
+                        nli_existing_keys = {get_citation_key(x) for x in nli_context_items}
+                        prior_by_key = {get_citation_key(p): p for p in all_active_prior}
+                        for r_item in results:
+                            rk = get_citation_key(r_item)
+                            if rk in prior_by_key and rk not in nli_existing_keys:
+                                nli_context_items.append(r_item)
+                                nli_existing_keys.add(rk)
                         if not nli_context_items:
-                            nli_context_items = [
-                                c for c in all_citations
-                                if c.get('is_in_context') is not False
-                            ] or results
+                            nli_context_items = active_results or results
                         # Hard budget: the NLI audit must never stall the SSE stream.
                         # On timeout/failure we fall back to symbolic-only scoring
                         # (threadpool, never blocking the event loop) and ALWAYS emit

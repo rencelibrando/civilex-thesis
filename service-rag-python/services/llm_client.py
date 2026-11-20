@@ -19,12 +19,12 @@ def set_model_offline() -> None:
     global _model_online_cache
     _model_online_cache = (False, "server_offline", time.time())
 
-async def check_model_readiness(timeout: float = 1.5) -> tuple[bool, str]:
+async def check_model_readiness(timeout: float = 5.0) -> tuple[bool, str]:
     global _model_online_cache
     if not LM_STUDIO_URL:
         return False, "LM Studio URL is not configured."
     is_ready, reason, checked_at = _model_online_cache
-    ttl = 2.5 if is_ready else 4.0
+    ttl = 15.0 if is_ready else 2.0
     if time.time() - checked_at < ttl:
         if is_ready:
             return True, "ready"
@@ -68,7 +68,7 @@ async def check_model_readiness(timeout: float = 1.5) -> tuple[bool, str]:
         _model_online_cache = (False, "server_offline", time.time())
         return False, "Unable to connect to the language model. LM Studio is currently offline or unreachable. Please verify that LM Studio is running and try again."
 
-async def is_model_online(timeout: float = 1.5) -> bool:
+async def is_model_online(timeout: float = 5.0) -> bool:
     ready, _ = await check_model_readiness(timeout=timeout)
     return ready
 
@@ -97,42 +97,132 @@ async def close_llm_clients():
     if _sync_client and not _sync_client.is_closed:
         _sync_client.close()
 
+_SYNTHETIC_GREETING_SNIPPETS = (
+    "i am civil-lex, your ai legal assistant",
+    "welcome back. continuing previous",
+)
+_DISCLAIMER_SPLIT_RE = re.compile(
+    r'\n\s*---\s*\n\s*>\s*\*?\*?Important\s+Notice|\n\s*>\s*\*?\*?(?:Important\s+Notice|Mahalagang\s+(?:Paalala|Paunawa))',
+    re.IGNORECASE,
+)
+_MAX_HISTORY_CHARS = 4200
+
+
+def compact_assistant_history_message(content: str, max_chars: int = 750) -> str:
+    """Distills verbose prior assistant turns to prevent small-LLM verbatim parroting."""
+    text = (content or "").strip()
+    if not text:
+        return ""
+
+    # Strip repeated educational legal disclaimers
+    text = _DISCLAIMER_SPLIT_RE.split(text, maxsplit=1)[0].strip()
+
+    # Collect cited article references before stripping verbatim statutory blockquotes
+    cited_arts: list[str] = []
+    for m in re.finditer(r'(?:Article|Art\.?|Artikulo)\s*(?:no\.?\s*)?(\d{1,4})', text, re.IGNORECASE):
+        num = m.group(1)
+        if num not in cited_arts:
+            cited_arts.append(num)
+
+    # Drop markdown blockquotes (verbatim statutory text) and Legal Action Summary boilerplate
+    text = re.sub(r'(?is)###\s*(?:Legal Action Summary|Practical Next Steps[^\n]*|Practical Takeaways[^\n]*)[\s\S]*$', '', text)
+    kept_lines: list[str] = []
+    for raw_line in text.splitlines():
+        s = raw_line.strip()
+        if not s or s.startswith(">") or s == "---":
+            continue
+        # Convert section headings to concise inline markers so the model does not copy old templates
+        if s.startswith("#"):
+            heading = s.lstrip("#").strip()
+            if heading:
+                kept_lines.append(f"{heading}:")
+            continue
+        kept_lines.append(s)
+
+    compact = re.sub(r'\s+', ' ', " ".join(kept_lines)).strip()
+    if not compact:
+        compact = re.sub(r'\s+', ' ', text).strip()
+
+    cite_tag = f" [Previously cited: {', '.join(f'Art. {a}' for a in cited_arts[:6])}]" if cited_arts else ""
+    body_budget = max(120, max_chars - len(cite_tag))
+    if len(compact) > body_budget:
+        cut = compact[:body_budget].rsplit(" ", 1)[0].rstrip(" ,;:-")
+        compact = (cut or compact[:body_budget]) + "..."
+
+    if cite_tag and not all(f"{a}" in compact for a in cited_arts[:3]):
+        return f"{compact}{cite_tag}"
+    return compact
+
+
 def build_llm_messages(
     system_prompt: str,
     user_query: str,
     history: Optional[list] = None,
+    *,
+    max_history_chars: int = _MAX_HISTORY_CHARS,
 ) -> list[dict]:
-    """Builds a cleanly alternating system/user/assistant message list for LM Studio."""
+    """Builds a compact, cleanly alternating system/user/assistant message list for LM Studio."""
     scope_refusal_snippet = "I am programmed only to assist with matters related to the Philippine Civil Code"
     clean_history = []
     for msg in history or []:
-        content = msg.get("content", "").strip() if isinstance(msg, dict) else ""
+        if isinstance(msg, dict):
+            role = msg.get("role", "user")
+            content = str(msg.get("content", "")).strip()
+        else:
+            role = getattr(msg, "role", "user")
+            content = str(getattr(msg, "content", "")).strip()
         if not content:
             continue
-        if msg.get("role") == "assistant" and scope_refusal_snippet in content:
-            continue
-        role = msg.get("role", "user")
         if role not in ("user", "assistant"):
             role = "user"
+        low_content = " ".join(content.lower().split())
+        if role == "assistant":
+            if scope_refusal_snippet in content:
+                continue
+            if any(snippet in low_content for snippet in _SYNTHETIC_GREETING_SNIPPETS):
+                continue
+        # Collapse consecutive identical user turns before windowing
+        if (
+            role == "user"
+            and clean_history
+            and clean_history[-1]["role"] == "user"
+            and clean_history[-1]["content"].strip().lower() == content.lower()
+        ):
+            continue
         clean_history.append({"role": role, "content": content})
     clean_history = clean_history[-12:]
 
-    if clean_history and clean_history[-1]["role"] == "user":
+    query_text = user_query.strip().lower()
+    while clean_history and clean_history[-1]["role"] == "user":
         last_user_text = clean_history[-1]["content"].strip().lower()
-        query_text = user_query.strip().lower()
         if (
             last_user_text == query_text
             or query_text.endswith(last_user_text)
             or last_user_text in query_text
         ):
             clean_history.pop()
+        else:
+            break
 
-    # Auto-analyzed document sessions start with an assistant message, so anchor with a user turn for Jinja templates.
+    # Auto-analyzed document sessions start with a real assistant turn; anchor with a user turn for Jinja templates.
     if clean_history and clean_history[0]["role"] == "assistant":
         clean_history.insert(0, {"role": "user", "content": "Please analyze the attached legal document."})
 
+    # Compact assistant history turns (tighter budget for older turns) to prevent small-LLM parroting.
+    assistant_indices = [i for i, m in enumerate(clean_history) if m["role"] == "assistant"]
+    recent_assistant_set = set(assistant_indices[-2:])
+    compacted_history = []
+    for idx, msg in enumerate(clean_history):
+        if msg["role"] == "assistant":
+            cap = 750 if idx in recent_assistant_set else 350
+            compacted_text = compact_assistant_history_message(msg["content"], max_chars=cap)
+            if compacted_text:
+                compacted_history.append({"role": "assistant", "content": compacted_text})
+        else:
+            compacted_history.append({"role": "user", "content": msg["content"]})
+
     normalized_history = []
-    for msg in clean_history:
+    for msg in compacted_history:
         if normalized_history and normalized_history[-1]["role"] == msg["role"]:
             normalized_history[-1]["content"] += f"\n\n{msg['content']}"
         else:
@@ -140,6 +230,10 @@ def build_llm_messages(
 
     if normalized_history and normalized_history[-1]["role"] == "user":
         normalized_history.pop()
+
+    # Enforce total history character budget by dropping oldest user/assistant pairs first.
+    while len(normalized_history) >= 2 and sum(len(m["content"]) for m in normalized_history) > max_history_chars:
+        normalized_history = normalized_history[2:]
 
     return [{"role": "system", "content": system_prompt}, *normalized_history, {"role": "user", "content": user_query}]
 

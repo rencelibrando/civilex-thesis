@@ -26,7 +26,6 @@ import {
   Languages,
   PieChart as PieChartIcon,
   RefreshCw,
-  Scale,
   ShieldCheck,
   User,
 } from "lucide-react";
@@ -38,7 +37,6 @@ import type {
   AnalyticsDays,
   AnalyticsOverviewResponse,
   AnalyticsScope,
-  AnsweredArticleMetric,
   DocumentStageMetric,
   NliBandMetric,
   QueriedArticleMetric,
@@ -253,9 +251,61 @@ export function DashboardAnalyticsSection({ accessToken }: DashboardAnalyticsSec
     );
   }, [data]);
 
-  const answeredArticlesHasPersonal = useMemo(() => {
-    if (!data) return false;
-    return data.most_answered_articles.some((item) => item.my_count > 0);
+  const unifiedArticles = useMemo(() => {
+    if (!data) return [];
+    const byId = new Map<
+      string,
+      QueriedArticleMetric & {
+        queried_count: number;
+        cited_count: number;
+        total_count: number;
+      }
+    >();
+
+    for (const item of data.most_answered_articles) {
+      byId.set(item.article_id, {
+        article_id: item.article_id,
+        article_number: item.article_number,
+        label: item.label,
+        full_label: item.full_label,
+        statute: item.statute,
+        book_name: item.book_name,
+        short_book: item.short_book,
+        title_name: item.title_name,
+        count: item.count,
+        share_percent: 0,
+        queried_count: 0,
+        cited_count: item.count,
+        total_count: item.count,
+      });
+    }
+
+    for (const qItem of data.most_queried_articles) {
+      const existing = byId.get(qItem.article_id);
+      if (existing) {
+        existing.queried_count = qItem.count;
+        existing.total_count = existing.cited_count + qItem.count;
+        existing.count = existing.total_count;
+      } else {
+        byId.set(qItem.article_id, {
+          ...qItem,
+          queried_count: qItem.count,
+          cited_count: 0,
+          total_count: qItem.count,
+        });
+      }
+    }
+
+    const merged = Array.from(byId.values())
+      .filter((a) => a.total_count > 0)
+      .sort((a, b) => b.total_count - a.total_count || b.cited_count - a.cited_count || a.article_number - b.article_number)
+      .slice(0, 10);
+
+    const totalSum = merged.reduce((sum, item) => sum + item.total_count, 0);
+    return merged.map((item) => ({
+      ...item,
+      share_percent: totalSum > 0 ? Math.round((item.total_count / totalSum) * 1000) / 10 : 0,
+    }));
   }, [data]);
 
   const handleExpandWindow = useCallback(() => {
@@ -409,7 +459,7 @@ export function DashboardAnalyticsSection({ accessToken }: DashboardAnalyticsSec
             <div className="rounded-xl border border-border/80 bg-card px-3.5 py-2.5 flex items-center justify-between gap-2">
               <div className="min-w-0">
                 <p className="text-[10px] sm:text-[11px] text-muted-foreground font-medium truncate">
-                  Entailment (&gt;=70%)
+                  Entailment
                 </p>
                 <p className="text-base sm:text-lg font-bold text-foreground tabular-nums">
                   {data.summary.high_grounding_rate !== null
@@ -544,11 +594,6 @@ export function DashboardAnalyticsSection({ accessToken }: DashboardAnalyticsSec
               description="Neuro-Symbolic Hybrid NLI (Symbolic Rules + Gemma) & out-of-domain guardrails"
               icon={<ShieldCheck strokeWidth={1.75} className="w-4 h-4 text-[var(--chart-2)]" />}
               ariaLabel={`NLI statutory grounding distribution across ${data.nli_distribution.total_classified} evaluated responses`}
-              headerRight={
-                <Badge variant="outline" className="text-[10px] font-mono px-2 py-0 h-5">
-                  n = {data.nli_distribution.total_classified}
-                </Badge>
-              }
             >
               {data.nli_distribution.total_classified > 0 && isClient ? (
                 <div className="flex flex-col flex-1 justify-between gap-3">
@@ -631,26 +676,21 @@ export function DashboardAnalyticsSection({ accessToken }: DashboardAnalyticsSec
             </ChartCard>
           </div>
 
-          {/* BAND 2: Most Queried Articles (span 6) + Most Answered Articles (span 6) */}
+          {/* BAND 2: Unified Most Queried & Cited Civil Code Articles (span 6) + Top Legal Topics (span 6) */}
           <div className="grid grid-cols-1 xl:grid-cols-12 gap-4 items-stretch">
             <ChartCard
               className="xl:col-span-6"
-              title="Most Queried Civil Code Articles"
-              description="Explicit article references parsed from user queries. Click a bar to open the article."
+              title="Most Queried & Cited Civil Code Articles"
+              description="Combined statutory demand from user inquiries and AI-grounded answers. Click a bar to open the article."
               icon={<BookOpen strokeWidth={1.75} className="w-4 h-4 text-[var(--chart-1)]" />}
-              ariaLabel={`Top ${data.most_queried_articles.length} explicitly queried Civil Code articles`}
-              headerRight={
-                <Badge variant="outline" className="text-[10px] font-mono px-2 py-0 h-5">
-                  {data.summary.total_article_queries} mentions
-                </Badge>
-              }
+              ariaLabel={`Top ${unifiedArticles.length} most queried and cited Civil Code articles`}
             >
-              {data.most_queried_articles.length > 0 && isClient ? (
+              {unifiedArticles.length > 0 && isClient ? (
                 <div className="flex flex-col flex-1 justify-between gap-2.5">
                   <div className="w-full h-[255px] min-w-0">
                     <ResponsiveContainer width="100%" height="100%" minWidth={0}>
                       <BarChart
-                        data={data.most_queried_articles}
+                        data={unifiedArticles}
                         layout="vertical"
                         margin={{ top: 4, right: 16, left: 6, bottom: 0 }}
                       >
@@ -674,15 +714,36 @@ export function DashboardAnalyticsSection({ accessToken }: DashboardAnalyticsSec
                           cursor={{ fill: "var(--accent)", opacity: 0.45 }}
                           content={({ active, payload }) => {
                             if (!active || !payload || payload.length === 0) return null;
-                            const art = payload[0]?.payload as QueriedArticleMetric | undefined;
+                            const art = payload[0]?.payload as
+                              | (QueriedArticleMetric & {
+                                  queried_count: number;
+                                  cited_count: number;
+                                  total_count: number;
+                                })
+                              | undefined;
                             if (!art) return null;
                             return (
                               <AnalyticsTooltipBox
                                 title={art.full_label}
                                 subtitle={art.short_book}
                                 rows={[
-                                  { label: "User Queries", value: art.count, color: "var(--chart-1)" },
-                                  { label: "Share of Article Queries", value: `${art.share_percent}%` },
+                                  {
+                                    label: "Total Inquiries & Answers",
+                                    value: art.total_count,
+                                    color: "var(--chart-1)",
+                                  },
+                                  {
+                                    label: "Grounded in AI Answers",
+                                    value: art.cited_count,
+                                  },
+                                  {
+                                    label: "Explicitly Queried",
+                                    value: art.queried_count,
+                                  },
+                                  {
+                                    label: "Share of Top Articles",
+                                    value: `${art.share_percent}%`,
+                                  },
                                 ]}
                                 hint="Click bar to read statutory text"
                               />
@@ -690,13 +751,13 @@ export function DashboardAnalyticsSection({ accessToken }: DashboardAnalyticsSec
                           }}
                         />
                         <Bar
-                          dataKey="count"
+                          dataKey="total_count"
                           fill="var(--chart-1)"
                           radius={[0, 6, 6, 0]}
                           maxBarSize={20}
                           className="cursor-pointer"
                           onClick={(_entry, index) => {
-                            const art = data.most_queried_articles[index];
+                            const art = unifiedArticles[index];
                             if (art) navigateToArticle(art.article_id);
                           }}
                         />
@@ -705,7 +766,7 @@ export function DashboardAnalyticsSection({ accessToken }: DashboardAnalyticsSec
                   </div>
                   <div className="flex flex-wrap items-center gap-1.5 pt-2 border-t border-border/60">
                     <span className="text-[10px] text-muted-foreground mr-0.5">Quick jump:</span>
-                    {data.most_queried_articles.slice(0, 5).map((art) => (
+                    {unifiedArticles.slice(0, 5).map((art) => (
                       <Link
                         key={art.article_id}
                         href={`/civil-code?article=${encodeURIComponent(art.article_id)}`}
@@ -719,167 +780,20 @@ export function DashboardAnalyticsSection({ accessToken }: DashboardAnalyticsSec
               ) : (
                 <ChartEmptyState
                   icon={<BookOpen className="w-6 h-6" />}
-                  title="No explicit article numbers queried in this window"
-                  description="Try asking about a specific provision (e.g., Article 1156 or Article 36) or expand the timeframe."
+                  title="No queried or cited articles in this window"
+                  description="Start a legal consultation or ask about a specific provision (e.g., Article 1156 or Article 36)."
                   actionLabel={days !== "all" ? "View All Time" : scope === "me" ? "View All Users" : undefined}
                   onAction={days !== "all" || scope === "me" ? handleExpandWindow : undefined}
                 />
               )}
             </ChartCard>
 
-            <ChartCard
-              className="xl:col-span-6"
-              title="Most Answered / Cited Articles"
-              description={
-                scope === "all"
-                  ? "Top Civil Code articles grounded in AI responses (All Users vs. My Answers)."
-                  : "Civil Code articles most frequently cited in your AI consultations."
-              }
-              icon={<Scale strokeWidth={1.75} className="w-4 h-4 text-[var(--chart-6)]" />}
-              ariaLabel={`Top ${data.most_answered_articles.length} most cited articles in AI responses`}
-              headerRight={
-                scope === "all" && answeredArticlesHasPersonal ? (
-                  <div className="flex items-center gap-2.5 text-[11px] text-muted-foreground">
-                    <span className="inline-flex items-center gap-1">
-                      <span className="w-2 h-2 rounded-full bg-[var(--chart-6)]" aria-hidden="true" />
-                      <span>All</span>
-                    </span>
-                    <span className="inline-flex items-center gap-1">
-                      <span className="w-2 h-2 rounded-full bg-[var(--chart-4)]" aria-hidden="true" />
-                      <span>Mine</span>
-                    </span>
-                  </div>
-                ) : (
-                  <Badge variant="outline" className="text-[10px] font-mono px-2 py-0 h-5">
-                    {data.summary.total_article_citations.toLocaleString()} citations
-                  </Badge>
-                )
-              }
-            >
-              {data.most_answered_articles.length > 0 && isClient ? (
-                <div className="flex flex-col flex-1 justify-between gap-2.5">
-                  <div className="w-full h-[255px] min-w-0">
-                    <ResponsiveContainer width="100%" height="100%" minWidth={0}>
-                      <BarChart
-                        data={data.most_answered_articles}
-                        layout="vertical"
-                        margin={{ top: 4, right: 16, left: 6, bottom: 0 }}
-                        barGap={2}
-                      >
-                        <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" horizontal={false} />
-                        <XAxis
-                          type="number"
-                          allowDecimals={false}
-                          tick={{ fontSize: 11, fill: "var(--muted-foreground)" }}
-                          axisLine={false}
-                          tickLine={false}
-                        />
-                        <YAxis
-                          type="category"
-                          dataKey="label"
-                          width={74}
-                          tick={{ fontSize: 11, fill: "var(--foreground)" }}
-                          axisLine={false}
-                          tickLine={false}
-                        />
-                        <Tooltip
-                          cursor={{ fill: "var(--accent)", opacity: 0.45 }}
-                          content={({ active, payload }) => {
-                            if (!active || !payload || payload.length === 0) return null;
-                            const art = payload[0]?.payload as AnsweredArticleMetric | undefined;
-                            if (!art) return null;
-                            return (
-                              <AnalyticsTooltipBox
-                                title={art.full_label}
-                                subtitle={art.short_book}
-                                rows={[
-                                  {
-                                    label: "All Users Citations",
-                                    value: art.global_count,
-                                    color: "var(--chart-6)",
-                                  },
-                                  {
-                                    label: "My Answers Citations",
-                                    value: art.my_count,
-                                    color: "var(--chart-4)",
-                                  },
-                                  {
-                                    label: "Scope Share",
-                                    value: `${art.share_percent}%`,
-                                  },
-                                ]}
-                                hint="Click bar to read statutory text"
-                              />
-                            );
-                          }}
-                        />
-                        <Bar
-                          dataKey={scope === "all" ? "global_count" : "my_count"}
-                          name={scope === "all" ? "All Users" : "My Answers"}
-                          fill="var(--chart-6)"
-                          radius={[0, 6, 6, 0]}
-                          maxBarSize={scope === "all" && answeredArticlesHasPersonal ? 12 : 20}
-                          className="cursor-pointer"
-                          onClick={(_entry, index) => {
-                            const art = data.most_answered_articles[index];
-                            if (art) navigateToArticle(art.article_id);
-                          }}
-                        />
-                        {scope === "all" && answeredArticlesHasPersonal && (
-                          <Bar
-                            dataKey="my_count"
-                            name="My Answers"
-                            fill="var(--chart-4)"
-                            radius={[0, 6, 6, 0]}
-                            maxBarSize={12}
-                            className="cursor-pointer"
-                            onClick={(_entry, index) => {
-                              const art = data.most_answered_articles[index];
-                              if (art) navigateToArticle(art.article_id);
-                            }}
-                          />
-                        )}
-                      </BarChart>
-                    </ResponsiveContainer>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-1.5 pt-2 border-t border-border/60">
-                    <span className="text-[10px] text-muted-foreground mr-0.5">Quick jump:</span>
-                    {data.most_answered_articles.slice(0, 5).map((art) => (
-                      <Link
-                        key={art.article_id}
-                        href={`/civil-code?article=${encodeURIComponent(art.article_id)}`}
-                        className="text-[10px] font-medium px-2 py-0.5 rounded-md border border-border/70 bg-muted/40 text-foreground hover:border-primary/50 hover:text-primary transition-colors"
-                      >
-                        {art.label}
-                      </Link>
-                    ))}
-                  </div>
-                </div>
-              ) : (
-                <ChartEmptyState
-                  icon={<Scale className="w-6 h-6" />}
-                  title="No cited statutory answers in this window"
-                  description="Grounded Civil Code citations will populate once consultations are completed."
-                  actionLabel={days !== "all" ? "View All Time" : scope === "me" ? "View All Users" : undefined}
-                  onAction={days !== "all" || scope === "me" ? handleExpandWindow : undefined}
-                />
-              )}
-            </ChartCard>
-          </div>
-
-          {/* BAND 3: Top Legal Topics Donut + Breakdown (span 6) | Language/Domain + Document Funnel (span 6) */}
-          <div className="grid grid-cols-1 xl:grid-cols-12 gap-4 items-stretch">
             <ChartCard
               className="xl:col-span-6"
               title="Top Legal Topics & Civil Code Books"
               description="Distribution of grounded inquiries across Philippine Civil Law & Family Code domains"
               icon={<PieChartIcon strokeWidth={1.75} className="w-4 h-4 text-[var(--chart-1)]" />}
               ariaLabel={`Legal topic breakdown totaling ${data.top_topics.total_hits} statutory hits`}
-              headerRight={
-                <Badge variant="outline" className="text-[10px] font-mono px-2 py-0 h-5">
-                  {data.top_topics.total_hits.toLocaleString()} hits
-                </Badge>
-              }
             >
               {topicChartData.length > 0 && isClient ? (
                 <div className="flex flex-col flex-1 justify-between gap-4">
@@ -996,11 +910,12 @@ export function DashboardAnalyticsSection({ accessToken }: DashboardAnalyticsSec
                 />
               )}
             </ChartCard>
+          </div>
 
-            <div className="xl:col-span-6 flex flex-col gap-4 min-w-0">
-              {/* Chart 6: Language & Domain Intent Mix */}
+          {/* BAND 3: Language & Domain Intent Mix (span 6) + Document Analysis Validation Funnel (span 6) */}
+          <div className="grid grid-cols-1 xl:grid-cols-12 gap-4 items-stretch">
               <ChartCard
-                className="flex-1"
+                className="xl:col-span-6"
                 title="Language & Domain Intent Mix"
                 description="Bilingual English/Tagalog usage & domain boundary routing breakdown"
                 icon={<Languages strokeWidth={1.75} className="w-4 h-4 text-[var(--chart-4)]" />}
@@ -1181,24 +1096,12 @@ export function DashboardAnalyticsSection({ accessToken }: DashboardAnalyticsSec
                 )}
               </ChartCard>
 
-              {/* Chart 7: Document Analysis Validation Funnel */}
               <ChartCard
-                className="flex-1"
+                className="xl:col-span-6"
                 title="Document Analysis Validation Funnel"
                 description="Civil Law uploads accepted vs. rejected out-of-domain vs. Document Builder drafts"
                 icon={<FileCheck2 strokeWidth={1.75} className="w-4 h-4 text-[var(--chart-2)]" />}
                 ariaLabel={`Document validation funnel across ${data.document_funnel.total_documents} documents`}
-                headerRight={
-                  data.document_funnel.acceptance_rate !== null ? (
-                    <Badge variant="outline" className="text-[10px] font-mono px-2 py-0 h-5">
-                      {data.document_funnel.acceptance_rate}% upload pass
-                    </Badge>
-                  ) : (
-                    <Badge variant="outline" className="text-[10px] font-mono px-2 py-0 h-5">
-                      {data.document_funnel.total_documents} docs
-                    </Badge>
-                  )
-                }
               >
                 {data.document_funnel.total_documents > 0 && isClient ? (
                   <div className="space-y-2">
@@ -1274,7 +1177,6 @@ export function DashboardAnalyticsSection({ accessToken }: DashboardAnalyticsSec
                   />
                 )}
               </ChartCard>
-            </div>
           </div>
         </div>
       ) : null}

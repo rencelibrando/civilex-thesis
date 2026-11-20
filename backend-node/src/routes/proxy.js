@@ -18,6 +18,34 @@ export const setupProxies = (app) => {
     })
   );
 
+  // Proxy fast non-LLM English <-> Tagalog translation requests to Python RAG service
+  app.post(
+    '/api/chat/translate',
+    requireAuth,
+    createProxyMiddleware({
+      target: ragServiceUrl,
+      changeOrigin: true,
+      timeout: 15000,
+      proxyTimeout: 15000,
+      pathRewrite: {
+        '^/api/chat/translate': '/translate',
+      },
+      on: {
+        error: (err, req, res) => {
+          console.error('[Translate Proxy Error]:', err.message);
+          if (!res.headersSent) {
+            res.writeHead(503, { 'Content-Type': 'application/json' });
+            res.end(
+              JSON.stringify({
+                error: 'Translation service is temporarily unavailable. Please try again.',
+              })
+            );
+          }
+        },
+      },
+    })
+  );
+
   const injectUserAndKeepAlive = (proxyReq, req) => {
     if (proxyReq.socket) {
       proxyReq.socket.setTimeout(0);

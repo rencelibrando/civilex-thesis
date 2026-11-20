@@ -61,6 +61,7 @@ def init_document_table():
         conn = psycopg2.connect(DEFAULT_DB_URL)
         with conn.cursor() as cur:
             cur.execute("ALTER TABLE user_documents ADD COLUMN IF NOT EXISTS error_message TEXT;")
+            cur.execute("ALTER TABLE user_documents ADD COLUMN IF NOT EXISTS progress INTEGER DEFAULT 0;")
             cur.execute("ALTER TABLE user_documents ADD COLUMN IF NOT EXISTS extracted_text TEXT;")
             cur.execute("ALTER TABLE user_documents ADD COLUMN IF NOT EXISTS canvas_content TEXT;")
             cur.execute("ALTER TABLE user_documents ADD COLUMN IF NOT EXISTS canvas_html TEXT;")
@@ -83,14 +84,24 @@ def init_document_table():
 # Run schema initialization once on import
 init_document_table()
 
-def update_status(document_id: str, status: str, error_message: str = None):
+def update_status(document_id: str, status: str, error_message: str = None, progress: int = None):
     try:
         conn = psycopg2.connect(DEFAULT_DB_URL)
         with conn.cursor() as cur:
-            if error_message is not None:
+            if error_message is not None and progress is not None:
+                cur.execute(
+                    "UPDATE user_documents SET status = %s, error_message = %s, progress = %s WHERE id = %s",
+                    (status, error_message, int(progress), document_id)
+                )
+            elif error_message is not None:
                 cur.execute(
                     "UPDATE user_documents SET status = %s, error_message = %s WHERE id = %s",
                     (status, error_message, document_id)
+                )
+            elif progress is not None:
+                cur.execute(
+                    "UPDATE user_documents SET status = %s, progress = %s WHERE id = %s",
+                    (status, int(progress), document_id)
                 )
             else:
                 cur.execute(
@@ -220,13 +231,14 @@ def extract_docx_structured_text(file_bytes: bytes) -> str:
 
 def extract_and_process_document(file_url: str, document_id: str, filename: str):
     print(f"Starting extraction for document {document_id} ({filename}) from {file_url}")
-    update_status(document_id, 'extracting')
+    update_status(document_id, 'extracting', progress=18)
     
     # 1. Download file with explicit timeout
     try:
         response = httpx.get(file_url, timeout=35.0)
         response.raise_for_status()
         file_bytes = response.content
+        update_status(document_id, 'extracting', progress=28)
     except httpx.TimeoutException:
         print(f"Download timed out for {file_url}")
         update_status(document_id, 'error', "Document download timed out. Please try uploading again.")
@@ -257,10 +269,14 @@ def extract_and_process_document(file_url: str, document_id: str, filename: str)
                             img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
                             page_text = pytesseract.image_to_string(img, timeout=20)
                             text += page_text + "\n\n"
+                            ocr_pct = 30 + int(((i + 1) / max(1, max_pages)) * 18)
+                            update_status(document_id, 'extracting', progress=ocr_pct)
                         except pytesseract.pytesseract.TesseractTimeoutError:
                             print(f"PDF OCR page {i+1} timed out, skipping")
                         except Exception as page_err:
                             print(f"PDF OCR page {i+1} failed: {page_err}")
+            else:
+                update_status(document_id, 'extracting', progress=45)
 
         elif is_image:
             print("Extracting text from image using OCR...")
@@ -287,8 +303,10 @@ def extract_and_process_document(file_url: str, document_id: str, filename: str)
                 img = img.convert('RGB')
 
             try:
+                update_status(document_id, 'extracting', progress=34)
                 # 25-second timeout for image OCR
                 text = pytesseract.image_to_string(img, timeout=25)
+                update_status(document_id, 'extracting', progress=48)
             except pytesseract.pytesseract.TesseractTimeoutError:
                 print(f"Image OCR timed out after 25s for document {document_id}")
                 update_status(document_id, 'rejected_unrelated', "Image OCR timed out. The image could not be parsed for text in time.")
@@ -306,6 +324,7 @@ def extract_and_process_document(file_url: str, document_id: str, filename: str)
             print("Extracting text from word document with structured markdown...")
             if docx:
                 text = extract_docx_structured_text(file_bytes)
+                update_status(document_id, 'extracting', progress=45)
             else:
                 print("python-docx not installed, cannot extract docx")
                 update_status(document_id, 'error', "Word document extractor is not installed on the server.")
@@ -314,6 +333,7 @@ def extract_and_process_document(file_url: str, document_id: str, filename: str)
         elif ext == 'txt':
             print("Extracting text from plain text file...")
             text = file_bytes.decode('utf-8', errors='ignore')
+            update_status(document_id, 'extracting', progress=45)
 
         else:
             print(f"Unsupported file extension: {ext}")
@@ -340,6 +360,7 @@ def extract_and_process_document(file_url: str, document_id: str, filename: str)
         return
 
     # Reject non-Civil-Code documents immediately before chunking or embedding
+    update_status(document_id, 'extracting', progress=55)
     router = get_shared_domain_router()
     if router is None and _model is not None:
         router = get_shared_domain_router(_model)
@@ -356,6 +377,7 @@ def extract_and_process_document(file_url: str, document_id: str, filename: str)
         update_status(document_id, 'rejected_unrelated', "Document contains insufficient text to form analytical chunks.")
         return
 
+    update_status(document_id, 'extracting', progress=65)
     model = get_model()
     if not model:
         print("SentenceTransformer model not available. Marking as error.")
@@ -367,8 +389,8 @@ def extract_and_process_document(file_url: str, document_id: str, filename: str)
 
         conn = psycopg2.connect(DEFAULT_DB_URL)
         total_chunks = len(chunks)
-        batch_size = 16
-        last_progress = 0
+        batch_size = 4
+        last_progress = 65
 
         with conn.cursor() as cur:
             for batch_start in range(0, total_chunks, batch_size):
@@ -402,8 +424,8 @@ def extract_and_process_document(file_url: str, document_id: str, filename: str)
                 )
 
                 current_count = min(batch_start + len(batch_chunks), total_chunks)
-                progress_percent = int((current_count / total_chunks) * 100)
-                if progress_percent - last_progress >= 20 or current_count == total_chunks:
+                progress_percent = min(95, 65 + int((current_count / total_chunks) * 30))
+                if progress_percent > last_progress or current_count == total_chunks:
                     cur.execute(
                         "UPDATE user_documents SET progress = %s WHERE id = %s;",
                         (progress_percent, document_id),

@@ -206,7 +206,8 @@ router.post('/upload', requireAuth, upload.single('file'), async (req, res) => {
         user_id: userId,
         filename: req.file.originalname,
         file_url: fileUrl,
-        status: 'uploading'
+        status: 'uploading',
+        progress: 12
       });
 
     if (error) throw error;
@@ -243,7 +244,7 @@ router.post('/upload', requireAuth, upload.single('file'), async (req, res) => {
         }).eq('id', docId);
       });
 
-    res.status(201).json({ id: docId, file_url: fileUrl, status: 'uploading' });
+    res.status(201).json({ id: docId, file_url: fileUrl, status: 'uploading', progress: 12 });
   } catch (err) {
     console.error("Error uploading document:", err);
     // Handle multer file type errors

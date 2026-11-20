@@ -16,6 +16,18 @@ import {
   getPersonalizedGreeting,
 } from "@/lib/user-persona";
 import { runResumableStream, StreamEvent } from "@/lib/resumable-stream";
+import {
+  ensureUniqueSuitability,
+  filterActiveCitations,
+  resolveDocumentUploadProgress,
+} from "@/lib/citation-utils";
+import {
+  ChatLanguage,
+  MessageTranslationState,
+  detectMessageLanguage,
+  getEffectiveTranslationState,
+  getNextTargetLanguage,
+} from "@/lib/translation-utils";
 import type { UserDocument } from "@/components/document-preview";
 import { useAuth } from "./auth-context";
 
@@ -440,6 +452,7 @@ interface ChatContextType {
   isTyping: boolean;
   ragStatus: RagStatus | null;
   currentCitations: any[];
+  setCurrentCitations: React.Dispatch<React.SetStateAction<any[]>>;
   retainedCitations: any[];
   setRetainedCitations: React.Dispatch<React.SetStateAction<any[]>>;
   activeCitationFilter: 'all' | 'latest';
@@ -473,6 +486,9 @@ interface ChatContextType {
   handleNewChat: () => void;
   handleClarificationSubmit: (originalQuery: string, answers: Record<string, string>) => Promise<void>;
   resumeActiveJob: (sessionId: string) => Promise<boolean>;
+  messageTranslations: Record<number, MessageTranslationState>;
+  clearMessageTranslations: () => void;
+  toggleMessageTranslation: (messageId: number, originalContent: string) => Promise<void>;
 }
 
 export function getCitationKey(item: any): string {
@@ -486,20 +502,23 @@ export function getCitationKey(item: any): string {
 }
 
 export function sortCitations(citations: any[]): any[] {
-  return [...(citations || [])].sort((a, b) => {
-    const aOut = a.is_in_context === false || a.rank_status === "out_of_rank" ? 1 : 0;
-    const bOut = b.is_in_context === false || b.rank_status === "out_of_rank" ? 1 : 0;
-    if (aOut !== bOut) return aOut - bOut;
-    const rankDiff = (a?.rank || 999) - (b?.rank || 999);
-    if (rankDiff !== 0) return rankDiff;
+  const activeOnly = filterActiveCitations(citations);
+  const groupPriority = (type?: string) => (type === "user_document" ? 1 : 0);
+  const sorted = [...activeOnly].sort((a, b) => {
+    // Keep cited statutory articles and jurisprudence ahead of uploaded document chunks
+    const groupDiff = groupPriority(a?.parent_type) - groupPriority(b?.parent_type);
+    if (groupDiff !== 0) return groupDiff;
     const scoreA = Number(a?.suitability_percent) || 0;
     const scoreB = Number(b?.suitability_percent) || 0;
     const scoreDiff = scoreB - scoreA;
     if (scoreDiff !== 0) return scoreDiff;
+    const rankDiff = (a?.rank || 999) - (b?.rank || 999);
+    if (rankDiff !== 0) return rankDiff;
     const priority = (type?: string) =>
       type === "article" || type === "civil_code" ? 1 : type === "user_document" ? 2 : 3;
     return priority(a.parent_type) - priority(b.parent_type);
   });
+  return ensureUniqueSuitability(sorted);
 }
 
 export function mergeCitations(existing: any[], incoming: any[]): any[] {
@@ -557,6 +576,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const [docUploadStatusText, setDocUploadStatusText] = useState<string | null>(null);
   const [docUploadError, setDocUploadError] = useState<string | null>(null);
   const [docRejectionNotice, setDocRejectionNotice] = useState<DocRejectionNotice | null>(null);
+  const [messageTranslations, setMessageTranslations] = useState<Record<number, MessageTranslationState>>({});
 
   const [userFirstName, setUserFirstName] = useState(initialProfile.firstName);
 
@@ -590,6 +610,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const messagesRef = useRef<Message[]>(messages);
   const sessionIdRef = useRef<string | null>(sessionId);
   const retainedCitationsRef = useRef<any[]>(retainedCitations);
+  const messageTranslationsRef = useRef<Record<number, MessageTranslationState>>(messageTranslations);
+  const translatingIdsRef = useRef<Set<number>>(new Set());
+  const translationEpochRef = useRef<number>(0);
 
   useEffect(() => {
     activeDocumentRef.current = activeDocument;
@@ -611,7 +634,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     retainedCitationsRef.current = retainedCitations;
   }, [retainedCitations]);
 
-  // ── Load profile + personalize greeting on mount ──────────────────────────
+  useEffect(() => {
+    messageTranslationsRef.current = messageTranslations;
+  }, [messageTranslations]);
+
+  // Load profile and personalize greeting on mount
   useEffect(() => {
     async function loadProfileAndPersonalize() {
       try {
@@ -652,7 +679,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       }
     }
     loadProfileAndPersonalize();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const refreshStarters = useCallback(() => {
@@ -766,7 +793,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
             ) {
               const currentAccumulator = activeStreamContextRef.current?.fullResponse || "";
               if (lastAssistant.content.length >= currentAccumulator.length || currentAccumulator.length === 0) {
-                const recoveredCitations = lastAssistant.citations || [];
+                const recoveredCitations = sortCitations(lastAssistant.citations || []);
                 const recoveredAnalytics = lastAssistant.legal_analytics || null;
 
                 if (abortControllerRef.current && !abortControllerRef.current.signal.aborted && !isExplicitlyStoppedRef.current) {
@@ -783,12 +810,12 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                   prev.map((m) =>
                     m.id === targetAssistantId
                       ? {
-                          ...m,
-                          content: lastAssistant.content,
-                          citations: recoveredCitations,
-                          legalAnalytics: settleNliAnalytics(recoveredAnalytics),
-                          ragStatus: { stage: "completed", message: "Analysis complete" },
-                        }
+                        ...m,
+                        content: lastAssistant.content,
+                        citations: recoveredCitations,
+                        legalAnalytics: settleNliAnalytics(recoveredAnalytics),
+                        ragStatus: { stage: "completed", message: "Analysis complete" },
+                      }
                       : m
                   )
                 );
@@ -906,6 +933,137 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     setDocRejectionNotice(null);
   }, [stopDocPolling]);
 
+  const clearMessageTranslations = useCallback(() => {
+    translationEpochRef.current += 1;
+    translatingIdsRef.current.clear();
+    setMessageTranslations({});
+    messageTranslationsRef.current = {};
+  }, []);
+
+  const toggleMessageTranslation = useCallback(
+    async (messageId: number, originalContent: string) => {
+      if (!originalContent || !originalContent.trim()) return;
+      if (translatingIdsRef.current.has(messageId)) return;
+
+      const existing = getEffectiveTranslationState(
+        originalContent,
+        messageTranslationsRef.current[messageId]
+      );
+      const originalLang: ChatLanguage = existing?.originalLang ?? detectMessageLanguage(originalContent);
+      const currentLang: ChatLanguage = existing?.activeLang ?? originalLang;
+      const targetLang: ChatLanguage = getNextTargetLanguage(currentLang);
+
+      const baseState: MessageTranslationState = {
+        originalContent,
+        originalLang,
+        activeLang: currentLang,
+        en: existing?.en ?? (originalLang === "en" ? originalContent : undefined),
+        tl: existing?.tl ?? (originalLang === "tl" ? originalContent : undefined),
+        isTranslating: false,
+        error: null,
+      };
+
+      // Cached alternate version flips instantaneously without a network round-trip
+      if (baseState[targetLang]) {
+        const nextState: MessageTranslationState = {
+          ...baseState,
+          activeLang: targetLang,
+          isTranslating: false,
+          error: null,
+        };
+        setMessageTranslations((prev) => ({ ...prev, [messageId]: nextState }));
+        return;
+      }
+
+      const epoch = translationEpochRef.current;
+      translatingIdsRef.current.add(messageId);
+      setMessageTranslations((prev) => ({
+        ...prev,
+        [messageId]: { ...baseState, isTranslating: true, error: null },
+      }));
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 15000);
+
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const token = session?.access_token || "";
+
+        const res = await fetch(`${BACKEND_URL}/api/chat/translate`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+            "X-Tunnel-Skip-AntiPhishing-Page": "true",
+          },
+          body: JSON.stringify({
+            text: originalContent,
+            target_lang: targetLang,
+            source_lang: "auto",
+          }),
+          signal: controller.signal,
+        });
+
+        clearTimeout(timeoutId);
+        if (epoch !== translationEpochRef.current) return;
+
+        if (!res.ok) {
+          const errPayload = await res.json().catch(() => ({}));
+          const errMsg =
+            errPayload.detail ||
+            errPayload.error ||
+            "Translation failed. Please try again.";
+          setMessageTranslations((prev) => ({
+            ...prev,
+            [messageId]: { ...baseState, isTranslating: false, error: errMsg },
+          }));
+          return;
+        }
+
+        const data = await res.json();
+        const translatedText =
+          typeof data?.translated_text === "string" ? data.translated_text : "";
+        if (!translatedText) {
+          setMessageTranslations((prev) => ({
+            ...prev,
+            [messageId]: {
+              ...baseState,
+              isTranslating: false,
+              error: "Translation returned empty text. Please retry.",
+            },
+          }));
+          return;
+        }
+
+        const nextState: MessageTranslationState = {
+          ...baseState,
+          [targetLang]: translatedText,
+          activeLang: targetLang,
+          isTranslating: false,
+          error: null,
+        };
+        setMessageTranslations((prev) => ({ ...prev, [messageId]: nextState }));
+      } catch (err: unknown) {
+        clearTimeout(timeoutId);
+        if (epoch !== translationEpochRef.current) return;
+        const isAbort = err instanceof Error && err.name === "AbortError";
+        setMessageTranslations((prev) => ({
+          ...prev,
+          [messageId]: {
+            ...baseState,
+            isTranslating: false,
+            error: isAbort
+              ? "Translation timed out. Please retry."
+              : "Translation unavailable. Please retry.",
+          },
+        }));
+      } finally {
+        translatingIdsRef.current.delete(messageId);
+      }
+    },
+    []
+  );
+
   const handleNewChat = useCallback(() => {
     isExplicitlyStoppedRef.current = true;
     if (abortControllerRef.current && !abortControllerRef.current.signal.aborted) {
@@ -924,6 +1082,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     activeAssistantIdRef.current = null;
 
     clearDocument();
+    clearMessageTranslations();
     setIsTyping(false);
     setRagStatus(null);
     const resetMsgs = userFirstName
@@ -944,14 +1103,14 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     }
 
     refreshStarters();
-  }, [clearDocument, refreshStarters, userFirstName]);
+  }, [clearDocument, clearMessageTranslations, refreshStarters, userFirstName]);
 
   // Reset chat if the logged-in user changes to prevent cross-account chat bleed
   let authUserId: string | null = null;
   try {
     const auth = useAuth();
     authUserId = auth.user?.id || null;
-  } catch {}
+  } catch { }
 
   const prevUserIdRef = useRef<string | null>(authUserId);
 
@@ -1045,10 +1204,10 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                   prev.map((msg) =>
                     msg.id === assistantId
                       ? {
-                          ...msg,
-                          legalAnalytics: analytics,
-                          ...(analytics?.is_out_of_domain && receivedCitations.length === 0 ? { citations: [] } : {}),
-                        }
+                        ...msg,
+                        legalAnalytics: analytics,
+                        ...(analytics?.is_out_of_domain && receivedCitations.length === 0 ? { citations: [] } : {}),
+                      }
                       : msg
                   )
                 );
@@ -1099,11 +1258,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                   prev.map((msg) =>
                     msg.id === assistantId
                       ? {
-                          ...msg,
-                          content: fullResponseAccumulator,
-                          citations: [],
-                          ragStatus: { stage: "error", message: errorMsg },
-                        }
+                        ...msg,
+                        content: fullResponseAccumulator,
+                        citations: [],
+                        ragStatus: { stage: "error", message: errorMsg },
+                      }
                       : msg
                   )
                 );
@@ -1143,11 +1302,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
             prev.map((msg) =>
               msg.id === assistantId
                 ? {
-                    ...msg,
-                    content: fullResponseAccumulator,
-                    citations: [],
-                    ragStatus: { stage: "error", message: errorMsg },
-                  }
+                  ...msg,
+                  content: fullResponseAccumulator,
+                  citations: [],
+                  ragStatus: { stage: "error", message: errorMsg },
+                }
                 : msg
             )
           );
@@ -1208,13 +1367,13 @@ export function ChatProvider({ children }: { children: ReactNode }) {
             prev.map((msg) =>
               msg.id === assistantId
                 ? {
-                    ...msg,
-                    citations: [],
-                    ragStatus: { stage: "error", message: "Service connection error" },
-                    content:
-                      msg.content ||
-                      "> **Connection Notice**\n>\n> Unable to connect to the legal service. The model service (LM Studio) may be offline. Please verify that LM Studio is running and try again.",
-                  }
+                  ...msg,
+                  citations: [],
+                  ragStatus: { stage: "error", message: "Service connection error" },
+                  content:
+                    msg.content ||
+                    "> **Connection Notice**\n>\n> Unable to connect to the legal service. The model service (LM Studio) may be offline. Please verify that LM Studio is running and try again.",
+                }
                 : msg
             )
           );
@@ -1254,6 +1413,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
       setActiveDocument(doc);
       activeDocumentRef.current = doc;
+      clearMessageTranslations();
       setDocUploadError(null);
       setDocRejectionNotice(null);
       setCurrentCitations([]);
@@ -1322,7 +1482,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         },
       });
     },
-    [executeAssistantStream, startCharStream, stopCharStream, userFirstName]
+    [clearMessageTranslations, executeAssistantStream, startCharStream, stopCharStream, userFirstName]
   );
 
   const loadDocumentById = useCallback(
@@ -1449,8 +1609,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           return;
         }
 
-        setDocUploadProgress(15);
-        setDocUploadStatusText(`Extracting & checking Civil Code relevance for ${file.name}...`);
+        let trackedProgress = Math.max(15, Number(uploadResult?.progress) || 15);
+        setDocUploadProgress(trackedProgress);
+        setDocUploadStatusText(`Uploading & reading ${file.name} (${trackedProgress}%)...`);
 
         const pollStatus = async () => {
           try {
@@ -1465,8 +1626,12 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
             if (docData.status === "completed") {
               stopDocPolling();
+              const resolvedDone = resolveDocumentUploadProgress(docData, trackedProgress, file.name);
+              trackedProgress = 100;
+              setDocUploadProgress(resolvedDone.progress);
+              setDocUploadStatusText(resolvedDone.statusText);
+              await new Promise((r) => setTimeout(r, 180));
               setIsUploadingDoc(false);
-              setDocUploadProgress(100);
               setDocUploadStatusText(null);
               await startDocumentAnalysisSession(docData);
             } else if (docData.status === "rejected_unrelated" || docData.status === "error") {
@@ -1484,12 +1649,10 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                 status: docData.status,
               });
             } else {
-              setDocUploadProgress(docData.progress || 25);
-              setDocUploadStatusText(
-                docData.status === "extracting"
-                  ? `Extracting & validating Civil Code relevance (${docData.progress || 0}%)...`
-                  : `Uploading ${file.name}...`
-              );
+              const resolved = resolveDocumentUploadProgress(docData, trackedProgress, file.name);
+              trackedProgress = resolved.progress;
+              setDocUploadProgress(resolved.progress);
+              setDocUploadStatusText(resolved.statusText);
             }
           } catch (pollErr) {
             console.warn("Document polling check failed:", pollErr);
@@ -1498,7 +1661,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
         await pollStatus();
         if (!autoAnalyzedDocIdsRef.current.has(docId) && docPollTimerRef.current === null) {
-          docPollTimerRef.current = setInterval(pollStatus, 1200);
+          docPollTimerRef.current = setInterval(pollStatus, 450);
         }
       } catch (err: any) {
         clearTimeout(timeoutId);
@@ -1584,17 +1747,13 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       }
     }
 
-    if (activeSessionId) {
-      fetch(`${BACKEND_URL}/api/sessions/${activeSessionId}/messages`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ role: "user", content: userText }),
-      }).catch((err) => console.error("Failed to save user message:", err));
-    }
+    // Exclude synthetic greeting (id=1), empty placeholders, and notice cards from LLM history.
+    const serializedHistory = currentHistory
+      .slice(0, -1)
+      .filter((m) => m.id !== 1 && Boolean(m.content && m.content.trim()) && !m.content.startsWith("> **Service Notice**"))
+      .map((m) => ({ role: m.role, content: m.content }));
 
+    // /api/chat persists the user turn atomically server-side, avoiding duplicate concurrent writes.
     await executeAssistantStream({
       targetSessionId: activeSessionId,
       assistantId,
@@ -1604,7 +1763,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         query: userText,
         session_id: activeSessionId,
         ...activeDocPayload,
-        history: currentHistory.slice(0, -1).map((m) => ({ role: m.role, content: m.content })),
+        history: serializedHistory,
         prior_citations: retainedCitations,
       },
     });
@@ -1653,22 +1812,14 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     const { data: { session } } = await supabase.auth.getSession();
     const token = session?.access_token || "";
 
-    if (sessionId) {
-      fetch(`${BACKEND_URL}/api/sessions/${sessionId}/messages`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ role: "user", content: answerSummary }),
-      }).catch((err) => console.error("Failed to save clarification message:", err));
-    }
-
     const currentDoc = activeDocumentRef.current;
     const activeDocPayload =
       currentDoc?.id && currentDoc.status === "completed"
         ? { document_id: currentDoc.id, document_name: currentDoc.filename }
         : {};
+    const serializedClarHistory = messages
+      .filter((m) => m.id !== 1 && Boolean(m.content && m.content.trim()) && !m.content.startsWith("> **Service Notice**"))
+      .map((m) => ({ role: m.role, content: m.content }));
 
     await executeAssistantStream({
       targetSessionId: sessionId,
@@ -1680,7 +1831,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         original_query: originalQuery,
         session_id: sessionId,
         ...activeDocPayload,
-        history: messages.map((m) => ({ role: m.role, content: m.content })),
+        history: serializedClarHistory,
         prior_citations: retainedCitations,
         clarification_context: { answers, original_query: originalQuery },
       },
@@ -1747,12 +1898,14 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                 prev.map((m) => (m.id === assistantId ? { ...m, ragStatus: sObj } : m))
               );
             } else if (data.type === "citations") {
-              receivedCits = (data.data as Record<string, unknown>[]) || [];
+              receivedCits = sortCitations((data.data as Record<string, unknown>[]) || []);
               setCurrentCitations(receivedCits);
               setRetainedCitations((prev) => mergeCitations(prev, receivedCits));
               setMessages((prev) =>
                 prev.map((m) => (m.id === assistantId ? { ...m, citations: receivedCits } : m))
               );
+            } else if (data.type === "accumulated_citations") {
+              setRetainedCitations(sortCitations((data.data as Record<string, unknown>[]) || []));
             } else if (data.type === "legal_analytics") {
               const analytics = data.data as LegalAnalytics;
               setLegalAnalytics(analytics);
@@ -1774,11 +1927,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                 prev.map((m) =>
                   m.id === assistantId
                     ? {
-                        ...m,
-                        content: fullAccumulator,
-                        citations: [],
-                        ragStatus: { stage: "error", message: errorMsg },
-                      }
+                      ...m,
+                      content: fullAccumulator,
+                      citations: [],
+                      ragStatus: { stage: "error", message: errorMsg },
+                    }
                     : m
                 )
               );
@@ -1810,11 +1963,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
             prev.map((m) =>
               m.id === assistantId
                 ? {
-                    ...m,
-                    content: fullAccumulator,
-                    citations: [],
-                    ragStatus: { stage: "error", message: errorMsg },
-                  }
+                  ...m,
+                  content: fullAccumulator,
+                  citations: [],
+                  ragStatus: { stage: "error", message: errorMsg },
+                }
                 : m
             )
           );
@@ -1843,6 +1996,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         isTyping,
         ragStatus,
         currentCitations,
+        setCurrentCitations,
         retainedCitations,
         setRetainedCitations,
         activeCitationFilter,
@@ -1873,6 +2027,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         handleNewChat,
         handleClarificationSubmit,
         resumeActiveJob,
+        messageTranslations,
+        clearMessageTranslations,
+        toggleMessageTranslation,
       }}
     >
       {children}

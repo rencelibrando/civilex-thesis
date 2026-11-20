@@ -1,20 +1,56 @@
 from __future__ import annotations
 import logging
+import re as _re
 import uuid
 from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-# Tunables — kept small for 6GB VRAM / LM Studio local inference.
+# Tunables calibrated for 6GB VRAM local inference and multi-turn document chats.
 HISTORY_LIMIT = 20          # turns loaded from DB per request
-LLM_WINDOW = 12             # verbatim turns sent to LLM (enforced in llm_client too)
+LLM_WINDOW = 12             # turns sent to LLM (compacted in llm_client)
 RETRIEVAL_WINDOW = 6        # turns used for query contextualization
-PRIOR_CITATIONS_LIMIT = 6   # server-side retained citations
-SUMMARY_TRIGGER_COUNT = 14  # start summarizing once history reaches this length
-SUMMARY_EVERY_N = 10        # refresh summary every N new messages after trigger
+PRIOR_CITATIONS_LIMIT = 24  # server-side retained citations across multi-turn chats
+SUMMARY_TRIGGER_COUNT = 8   # start summarizing once history reaches 4 exchanges
+SUMMARY_EVERY_N = 6         # refresh summary every 6 new messages after trigger
 SUMMARY_MAX_CHARS = 1500    # cap stored summary length
 
 _column_cache: Dict[str, bool] = {}
+
+_SYNTHETIC_GREETING_SNIPPETS = (
+    "i am civil-lex",
+    "your philippine civil law assistant",
+    "what legal question can i help you with today",
+    "welcome back. continuing previous",
+)
+
+
+def is_synthetic_greeting(content: Optional[str]) -> bool:
+    if not content:
+        return False
+    low = " ".join(str(content).strip().lower().split())
+    return any(snippet in low for snippet in _SYNTHETIC_GREETING_SNIPPETS)
+
+
+def dedupe_consecutive_user_turns(history: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    """Collapse consecutive duplicate user turns and strip synthetic UI greetings."""
+    out: List[Dict[str, str]] = []
+    for m in history:
+        role = m.get("role")
+        content = str(m.get("content", "")).strip()
+        if role not in ("user", "assistant") or not content:
+            continue
+        if role == "assistant" and is_synthetic_greeting(content):
+            continue
+        if (
+            role == "user"
+            and out
+            and out[-1]["role"] == "user"
+            and out[-1]["content"].strip().lower() == content.lower()
+        ):
+            continue
+        out.append({"role": role, "content": content})
+    return out
 
 
 def is_valid_uuid(value: Optional[str]) -> bool:
@@ -128,7 +164,7 @@ def load_session_history(
                 role, content = r[0], r[1]
             if role in ("user", "assistant") and content and str(content).strip():
                 out.append({"role": role, "content": str(content)})
-        return out
+        return dedupe_consecutive_user_turns(out)
     except Exception as exc:
         logger.warning("load_session_history failed for %s: %s", session_id, exc)
         return []
@@ -140,12 +176,47 @@ def load_session_history(
             pass
 
 
+def _citation_priority_key(cit: Dict[str, Any]) -> str:
+    ptype = cit.get("parent_type")
+    pid = cit.get("parent_id") or cit.get("id")
+    if ptype == "article" and pid:
+        return f"article_{pid}"
+    if ptype == "case":
+        meta = cit.get("metadata") or {}
+        gr = meta.get("gr_number") or ""
+        if gr:
+            clean_gr = _re.sub(r'[^A-Za-z0-9]', '', str(gr)).upper()
+            if clean_gr:
+                return f"case_gr_{clean_gr}"
+        if pid:
+            return f"case_{pid}"
+    cid = cit.get("chunk_id")
+    if cid:
+        return str(cid)
+    snip = str(cit.get("content", ""))[:60].strip()
+    if ptype == "user_document":
+        return f"doc_{pid}_{snip}"
+    return str(pid or snip)
+
+
+def _prioritize_statutes_and_cases(items: List[Dict[str, Any]], limit: int) -> List[Dict[str, Any]]:
+    """Retain statutory articles and jurisprudence ahead of document chunks within limit."""
+    statutes_and_cases: List[Dict[str, Any]] = []
+    other_items: List[Dict[str, Any]] = []
+    for cit in items:
+        if cit.get("parent_type") in ("article", "case", "jurisprudence"):
+            statutes_and_cases.append(cit)
+        else:
+            other_items.append(cit)
+    return (statutes_and_cases + other_items)[: int(limit)]
+
+
 def load_recent_citations(
     session_id: Optional[str],
     limit: int = PRIOR_CITATIONS_LIMIT,
     get_conn: Optional[Callable] = None,
 ) -> List[Dict[str, Any]]:
-    """Load most-recent stored citations for a session (for retrieval continuity)."""
+    """Load most-recent stored citations for a session (prioritizing statutory authorities)."""
     if not is_valid_uuid(session_id) or get_conn is None:
         return []
     conn = None
@@ -158,7 +229,7 @@ def load_recent_citations(
                 WHERE session_id = %s AND citations IS NOT NULL
                 ORDER BY created_at DESC LIMIT %s;
                 """,
-                (str(session_id), int(limit) * 3),
+                (str(session_id), min(30, max(12, int(limit)))),
             )
             rows = cur.fetchall()
     except Exception as exc:
@@ -192,14 +263,11 @@ def load_recent_citations(
         for cit in items:
             if not isinstance(cit, dict):
                 continue
-            cid = cit.get("chunk_id") or cit.get("parent_id") or cit.get("id")
-            key = str(cid) if cid else str(cit.get("content", ""))[:60]
+            key = _citation_priority_key(cit)
             if key and key not in seen:
                 seen.add(key)
                 out.append(cit)
-            if len(out) >= int(limit):
-                return out
-    return out
+    return _prioritize_statutes_and_cases(out, int(limit))
 
 
 def load_session_summary(
@@ -251,6 +319,11 @@ def save_user_message(
     try:
         conn = get_conn()
         with conn.cursor() as cur:
+            # Serialize per-session user writes to eliminate concurrent duplicate inserts.
+            try:
+                cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s));", (str(session_id),))
+            except Exception:
+                pass
             cur.execute(
                 """
                 SELECT role, content FROM chat_messages
@@ -259,20 +332,31 @@ def save_user_message(
                 (str(session_id),),
             )
             last = cur.fetchone()
-        if last is not None:
-            if isinstance(last, dict):
-                lr, lc = last.get("role"), str(last.get("content", "")).strip()
-            else:
-                lr, lc = last[0], str(last[1] or "").strip()
-            if lr == "user" and lc == text:
-                return False
-        with conn.cursor() as cur:
+            if last is not None:
+                if isinstance(last, dict):
+                    lr, lc = last.get("role"), str(last.get("content", "")).strip()
+                else:
+                    lr, lc = last[0], str(last[1] or "").strip()
+                if lr == "user" and lc == text:
+                    conn.commit()
+                    return False
             cur.execute(
-                "INSERT INTO chat_messages (session_id, role, content) VALUES (%s, 'user', %s);",
-                (str(session_id), text),
+                """
+                INSERT INTO chat_messages (session_id, role, content)
+                SELECT %s, 'user', %s
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM chat_messages
+                    WHERE session_id = %s
+                      AND role = 'user'
+                      AND btrim(content) = %s
+                      AND created_at > NOW() - INTERVAL '15 seconds'
+                );
+                """,
+                (str(session_id), text, str(session_id), text),
             )
+            inserted = cur.rowcount > 0
             conn.commit()
-        return True
+        return inserted
     except Exception as exc:
         logger.warning("save_user_message failed: %s", exc)
         try:
@@ -293,13 +377,11 @@ def resolve_history(
     client_history: Optional[List[Any]],
     db_history: Optional[List[Dict[str, str]]],
 ) -> List[Dict[str, str]]:
-    """
-    Prefer server-authoritative DB history; fall back to client history
-    (new session not yet persisted, or DB unreachable).
-    Pure function — unit tested.
-    """
+    """Prefer server-authoritative DB history; collapse duplicate user turns and strip greetings."""
     if db_history:
-        return [{"role": m["role"], "content": m["content"]} for m in db_history]
+        return dedupe_consecutive_user_turns(
+            [{"role": m["role"], "content": m["content"]} for m in db_history]
+        )[-HISTORY_LIMIT:]
     out: List[Dict[str, str]] = []
     for m in client_history or []:
         if isinstance(m, dict):
@@ -309,7 +391,7 @@ def resolve_history(
             content = getattr(m, "content", "")
         if role in ("user", "assistant") and content and str(content).strip():
             out.append({"role": role, "content": str(content)})
-    return out[-HISTORY_LIMIT:]
+    return dedupe_consecutive_user_turns(out)[-HISTORY_LIMIT:]
 
 
 def merge_prior_citations(
@@ -317,29 +399,17 @@ def merge_prior_citations(
     client_citations: Optional[List[Dict[str, Any]]],
     limit: int = PRIOR_CITATIONS_LIMIT,
 ) -> List[Dict[str, Any]]:
-    """Union server + client citations, deduped by chunk/parent key. Pure."""
-    def _key(cit: Dict[str, Any]) -> str:
-        cid = cit.get("chunk_id")
-        if cid:
-            return str(cid)
-        pid = cit.get("parent_id") or cit.get("id")
-        snip = str(cit.get("content", ""))[:60].strip()
-        if cit.get("parent_type") == "user_document":
-            return f"doc_{pid}_{snip}"
-        return str(pid or snip)
-
+    """Union server + client citations, deduplicating by key and prioritizing statutes and cases."""
     seen: set = set()
     out: List[Dict[str, Any]] = []
     for cit in list(server_citations or []) + list(client_citations or []):
         if not isinstance(cit, dict):
             continue
-        k = _key(cit)
+        k = _citation_priority_key(cit)
         if k and k not in seen:
             seen.add(k)
             out.append(cit)
-        if len(out) >= int(limit):
-            break
-    return out
+    return _prioritize_statutes_and_cases(out, int(limit))
 
 
 def to_chat_messages(history_dicts: List[Dict[str, str]]):
@@ -368,26 +438,53 @@ async def maybe_refresh_summary(
     session_id: Optional[str],
     get_conn: Optional[Callable] = None,
 ) -> Optional[str]:
-    """
-    Refresh chat_sessions.summary when the transcript grows past the trigger.
-    Best-effort: never raises; returns the new summary or None.
-    """
+    """Refresh chat_sessions.summary when the transcript grows past the trigger."""
     if not is_valid_uuid(session_id) or get_conn is None:
         return None
     history = load_session_history(session_id, limit=40, get_conn=get_conn)
     if not should_refresh_summary(len(history)):
         return None
-    # Summarize everything except the recent verbatim window.
+
+    # Verify target column exists before spending GPU time on a summary LLM call.
+    probe_conn = None
+    has_summary_col = False
+    has_updated_col = False
+    try:
+        probe_conn = get_conn()
+        has_summary_col = _has_column(probe_conn, "chat_sessions", "summary")
+        if has_summary_col:
+            has_updated_col = _has_column(probe_conn, "chat_sessions", "summary_updated_at")
+    except Exception as exc:
+        logger.warning("summary schema check failed: %s", exc)
+        return None
+    finally:
+        try:
+            if probe_conn:
+                probe_conn.close()
+        except Exception:
+            pass
+    if not has_summary_col:
+        logger.warning("chat_sessions.summary column missing; skipping summary generation")
+        return None
+
     older = history[:-LLM_WINDOW] if len(history) > LLM_WINDOW else history
     if not older:
         return None
-    transcript = "\n".join(f"{m['role']}: {m['content'][:400]}" for m in older[-20:])
-    try:
-        from services.llm_client import call_chat_completion_async
+    from services.llm_client import call_chat_completion_async, compact_assistant_history_message
 
+    transcript_lines = []
+    for m in older[-20:]:
+        body = (
+            compact_assistant_history_message(m["content"], max_chars=360)
+            if m["role"] == "assistant"
+            else m["content"][:360]
+        )
+        transcript_lines.append(f"{m['role']}: {body}")
+    transcript = "\n".join(transcript_lines)
+    try:
         prompt = (
             "Summarize this Philippine civil-law chat transcript in 5 sentences max. "
-            "Keep parties, facts, cited articles, and open questions. No legal advice, just facts:\n\n"
+            "Keep parties, key document clauses, facts, cited Civil/Family Code articles, and open questions:\n\n"
             + transcript
         )
         summary = await call_chat_completion_async(
@@ -408,14 +505,17 @@ async def maybe_refresh_summary(
     conn = None
     try:
         conn = get_conn()
-        if not _has_column(conn, "chat_sessions", "summary"):
-            logger.warning("chat_sessions.summary column missing; skipping summary persist")
-            return summary
         with conn.cursor() as cur:
-            cur.execute(
-                "UPDATE chat_sessions SET summary = %s WHERE id = %s;",
-                (summary, str(session_id)),
-            )
+            if has_updated_col:
+                cur.execute(
+                    "UPDATE chat_sessions SET summary = %s, summary_updated_at = NOW() WHERE id = %s;",
+                    (summary, str(session_id)),
+                )
+            else:
+                cur.execute(
+                    "UPDATE chat_sessions SET summary = %s WHERE id = %s;",
+                    (summary, str(session_id)),
+                )
             conn.commit()
         return summary
     except Exception as exc:
@@ -428,8 +528,6 @@ async def maybe_refresh_summary(
         except Exception:
             pass
 
-
-import re as _re
 
 # Meta-questions about the conversation itself. Require an explicit
 # conversation/history marker so civil queries ("what is quasi-delict?")

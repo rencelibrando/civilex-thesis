@@ -127,6 +127,17 @@ class TestUploadTimeDomainRejection(unittest.TestCase):
         ]
         self.assertTrue(completed_updates, f"Expected completed update, got: {executed}")
 
+        # Verify granular monotonic progress milestones (18 -> 28 -> 45 -> 55 -> 65 -> 95 -> 100)
+        progress_values = []
+        for sql, params in executed:
+            if "UPDATE user_documents" in sql and "progress = %s" in sql and params:
+                for p in params:
+                    if isinstance(p, int):
+                        progress_values.append(p)
+            elif "status = 'completed', progress = 100" in sql:
+                progress_values.append(100)
+        self.assertEqual(progress_values, [18, 28, 45, 55, 65, 95, 100])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback, Fragment, isValidElement, Suspense } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo, Fragment, isValidElement, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import {
   Send,
@@ -36,6 +36,8 @@ import {
   EyeOff,
   X,
   Download,
+  Languages,
+  RotateCcw,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -61,6 +63,19 @@ import {
   generateFollowUpPrompts,
   LegalAnalytics,
 } from "@/context/chat-context";
+import {
+  formatCitationArticleLabel,
+  formatCitationModalTitle,
+  formatSuitabilityPercent,
+  isFamilyCodeCitation,
+  filterActiveCitations,
+  boldArticleReferences,
+} from "@/lib/citation-utils";
+import {
+  ChatLanguage,
+  getDisplayedMessageState,
+  getTranslateButtonLabel,
+} from "@/lib/translation-utils";
 
 function cleanCaseSummary(text?: string): string {
   if (!text) return "No summary available for this case.";
@@ -102,6 +117,7 @@ function extractTextContent(node: React.ReactNode): string {
 }
 
 function AssistantMarkdown({ content }: { content: string }) {
+  const formattedContent = useMemo(() => boldArticleReferences(content), [content]);
   return (
     <div
       className="prose prose-sm dark:prose-invert max-w-none
@@ -127,7 +143,7 @@ function AssistantMarkdown({ content }: { content: string }) {
         components={{
           blockquote: ({ children, ...props }) => {
             const text = extractTextContent(children);
-            const isDisclaimer = /important\s+notice|mahalagang\s+paalala|educational\s+legal\s+information/i.test(text);
+            const isDisclaimer = /important\s+(?:notice|note)|mahalagang\s+(?:paalala|paunawa)|educational\s+(?:legal\s+)?information|pang-edukasyon\s+na\s+(?:legal\s+na\s+)?impormasyon/i.test(text);
             if (isDisclaimer) {
               return (
                 <blockquote
@@ -142,7 +158,7 @@ function AssistantMarkdown({ content }: { content: string }) {
           },
         }}
       >
-        {content}
+        {formattedContent}
       </ReactMarkdown>
     </div>
   );
@@ -178,11 +194,84 @@ function CopyMessageButton({ content, disabled }: { content: string; disabled?: 
       disabled={disabled || !content}
       title={copied ? "Copied!" : "Copy text"}
       aria-label={copied ? "Copied!" : "Copy response text"}
-      className="mt-1.5 inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-medium text-muted-foreground hover:text-foreground hover:bg-accent border border-transparent hover:border-border transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+      className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-medium text-muted-foreground hover:text-foreground hover:bg-accent border border-transparent hover:border-border transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
     >
       {copied ? <Check className="w-3 h-3 text-emerald-500" /> : <Copy className="w-3 h-3" />}
       <span>{copied ? "Copied" : "Copy text"}</span>
     </button>
+  );
+}
+
+function TranslateMessageButton({
+  activeLang,
+  isTranslated,
+  hasCachedAlternate,
+  isTranslating,
+  error,
+  disabled,
+  onToggle,
+}: {
+  activeLang: ChatLanguage;
+  isTranslated: boolean;
+  hasCachedAlternate: boolean;
+  isTranslating: boolean;
+  error: string | null;
+  disabled?: boolean;
+  onToggle: () => void;
+}) {
+  const label = getTranslateButtonLabel(activeLang, isTranslating);
+  const translatedLangLabel = activeLang === "tl" ? "Tagalog" : "English";
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={onToggle}
+        disabled={disabled || isTranslating}
+        aria-busy={isTranslating}
+        aria-label={label}
+        title={label}
+        className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-[11px] font-medium border transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${isTranslated
+          ? "bg-blue-500/10 dark:bg-blue-500/20 text-blue-700 dark:text-blue-300 border-blue-500/25 hover:bg-blue-500/15 dark:hover:bg-blue-500/30"
+          : "text-muted-foreground hover:text-foreground hover:bg-accent border-transparent hover:border-border"
+          }`}
+      >
+        {isTranslating ? (
+          <Loader2 className="w-3 h-3 animate-spin text-blue-600 dark:text-blue-400" />
+        ) : (
+          <Languages className="w-3 h-3 text-blue-600 dark:text-blue-400" />
+        )}
+        <span>{label}</span>
+      </button>
+
+      {isTranslated && !isTranslating && (
+        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-blue-500/10 dark:bg-blue-500/20 text-blue-700 dark:text-blue-300 border border-blue-500/20">
+          Translated ({translatedLangLabel})
+        </span>
+      )}
+
+      {!isTranslated && hasCachedAlternate && !isTranslating && (
+        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-muted/70 text-muted-foreground border border-border/70">
+          Original
+        </span>
+      )}
+
+      {error && !isTranslating && (
+        <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-lg text-[11px] bg-destructive/10 text-destructive border border-destructive/25">
+          <AlertCircle className="w-3 h-3 shrink-0" />
+          <span>{error}</span>
+          <button
+            type="button"
+            onClick={onToggle}
+            disabled={disabled}
+            className="inline-flex items-center gap-0.5 font-semibold underline underline-offset-2 hover:opacity-80 cursor-pointer disabled:opacity-40"
+          >
+            <RotateCcw className="w-2.5 h-2.5" />
+            <span>Retry</span>
+          </button>
+        </span>
+      )}
+    </>
   );
 }
 
@@ -615,6 +704,7 @@ function ChatPageContent() {
     isTyping,
     ragStatus,
     currentCitations,
+    setCurrentCitations,
     retainedCitations,
     setRetainedCitations,
     activeCitationFilter,
@@ -643,9 +733,16 @@ function ChatPageContent() {
     handleNewChat,
     handleClarificationSubmit,
     resumeActiveJob,
+    messageTranslations,
+    clearMessageTranslations,
+    toggleMessageTranslation,
   } = useChat();
 
   const isGenerating = isTyping;
+  const activeRetainedCitations = filterActiveCitations(retainedCitations);
+  const activeCurrentCitations = filterActiveCitations(currentCitations);
+  const allSourcesCitations =
+    activeRetainedCitations.length > 0 ? activeRetainedCitations : activeCurrentCitations;
 
   const [isAutoScrollEnabled, setIsAutoScrollEnabled] = useState(true);
   const [copiedCitation, setCopiedCitation] = useState(false);
@@ -767,10 +864,18 @@ function ChatPageContent() {
             }>;
             if (Array.isArray(rawMessages) && rawMessages.length > 0) {
               setSessionId(sessionParam);
+              clearMessageTranslations();
               const allCits: Record<string, unknown>[] = [];
               const seen = new Set<string>();
 
-              const formattedMessages = rawMessages.map((m, idx) => {
+              // Collapse legacy duplicate consecutive user turns persisted prior to atomic user-write serialization
+              const dedupedRawMessages = rawMessages.filter((m, idx) => {
+                if (m.role !== "user" || idx === 0) return true;
+                const prev = rawMessages[idx - 1];
+                return !(prev.role === "user" && prev.content.trim() === m.content.trim());
+              });
+
+              const formattedMessages = dedupedRawMessages.map((m, idx) => {
                 let parsedCits: Record<string, unknown>[] = [];
                 if (m.citations) {
                   try {
@@ -807,6 +912,11 @@ function ChatPageContent() {
 
               const sortedAll = sortCitations(allCits);
               setRetainedCitations(sortedAll);
+
+              const lastAssistantWithCits = [...formattedMessages]
+                .reverse()
+                .find((m) => m.role === "assistant" && Array.isArray(m.citations) && m.citations.length > 0);
+              setCurrentCitations(lastAssistantWithCits?.citations || []);
 
               const lastAssistantWithAnalytics = [...formattedMessages]
                 .reverse()
@@ -850,10 +960,12 @@ function ChatPageContent() {
     loadDocumentById,
     clearDocument,
     setSessionId,
+    setCurrentCitations,
     setRetainedCitations,
     setLegalAnalytics,
     setFollowUpPrompts,
     setMessages,
+    clearMessageTranslations,
     resumeActiveJob,
   ]);
 
@@ -1009,7 +1121,7 @@ function ChatPageContent() {
               title="View statutory citations and grounding"
             >
               <BookOpen className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
-              <span>Citations ({retainedCitations.length})</span>
+              <span>Citations ({allSourcesCitations.length})</span>
             </Button>
           </div>
         </div>
@@ -1073,6 +1185,10 @@ function ChatPageContent() {
                     : 0;
                   const isNewTurn = isUser && userTurnIndex > 1;
                   const isFirstUserTurn = isUser && userTurnIndex === 1;
+                  const translationView = isAssistant
+                    ? getDisplayedMessageState(msg.content, messageTranslations[msg.id])
+                    : null;
+                  const displayedContent = translationView ? translationView.content : msg.content;
 
                   return (
                     <Fragment key={msg.id}>
@@ -1134,10 +1250,10 @@ function ChatPageContent() {
                                       onSubmit={handleClarificationSubmit}
                                       isSubmitted={!isLatestAssistant || isGenerating}
                                     />
-                                  ) : (msg.id === 1 || idx === 0) ? (
+                                  ) : (msg.id === 1 || idx === 0) && !translationView?.isTranslated && !translationView?.hasCachedAlternate ? (
                                     <StartingTypewriterMessage key={msg.content} content={msg.content} />
                                   ) : (
-                                    <AssistantMarkdown content={msg.content} />
+                                    <AssistantMarkdown content={displayedContent} />
                                   )
                                 ) : (
                                   <span className="whitespace-pre-wrap">{msg.content}</span>
@@ -1145,11 +1261,22 @@ function ChatPageContent() {
                               </div>
                             )}
 
-                            {isAssistant && msg.content && !msg.clarificationData && (
-                              <CopyMessageButton
-                                content={msg.content}
-                                disabled={isLatestAssistant && isGenerating}
-                              />
+                            {isAssistant && msg.content && !msg.clarificationData && translationView && (
+                              <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                                <CopyMessageButton
+                                  content={displayedContent}
+                                  disabled={isLatestAssistant && isGenerating}
+                                />
+                                <TranslateMessageButton
+                                  activeLang={translationView.activeLang}
+                                  isTranslated={translationView.isTranslated}
+                                  hasCachedAlternate={translationView.hasCachedAlternate}
+                                  isTranslating={translationView.isTranslating}
+                                  error={translationView.error}
+                                  disabled={isLatestAssistant && isGenerating}
+                                  onToggle={() => toggleMessageTranslation(msg.id, msg.content)}
+                                />
+                              </div>
                             )}
 
                             {msg.reasoning && (
@@ -1173,17 +1300,12 @@ function ChatPageContent() {
                       {idx === 0 && activeDocument && activeDocument.status === "completed" && (
                         <div className="my-4 p-3 sm:p-3.5 rounded-xl bg-emerald-500/8 dark:bg-emerald-500/12 border border-emerald-500/25 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 animate-fade-in">
                           <div className="flex items-start sm:items-center gap-2.5 min-w-0">
-                            <div className="w-8 h-8 rounded-lg bg-emerald-500/15 border border-emerald-500/25 flex items-center justify-center shrink-0">
-                              <FileText className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
-                            </div>
+                            <FileText className="w-5 h-5 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5 sm:mt-0" />
                             <div className="min-w-0">
                               <div className="flex items-center gap-1.5 flex-wrap">
                                 <span className="text-[11px] font-semibold uppercase tracking-wider text-emerald-700 dark:text-emerald-300">
                                   Document Attached
                                 </span>
-                                <Badge variant="outline" className="text-[10px] py-0 px-1.5 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border-emerald-500/30">
-                                  Philippine Civil Law Verified
-                                </Badge>
                               </div>
                               <p className="text-xs sm:text-sm font-semibold text-foreground truncate mt-0.5">
                                 {formatDocDisplayName(activeDocument.filename)}
@@ -1208,7 +1330,7 @@ function ChatPageContent() {
                                 download={activeDocument.filename}
                                 target="_blank"
                                 rel="noopener noreferrer"
-                                className="inline-flex items-center justify-center h-7.5 w-7.5 rounded-md border border-border/80 text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+                                className="inline-flex items-center justify-center h-7.5 w-7.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-emerald-500/15 transition-colors"
                                 title="Download original document"
                               >
                                 <Download className="w-3.5 h-3.5" />
@@ -1482,13 +1604,13 @@ function ChatPageContent() {
           <div className="flex flex-col h-full bg-card min-h-0 overflow-hidden w-full max-w-full">
             {/* Panel header with Filter Tabs */}
             <div className="p-3.5 border-b border-border bg-card flex flex-col gap-2.5 shrink-0">
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between pr-9 xl:pr-0">
                 <div className="flex items-center gap-2">
                   <BookOpen className="w-4 h-4 text-blue-600 dark:text-blue-400" />
                   <h3 className="font-semibold text-sm text-foreground">Retained Citations</h3>
                 </div>
                 <span className="text-[10px] font-mono font-medium px-2 py-0.5 rounded-full bg-blue-500/10 dark:bg-blue-500/20 text-blue-600 dark:text-blue-400 border border-blue-500/20">
-                  {retainedCitations.length} Total
+                  {allSourcesCitations.length} Total
                 </span>
               </div>
 
@@ -1502,7 +1624,7 @@ function ChatPageContent() {
                     : "text-muted-foreground hover:text-foreground"
                     }`}
                 >
-                  All Sources ({retainedCitations.length})
+                  All Sources ({allSourcesCitations.length})
                 </button>
                 <button
                   type="button"
@@ -1512,7 +1634,7 @@ function ChatPageContent() {
                     : "text-muted-foreground hover:text-foreground"
                     }`}
                 >
-                  Latest ({currentCitations.length})
+                  Latest ({activeCurrentCitations.length})
                 </button>
               </div>
             </div>
@@ -1524,6 +1646,9 @@ function ChatPageContent() {
                 const isNliEvaluating =
                   ragStatus?.stage === "evaluating_nli" ||
                   legalAnalytics?.nli_status === "Evaluating";
+                const hasNliContradiction =
+                  !legalAnalytics?.is_out_of_domain &&
+                  (legalAnalytics?.claims_contradicted ?? 0) > 0;
                 const shouldShowCard =
                   legalAnalytics?.nli_score != null ||
                   legalAnalytics?.is_out_of_domain ||
@@ -1547,11 +1672,13 @@ function ChatPageContent() {
                           ? "bg-primary/10 border-primary/30 text-primary"
                           : legalAnalytics?.is_out_of_domain || legalAnalytics?.nli_score == null
                             ? "bg-muted/80 border-border text-muted-foreground"
-                            : legalAnalytics.nli_score >= 85
-                              ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-600 dark:text-emerald-400"
-                              : legalAnalytics.nli_score >= 70
-                                ? "bg-blue-500/10 border-blue-500/20 text-blue-600 dark:text-blue-400"
-                                : "bg-amber-500/10 border-amber-500/20 text-amber-600 dark:text-amber-400"
+                            : hasNliContradiction
+                              ? "bg-rose-500/10 border-rose-500/25 text-rose-600 dark:text-rose-400"
+                              : legalAnalytics.nli_score >= 85
+                                ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-600 dark:text-emerald-400"
+                                : legalAnalytics.nli_score >= 70
+                                  ? "bg-blue-500/10 border-blue-500/20 text-blue-600 dark:text-blue-400"
+                                  : "bg-amber-500/10 border-amber-500/20 text-amber-600 dark:text-amber-400"
                           }`}>
                           {isNliEvaluating ? (
                             <Loader2 className="w-4 h-4 animate-spin text-primary" />
@@ -1598,11 +1725,13 @@ function ChatPageContent() {
                           <span
                             className={`text-xs font-bold px-2 py-0.5 rounded-md border tabular-nums whitespace-nowrap ${legalAnalytics?.is_out_of_domain || legalAnalytics?.nli_score == null
                               ? "text-muted-foreground bg-muted/60 border-border"
-                              : legalAnalytics.nli_score >= 85
-                                ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
-                                : legalAnalytics.nli_score >= 70
-                                  ? "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60"
-                                  : "text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/50 border-amber-200 dark:border-amber-800/60"
+                              : hasNliContradiction
+                                ? "text-rose-700 dark:text-rose-400 bg-rose-50 dark:bg-rose-950/50 border-rose-200 dark:border-rose-800/60"
+                                : legalAnalytics.nli_score >= 85
+                                  ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
+                                  : legalAnalytics.nli_score >= 70
+                                    ? "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60"
+                                    : "text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/50 border-amber-200 dark:border-amber-800/60"
                               }`}
                           >
                             {legalAnalytics?.is_out_of_domain || legalAnalytics?.nli_score == null ? "N/A" : `${legalAnalytics.nli_score}%`}
@@ -1620,11 +1749,13 @@ function ChatPageContent() {
                         <div
                           className={`h-full rounded-full transition-all duration-700 ease-out ${legalAnalytics?.is_out_of_domain || legalAnalytics?.nli_score == null
                             ? "bg-muted-foreground/30"
-                            : legalAnalytics.nli_score >= 85
-                              ? "bg-emerald-500"
-                              : legalAnalytics.nli_score >= 70
-                                ? "bg-blue-500"
-                                : "bg-amber-500"
+                            : hasNliContradiction
+                              ? "bg-rose-500"
+                              : legalAnalytics.nli_score >= 85
+                                ? "bg-emerald-500"
+                                : legalAnalytics.nli_score >= 70
+                                  ? "bg-blue-500"
+                                  : "bg-amber-500"
                             }`}
                           style={{
                             width: `${legalAnalytics?.is_out_of_domain || legalAnalytics?.nli_score == null
@@ -1644,11 +1775,13 @@ function ChatPageContent() {
                             ? "bg-primary animate-ping"
                             : legalAnalytics?.is_out_of_domain || legalAnalytics?.nli_score == null
                               ? "bg-muted-foreground/50"
-                              : legalAnalytics.nli_score >= 85
-                                ? "bg-emerald-500"
-                                : legalAnalytics.nli_score >= 70
-                                  ? "bg-blue-500"
-                                  : "bg-amber-500"
+                              : hasNliContradiction
+                                ? "bg-rose-500"
+                                : legalAnalytics.nli_score >= 85
+                                  ? "bg-emerald-500"
+                                  : legalAnalytics.nli_score >= 70
+                                    ? "bg-blue-500"
+                                    : "bg-amber-500"
                             }`}
                         />
                         {isNliEvaluating
@@ -1657,11 +1790,13 @@ function ChatPageContent() {
                             ? legalAnalytics?.domain_category === "other_legal"
                               ? `Redirected (${legalAnalytics.target_domain || "Non-Civil Statute"})`
                               : "Domain Scope Refusal"
-                            : legalAnalytics.nli_score >= 85
-                              ? "Strict Statutory Entailment"
-                              : legalAnalytics.nli_score >= 70
-                                ? "Substantially Consistent"
-                                : "Generalized Principles"}
+                            : hasNliContradiction
+                              ? `Contradicted (${legalAnalytics?.claims_contradicted} ${legalAnalytics?.claims_contradicted === 1 ? "claim" : "claims"})`
+                              : legalAnalytics.nli_score >= 85
+                                ? "Strict Statutory Entailment"
+                                : legalAnalytics.nli_score >= 70
+                                  ? "Substantially Consistent"
+                                  : "Generalized Principles"}
                       </span>
                       <span className="text-[10px] font-medium text-muted-foreground group-hover:text-primary transition-colors inline-flex items-center gap-0.5">
                         Inspect audit <ChevronRight className="w-3 h-3 group-hover:translate-x-0.5 transition-transform" />
@@ -1674,22 +1809,10 @@ function ChatPageContent() {
               {(() => {
                 const rawDisplayCitations =
                   activeCitationFilter === "latest"
-                    ? currentCitations
-                    : retainedCitations.length > 0
-                      ? retainedCitations
-                      : currentCitations;
+                    ? activeCurrentCitations
+                    : allSourcesCitations;
 
-                // Separate active grounding authorities from out-of-rank authorities
-                const activeGroundCitations = [...rawDisplayCitations]
-                  .filter((c: any) => c.is_in_context !== false && c.rank_status !== "out_of_rank")
-                  .sort((a, b) => (a?.rank || 999) - (b?.rank || 999) || (Number(b?.suitability_percent) || 0) - (Number(a?.suitability_percent) || 0));
-
-                const outOfRankCitations = [...rawDisplayCitations]
-                  .filter((c: any) => c.is_in_context === false || c.rank_status === "out_of_rank")
-                  .sort((a, b) => (a?.rank || 999) - (b?.rank || 999) || (Number(b?.suitability_percent) || 0) - (Number(a?.suitability_percent) || 0));
-
-                // Show all citations with active ground first and out-of-rank placed last
-                const displayCitations = [...activeGroundCitations, ...outOfRankCitations];
+                const displayCitations = sortCitations(rawDisplayCitations);
 
                 if (displayCitations.length > 0) {
                   return (
@@ -1701,164 +1824,127 @@ function ChatPageContent() {
                           Boolean(cit.metadata?.gr_number) ||
                           String(cit.parent_id || "").startsWith("GR_");
 
-                        const isOutOfRank = cit.is_in_context === false || cit.rank_status === "out_of_rank";
-                        const isFirstOutOfRank = isOutOfRank && idx === activeGroundCitations.length && activeGroundCitations.length > 0;
+                        const isUserDoc = cit.parent_type === "user_document";
+                        const isFamilyCode = isFamilyCodeCitation(cit);
+                        const articleLabel = formatCitationArticleLabel(cit);
 
                         const year = cit.metadata?.decision_date ? cit.metadata.decision_date.split(" ").pop() : null;
                         const title = cit.metadata?.title || cit.metadata?.gr_number || cit.parent_id;
                         const gr = cit.metadata?.gr_number || (String(cit.parent_id || "").startsWith("GR_") ? cit.parent_id : null);
                         const summary = cleanCaseSummary(cit.metadata?.content_summary || cit.content);
+                        const cardKey = getCitationKey(cit) || String(idx);
 
-                        return (
-                          <Fragment key={idx}>
-                            {isFirstOutOfRank && (
-                              <div className="pt-3 pb-1 flex items-center gap-2">
-                                <div className="h-px bg-border/80 flex-1" />
-                                <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider px-2 py-0.5 rounded-full bg-muted/60 border border-border/70">
-                                  Out of Rank Authorities ({outOfRankCitations.length})
-                                </span>
-                                <div className="h-px bg-border/80 flex-1" />
-                              </div>
-                            )}
-                            {isCase ? (
-                              <div
-                                className={`p-2.5 sm:p-3.5 rounded-xl border shadow-xs hover:shadow-md sm:hover:-translate-y-0.5 cursor-pointer transition-all duration-300 group flex flex-col justify-between w-full max-w-full overflow-hidden break-words touch-pan-y shrink-0 min-h-fit ${isOutOfRank
-                                  ? "bg-card/60 dark:bg-card/40 border-border/70 opacity-90 hover:opacity-100 hover:border-border"
-                                  : "bg-card/90 dark:bg-card/70 border-border/80 hover:border-primary/40"
-                                  }`}
-                                onClick={() => setSelectedCitation(cit)}
-                              >
-                                <div className="w-full min-w-0">
-                                  <div className="flex items-center justify-between mb-1.5 sm:mb-2 gap-1.5 flex-wrap">
-                                    <div className="flex items-center gap-1.5 min-w-0 flex-wrap">
-                                      {cit.rank && (
-                                        <span className="text-[9.5px] sm:text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-muted/80 text-foreground border border-border/70 shrink-0 leading-normal">
-                                          #{cit.rank}
-                                        </span>
-                                      )}
-                                      <span className="inline-flex items-center gap-1 text-[9.5px] sm:text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20 shrink-0 leading-normal">
-                                        <Scale className="w-3 h-3" />
-                                        Jurisprudence
-                                      </span>
-                                      {isOutOfRank ? (
-                                        <span className="inline-flex items-center gap-1 text-[9.5px] sm:text-[10px] font-mono font-medium px-1.5 py-0.5 rounded bg-muted text-muted-foreground border border-border/80 shrink-0 leading-normal">
-                                          Out of Rank
-                                        </span>
-                                      ) : (
-                                        <span className="inline-flex items-center gap-1 text-[9.5px] sm:text-[10px] font-mono font-medium px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 shrink-0 leading-normal">
-                                          Active
-                                        </span>
-                                      )}
-                                      {year && (
-                                        <Badge variant="outline" className="text-[9.5px] sm:text-[10px] whitespace-nowrap bg-background font-mono px-1 sm:px-1.5 py-0.5">
-                                          {year}
-                                        </Badge>
-                                      )}
-                                    </div>
-
-                                    {cit.suitability_percent !== undefined && (
-                                      <span
-                                        className={`text-[10.5px] sm:text-xs font-semibold px-1.5 sm:px-2 py-0.5 rounded-md border tabular-nums shrink-0 leading-normal ${cit.suitability_percent >= 85
-                                          ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
-                                          : cit.suitability_percent >= 70
-                                            ? "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60"
-                                            : "text-muted-foreground bg-muted border-border"
-                                          }`}
-                                      >
-                                        {cit.suitability_percent}%
-                                      </span>
-                                    )}
-                                  </div>
-
-                                  <div className="mb-1 sm:mb-2 min-w-0">
-                                    <h4 className="font-semibold text-xs text-foreground group-hover:text-primary transition-colors leading-snug line-clamp-1 sm:line-clamp-2 break-words">
-                                      {title}
-                                    </h4>
-                                    {gr && (
-                                      <span className="text-[10px] font-mono text-muted-foreground block mt-0.5 break-all">
-                                        {gr}
-                                      </span>
-                                    )}
-                                  </div>
-
-                                  <p className="text-[11px] sm:text-xs text-muted-foreground leading-snug sm:leading-relaxed line-clamp-2 sm:line-clamp-3 mb-1.5 sm:mb-3 break-words">
-                                    {summary}
-                                  </p>
-                                </div>
-
-                                <div className="flex items-center justify-between pt-1.5 sm:pt-2 border-t border-border/50 text-[11px] sm:text-xs font-semibold text-primary mt-auto">
-                                  <span className="flex items-center sm:group-hover:translate-x-1 transition-transform">
-                                    Read full case <ArrowRight className="w-3 h-3 ml-1" />
+                        return isCase ? (
+                          <div
+                            key={cardKey}
+                            className="p-2.5 sm:p-3.5 rounded-xl border bg-card/90 dark:bg-card/70 border-border/80 hover:border-primary/40 shadow-xs hover:shadow-md sm:hover:-translate-y-0.5 cursor-pointer transition-all duration-300 group flex flex-col justify-between w-full max-w-full overflow-hidden break-words touch-pan-y shrink-0 min-h-fit"
+                            onClick={() => setSelectedCitation(cit)}
+                          >
+                            <div className="w-full min-w-0">
+                              <div className="flex items-center justify-between mb-1.5 sm:mb-2 gap-1.5 flex-wrap">
+                                <div className="flex items-center gap-1.5 min-w-0 flex-wrap">
+                                  <span className="inline-flex items-center gap-1 text-[9.5px] sm:text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20 shrink-0 leading-normal">
+                                    <Scale className="w-3 h-3" />
+                                    Jurisprudence
                                   </span>
-                                  {cit.metadata?.source_url && (
-                                    <span className="text-[10px] font-normal text-muted-foreground">
-                                      LawPhil
-                                    </span>
-                                  )}
-                                </div>
-                              </div>
-                            ) : (
-                              <div
-                                className={`p-2 sm:p-2.5 md:p-3 rounded-lg border hover:bg-muted/40 cursor-pointer transition-colors shadow-2xs group w-full max-w-full overflow-hidden break-words touch-pan-y shrink-0 min-h-fit ${isOutOfRank
-                                  ? "bg-card/60 border-border/70 opacity-90 hover:opacity-100"
-                                  : "bg-card border-border hover:border-primary/40"
-                                  }`}
-                                onClick={() => setSelectedCitation(cit)}
-                              >
-                                <div className="flex items-center justify-between mb-1 sm:mb-1.5 gap-1.5 flex-nowrap">
-                                  <div className="min-w-0 flex items-center gap-1 sm:gap-1.5 flex-wrap">
-                                    {cit.rank && (
-                                      <span className="text-[9.5px] sm:text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-muted/80 text-foreground border border-border/70 shrink-0 leading-normal">
-                                        #{cit.rank}
-                                      </span>
-                                    )}
-                                    <span className="text-[10.5px] sm:text-[11px] font-mono font-bold text-primary dark:text-blue-400 px-1.5 py-0.5 rounded bg-primary/5 dark:bg-blue-500/10 border border-primary/20 shrink-0 truncate max-w-[130px] sm:max-w-none leading-normal">
-                                      {cit.parent_id}
-                                    </span>
-                                    {isOutOfRank ? (
-                                      <span className="hidden xs:inline-flex items-center gap-1 text-[9.5px] sm:text-[10px] font-mono font-medium px-1.5 py-0.5 rounded bg-muted text-muted-foreground border border-border/80 shrink-0 leading-normal">
-                                        Out of Rank
-                                      </span>
-                                    ) : (
-                                      <span className="hidden xs:inline-flex items-center gap-1 text-[9.5px] sm:text-[10px] font-mono font-medium px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 shrink-0 leading-normal">
-                                        Active Grounding
-                                      </span>
-                                    )}
-                                  </div>
-
-                                  {cit.suitability_percent !== undefined && (
-                                    <span
-                                      className={`text-[10px] sm:text-xs font-semibold px-1.5 sm:px-2 py-0.5 rounded-md border tabular-nums shrink-0 leading-normal ${cit.suitability_percent >= 85
-                                        ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
-                                        : cit.suitability_percent >= 70
-                                          ? "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60"
-                                          : "text-muted-foreground bg-muted border-border"
-                                        }`}
-                                    >
-                                      {cit.suitability_percent}%
-                                    </span>
+                                  <span className="inline-flex items-center gap-1 text-[9.5px] sm:text-[10px] font-mono font-medium px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 shrink-0 leading-normal">
+                                    Active
+                                  </span>
+                                  {year && (
+                                    <Badge variant="outline" className="text-[9.5px] sm:text-[10px] whitespace-nowrap bg-background font-mono px-1 sm:px-1.5 py-0.5">
+                                      {year}
+                                    </Badge>
                                   )}
                                 </div>
 
-                                {cit.metadata?.title && (
-                                  <p className="text-[11.5px] sm:text-xs font-semibold text-foreground line-clamp-1 mb-0.5 sm:mb-1 break-words">
-                                    {cit.metadata.title} {cit.metadata.gr_number ? `(GR ${cit.metadata.gr_number})` : ""}
-                                  </p>
+                                {cit.suitability_percent !== undefined && (
+                                  <span
+                                    className={`text-[10.5px] sm:text-xs font-semibold px-1.5 sm:px-2 py-0.5 rounded-md border tabular-nums shrink-0 leading-normal ${cit.suitability_percent >= 85
+                                      ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
+                                      : cit.suitability_percent >= 70
+                                        ? "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60"
+                                        : "text-muted-foreground bg-muted border-border"
+                                      }`}
+                                  >
+                                    {formatSuitabilityPercent(cit.suitability_percent)}
+                                  </span>
                                 )}
-                                <p className="text-[11px] sm:text-xs text-muted-foreground leading-snug sm:leading-relaxed line-clamp-2 sm:line-clamp-3 break-words">
-                                  {cit.content}
-                                </p>
-                                <div className="flex items-center justify-between pt-1 sm:pt-1.5 border-t border-border/40 text-[10px] sm:text-[11px] font-medium text-primary mt-1 sm:mt-1.5">
-                                  <span className="flex items-center sm:group-hover:translate-x-1 transition-transform">
-                                    View statutory provision <ArrowRight className="w-3 h-3 ml-1" />
-                                  </span>
-                                  <span className="text-[10px] font-normal text-muted-foreground">
-                                    Civil Code
-                                  </span>
-                                </div>
                               </div>
+
+                              <div className="mb-1 sm:mb-2 min-w-0">
+                                <h4 className="font-semibold text-xs text-foreground group-hover:text-primary transition-colors leading-snug line-clamp-1 sm:line-clamp-2 break-words">
+                                  {title}
+                                </h4>
+                                {gr && (
+                                  <span className="text-[10px] font-mono text-muted-foreground block mt-0.5 break-all">
+                                    {gr}
+                                  </span>
+                                )}
+                              </div>
+
+                              <p className="text-[11px] sm:text-xs text-muted-foreground leading-snug sm:leading-relaxed line-clamp-2 sm:line-clamp-3 mb-1.5 sm:mb-3 break-words">
+                                {summary}
+                              </p>
+                            </div>
+
+                            <div className="flex items-center justify-between pt-1.5 sm:pt-2 border-t border-border/50 text-[11px] sm:text-xs font-semibold text-primary mt-auto">
+                              <span className="flex items-center sm:group-hover:translate-x-1 transition-transform">
+                                Read full case <ArrowRight className="w-3 h-3 ml-1" />
+                              </span>
+                              {cit.metadata?.source_url && (
+                                <span className="text-[10px] font-normal text-muted-foreground">
+                                  LawPhil
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        ) : (
+                          <div
+                            key={cardKey}
+                            className="p-2 sm:p-2.5 md:p-3 rounded-lg border bg-card border-border hover:border-primary/40 hover:bg-muted/40 cursor-pointer transition-colors shadow-2xs group w-full max-w-full overflow-hidden break-words touch-pan-y shrink-0 min-h-fit"
+                            onClick={() => setSelectedCitation(cit)}
+                          >
+                            <div className="flex items-center justify-between mb-1 sm:mb-1.5 gap-1.5 flex-nowrap">
+                              <div className="min-w-0 flex items-center gap-1 sm:gap-1.5 flex-wrap">
+                                <span className="text-[10.5px] sm:text-[11px] font-semibold text-primary dark:text-blue-400 px-1.5 py-0.5 rounded bg-primary/5 dark:bg-blue-500/10 border border-primary/20 shrink-0 truncate max-w-[170px] sm:max-w-none leading-normal">
+                                  {articleLabel}
+                                </span>
+                                <span className="hidden xs:inline-flex items-center gap-1 text-[9.5px] sm:text-[10px] font-mono font-medium px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 shrink-0 leading-normal">
+                                  Active Grounding
+                                </span>
+                              </div>
+
+                              {cit.suitability_percent !== undefined && (
+                                <span
+                                  className={`text-[10px] sm:text-xs font-semibold px-1.5 sm:px-2 py-0.5 rounded-md border tabular-nums shrink-0 leading-normal ${cit.suitability_percent >= 85
+                                    ? "text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60"
+                                    : cit.suitability_percent >= 70
+                                      ? "text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60"
+                                      : "text-muted-foreground bg-muted border-border"
+                                    }`}
+                                >
+                                  {formatSuitabilityPercent(cit.suitability_percent)}
+                                </span>
+                              )}
+                            </div>
+
+                            {cit.metadata?.title && (
+                              <p className="text-[11.5px] sm:text-xs font-semibold text-foreground line-clamp-1 mb-0.5 sm:mb-1 break-words">
+                                {cit.metadata.title} {cit.metadata.gr_number ? `(GR ${cit.metadata.gr_number})` : ""}
+                              </p>
                             )}
-                          </Fragment>
+                            <p className="text-[11px] sm:text-xs text-muted-foreground leading-snug sm:leading-relaxed line-clamp-2 sm:line-clamp-3 break-words">
+                              {cit.content}
+                            </p>
+                            <div className="flex items-center justify-between pt-1 sm:pt-1.5 border-t border-border/40 text-[10px] sm:text-[11px] font-medium text-primary mt-1 sm:mt-1.5">
+                              <span className="flex items-center sm:group-hover:translate-x-1 transition-transform">
+                                {isUserDoc ? "View document excerpt" : "View statutory provision"} <ArrowRight className="w-3 h-3 ml-1" />
+                              </span>
+                              <span className="text-[10px] font-normal text-muted-foreground">
+                                {isUserDoc ? "Uploaded Document" : isFamilyCode ? "Family Code" : "Civil Code"}
+                              </span>
+                            </div>
+                          </div>
                         );
                       })}
                       <div className="h-2" />
@@ -1976,13 +2062,17 @@ function ChatPageContent() {
                     <div className="flex items-center gap-1.5 flex-wrap min-w-0">
                       <span className="inline-flex items-center gap-1 text-[10px] sm:text-xs font-bold uppercase tracking-wider px-2 sm:px-2.5 py-0.5 sm:py-1 rounded-full bg-primary/10 text-primary border border-primary/20 shrink-0">
                         <Scale className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
-                        {selectedCitation?.parent_type === "civil_code" || selectedCitation?.parent_type === "article"
-                          ? "Philippine Civil Code Provision"
-                          : (selectedCitation?.parent_type?.toUpperCase?.() ?? "LEGAL AUTHORITY")}
+                        {selectedCitation?.parent_type === "user_document"
+                          ? "Uploaded Document Excerpt"
+                          : isFamilyCodeCitation(selectedCitation)
+                            ? "Family Code Provision"
+                            : selectedCitation?.parent_type === "civil_code" || selectedCitation?.parent_type === "article"
+                              ? "Philippine Civil Code Provision"
+                              : (selectedCitation?.parent_type?.toUpperCase?.() ?? "LEGAL AUTHORITY")}
                       </span>
-                      {selectedCitation?.parent_id && (
-                        <span className="text-[10px] sm:text-xs font-mono font-medium text-muted-foreground bg-accent/40 dark:bg-accent/20 px-1.5 sm:px-2 py-0.5 rounded-md border border-border/50 shrink-0">
-                          {selectedCitation.parent_id}
+                      {selectedCitation && (
+                        <span className="text-[10px] sm:text-xs font-semibold text-muted-foreground bg-accent/40 dark:bg-accent/20 px-1.5 sm:px-2 py-0.5 rounded-md border border-border/50 shrink-0">
+                          {formatCitationArticleLabel(selectedCitation)}
                         </span>
                       )}
                       {selectedCitation?.suitability_percent !== undefined && (
@@ -1998,7 +2088,7 @@ function ChatPageContent() {
                                 : "text-muted-foreground bg-muted border-border"
                               }`}
                           >
-                            {selectedCitation.suitability_percent}%
+                            {formatSuitabilityPercent(selectedCitation.suitability_percent)}
                           </span>
                         </div>
                       )}
@@ -2043,11 +2133,7 @@ function ChatPageContent() {
 
                   <div className="min-w-0">
                     <DialogTitle className="text-base sm:text-xl lg:text-2xl font-bold text-foreground tracking-tight leading-snug break-words">
-                      {selectedCitation?.metadata?.title || (
-                        selectedCitation?.parent_type === "civil_code" || selectedCitation?.parent_type === "article"
-                          ? `Civil Code of the Philippines : ${selectedCitation?.parent_id}`
-                          : `${selectedCitation?.parent_type?.toUpperCase?.() ?? "SOURCE"} : ${selectedCitation?.parent_id}`
-                      )}
+                      {formatCitationModalTitle(selectedCitation)}
                     </DialogTitle>
                     {selectedCitation?.metadata?.hierarchy && (
                       <p className="text-[11px] sm:text-xs text-muted-foreground mt-0.5 sm:mt-1 leading-normal break-words">
@@ -2159,17 +2245,21 @@ function ChatPageContent() {
                         <span className="text-3xl font-extrabold text-foreground tabular-nums">
                           {legalAnalytics.nli_score}%
                         </span>
-                        <span className={`text-xs font-semibold px-2 py-0.5 rounded-full border ${legalAnalytics.nli_score >= 85
-                          ? "text-emerald-700 dark:text-emerald-400 bg-emerald-500/10 border-emerald-500/25"
-                          : legalAnalytics.nli_score >= 70
-                            ? "text-blue-700 dark:text-blue-400 bg-blue-500/10 border-blue-500/25"
-                            : "text-amber-700 dark:text-amber-400 bg-amber-500/10 border-amber-500/25"
-                          }`}>
-                          {legalAnalytics.nli_score >= 85
-                            ? "Strictly Grounded (Verified)"
+                        <span className={`text-xs font-semibold px-2 py-0.5 rounded-full border ${(legalAnalytics.claims_contradicted ?? 0) > 0
+                          ? "text-rose-700 dark:text-rose-400 bg-rose-500/10 border-rose-500/25"
+                          : legalAnalytics.nli_score >= 85
+                            ? "text-emerald-700 dark:text-emerald-400 bg-emerald-500/10 border-emerald-500/25"
                             : legalAnalytics.nli_score >= 70
-                              ? "Substantially Consistent"
-                              : "Preliminary Doctrine"}
+                              ? "text-blue-700 dark:text-blue-400 bg-blue-500/10 border-blue-500/25"
+                              : "text-amber-700 dark:text-amber-400 bg-amber-500/10 border-amber-500/25"
+                          }`}>
+                          {(legalAnalytics.claims_contradicted ?? 0) > 0
+                            ? `Contradicted (${legalAnalytics.claims_contradicted} ${legalAnalytics.claims_contradicted === 1 ? "claim" : "claims"})`
+                            : legalAnalytics.nli_score >= 85
+                              ? "Strictly Grounded (Verified)"
+                              : legalAnalytics.nli_score >= 70
+                                ? "Substantially Consistent"
+                                : "Preliminary Doctrine"}
                         </span>
                       </div>
                     </div>
@@ -2184,11 +2274,13 @@ function ChatPageContent() {
                   <div className="space-y-1">
                     <div className="w-full bg-muted rounded-full h-2 overflow-hidden">
                       <div
-                        className={`h-full rounded-full transition-all duration-700 ${legalAnalytics.nli_score >= 85
-                          ? "bg-emerald-500"
-                          : legalAnalytics.nli_score >= 70
-                            ? "bg-blue-500"
-                            : "bg-amber-500"
+                        className={`h-full rounded-full transition-all duration-700 ${(legalAnalytics.claims_contradicted ?? 0) > 0
+                          ? "bg-rose-500"
+                          : legalAnalytics.nli_score >= 85
+                            ? "bg-emerald-500"
+                            : legalAnalytics.nli_score >= 70
+                              ? "bg-blue-500"
+                              : "bg-amber-500"
                           }`}
                         style={{ width: `${Math.min(100, Math.max(0, legalAnalytics.nli_score))}%` }}
                       />

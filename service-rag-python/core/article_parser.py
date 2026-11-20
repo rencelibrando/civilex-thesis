@@ -14,79 +14,107 @@ CURRENCY_OR_DATE_PATTERN = re.compile(
     re.IGNORECASE
 )
 
-# Prefix pattern matching article declarations in English and Tagalog, including abbreviations and typos (e.g. articl, artcle, atricle, artiklo)
+# Prefix pattern matching article declarations in English and Tagalog, including markdown bold/italic wrappers and typos
 ARTICLE_PREFIX_PATTERN = re.compile(
-    r'(?:\bmga\s+)?(?:\b(?:art[a-z]*|atr[a-z]*)\.?|\bcivil\s+code(?:\s+articles?)?|\bra\s*386(?:\s+articles?)?)\s*(?:(?:no|nos|bilang)\b\.?)?\s*',
+    r'(?:\bmga\s+)?(?:\b(?:art[a-z]*|atr[a-z]*)\.?|\bcivil\s+code(?:\s+articles?)?|\bra\s*386(?:\s+articles?)?)\s*(?:(?:no|nos|bilang)\b\.?)?\s*[*_]{0,3}\s*',
     re.IGNORECASE
 )
 
-# Chained delimiter pattern separating enumerated/compared article numbers
+# Chained delimiter pattern separating enumerated/compared/ranged article numbers
 ARTICLE_SEP_PATTERN = re.compile(
-    r'^\s*(?:,\s*(?:and\s+|at\s+|saka\s+|&\s*)?|'
-    r'(?:and|&|at|saka|vs\.?|versus|laban\s+sa|to|\/|-)\s*|'
+    r'^[*_]{0,3}\s*'
+    r'(?P<sep>,\s*(?:and\s+|at\s+|saka\s+|&\s*)?|'
+    r'(?:and|&|at|saka|vs\.?|versus|laban\s+sa|to|hanggang|\/|-|–)\s*|'
     r',\s*)'
-    r'(?:(?:\bmga\s+)?(?:\b(?:art[a-z]*|atr[a-z]*)\.?|\bcivil\s+code|\bra\s*386)\s*(?:(?:no|nos|bilang)\b\.?)?\s*)?'
-    r'(\d+)',
+    r'[*_]{0,3}\s*'
+    r'(?:(?:\bmga\s+)?(?:\b(?:art[a-z]*|atr[a-z]*)\.?|\bcivil\s+code|\bra\s*386)\s*(?:(?:no|nos|bilang)\b\.?)?\s*[*_]{0,3}\s*)?'
+    r'(?P<num>\d+)',
     re.IGNORECASE
 )
+
+_RANGE_SEP_PATTERN = re.compile(r'^(?:to|hanggang|-|–)$', re.IGNORECASE)
 
 
 EXTERNAL_STATUTE_MENTION_PATTERN = re.compile(
     r'\b(?:revised\s+penal\s+code|rpc|penal\s+code|labor\s+code|pd\s*442|p\.d\.\s*442|tax\s+code|national\s+internal\s+revenue\s+code|nirc|corporation\s+code|ra\s*11232|data\s+privacy\s+act|ra\s*10173)\b',
     re.IGNORECASE
 )
+EXTERNAL_STATUTE_ARTICLE_SPAN_PATTERN = re.compile(
+    r'(?:'
+    r'(?:\bmga\s+)?\b(?:articles?|arts?\.?|artikulo)\s*\d+(?:\s*(?:,|and|at|to|hanggang|-|–)\s*\d+)*\s*(?:of\s+(?:the\s+)?|ng\s+|under\s+(?:the\s+)?)(?:revised\s+penal\s+code|rpc|penal\s+code|labor\s+code|pd\s*442|p\.d\.\s*442|tax\s+code|national\s+internal\s+revenue\s+code|nirc|corporation\s+code|ra\s*11232|data\s+privacy\s+act|ra\s*10173|rules\s+of\s+court)\b'
+    r'|'
+    r'\b(?:revised\s+penal\s+code|rpc|penal\s+code|labor\s+code|nirc|tax\s+code|corporation\s+code)\s*\(\s*(?:mga\s+)?(?:articles?|arts?\.?|artikulo)\s*\d+[^)]*\)'
+    r'|'
+    r'\b(?:articles?|arts?\.?|artikulo)\s*\d+\s+(?:rpc|nirc|pd\s*442)\b'
+    r')',
+    re.IGNORECASE,
+)
 CIVIL_CODE_MENTION_PATTERN = re.compile(
-    r'\b(?:civil\s+code|ra\s*386|family\s+code|eo\s*209)\b',
+    r'\b(?:civil\s+code|ra\s*386|family\s+code|eo\s*209|kodigo\s+sibil|batas\s+sibil)\b',
     re.IGNORECASE
 )
 
 
-def parse_all_article_candidates(query: str) -> List[str]:
-    # Extracts all article numbers referenced in query without 2270 bound limit
+def parse_all_article_candidates(
+    query: str,
+    *,
+    allow_bare_numbers: bool = True,
+    strict_external_exclusion: bool = True,
+) -> List[str]:
+    # Extracts all Civil/Family Code article numbers referenced in text without 2270 bound limit
     if not query:
         return []
 
-    # If query explicitly targets an external statute without Civil Code reference, skip
-    if EXTERNAL_STATUTE_MENTION_PATTERN.search(query) and not CIVIL_CODE_MENTION_PATTERN.search(query):
+    if strict_external_exclusion and EXTERNAL_STATUTE_MENTION_PATTERN.search(query) and not CIVIL_CODE_MENTION_PATTERN.search(query):
         return []
+
+    # Strip article spans explicitly bound to external codes (e.g. "Art. 100 of the Revised Penal Code")
+    cleaned_query = EXTERNAL_STATUTE_ARTICLE_SPAN_PATTERN.sub(' ', query)
 
     results: List[str] = []
 
-    # 1. Primary search: Triggered by explicit article/codal prefixes
-    for match in ARTICLE_PREFIX_PATTERN.finditer(query):
+    for match in ARTICLE_PREFIX_PATTERN.finditer(cleaned_query):
         start_idx = match.end()
-        sub_text = query[start_idx:]
+        sub_text = cleaned_query[start_idx:]
         num_match = re.match(r'^(\d+)', sub_text)
         if not num_match:
             continue
         first_num = num_match.group(1)
         results.append(first_num)
+        prev_num = int(first_num)
         curr_pos = num_match.end()
 
-        # Follow delimiter chains (commas, 'and', 'at', 'vs', etc.)
         while curr_pos < len(sub_text):
             next_m = ARTICLE_SEP_PATTERN.match(sub_text[curr_pos:])
             if not next_m:
                 break
-            results.append(next_m.group(1))
+            sep_str = (next_m.group('sep') or '').strip()
+            next_num_str = next_m.group('num')
+            next_num = int(next_num_str)
+            if _RANGE_SEP_PATTERN.match(sep_str) and prev_num < next_num and (next_num - prev_num) <= 10:
+                for val in range(prev_num + 1, next_num + 1):
+                    results.append(str(val))
+            else:
+                results.append(next_num_str)
+            prev_num = next_num
             curr_pos += next_m.end()
 
-    # 2. Fallback: Bare enumeration or comparison without repeating article prefix
-    if not results and not CURRENCY_OR_DATE_PATTERN.search(query):
+    # Fallback: bare enumeration or comparison in user queries (disabled when parsing model answers)
+    if allow_bare_numbers and not results and not CURRENCY_OR_DATE_PATTERN.search(cleaned_query):
         bare_chain = re.search(
             r'\b(\d{1,4})\s*(?:,\s*(?:and\s+|at\s+|saka\s+|&\s*)?|(?:and|&|at|saka|vs\.?|versus)\s*|,\s*)(\d{1,4})\b',
-            query,
+            cleaned_query,
             re.IGNORECASE
         )
         if bare_chain:
             n1, n2 = bare_chain.group(1), bare_chain.group(2)
             results.extend([n1, n2])
             curr_pos = bare_chain.end()
-            while curr_pos < len(query):
-                next_m = ARTICLE_SEP_PATTERN.match(query[curr_pos:])
+            while curr_pos < len(cleaned_query):
+                next_m = ARTICLE_SEP_PATTERN.match(cleaned_query[curr_pos:])
                 if not next_m:
                     break
-                results.append(next_m.group(1))
+                results.append(next_m.group('num'))
                 curr_pos += next_m.end()
 
     deduped: List[str] = []
@@ -99,9 +127,18 @@ def parse_all_article_candidates(query: str) -> List[str]:
     return deduped
 
 
-def parse_article_numbers(query: str) -> List[str]:
+def parse_article_numbers(
+    query: str,
+    *,
+    allow_bare_numbers: bool = True,
+    strict_external_exclusion: bool = True,
+) -> List[str]:
     # Returns valid Philippine Civil Code article numbers (1 to 2270)
-    candidates = parse_all_article_candidates(query)
+    candidates = parse_all_article_candidates(
+        query,
+        allow_bare_numbers=allow_bare_numbers,
+        strict_external_exclusion=strict_external_exclusion,
+    )
     return [n for n in candidates if 1 <= int(n) <= 2270]
 
 
@@ -321,6 +358,57 @@ def resolve_candidate_article_ids(query: str, art_nums: List[str]) -> List[str]:
             if not has_fc_context and 1 <= val <= 257:
                 target_ids.append(f"EO209-ART{val}")
     return target_ids
+
+
+_PARTIAL_BOLD_PREFIX_RE = re.compile(
+    r'\*\*((?:Articles?|Arts?\.?|Artikulo))\*\*\s*((?:Nos?\.?\s*)?\d{1,4}[A-Za-z]?(?:\([0-9A-Za-z]+\))*)',
+    re.IGNORECASE,
+)
+_PARTIAL_BOLD_NUMBER_RE = re.compile(
+    r'\b((?:Articles?|Arts?\.?|Artikulo)(?:\s+Nos?\.?)?)\s+\*\*(\d{1,4}[A-Za-z]?(?:\([0-9A-Za-z]+\))*)\*\*',
+    re.IGNORECASE,
+)
+_PROTECTED_MARKDOWN_SPAN_RE = re.compile(
+    r'(\*\*[^\n*]+?\*\*|`[^`\n]+`|\[[^\]]+\]\([^)]+\))'
+)
+_PLAIN_ARTICLE_REF_RE = re.compile(
+    r'\b((?:Articles?|Arts?\.?|Artikulo)\s+(?:Nos?\.?\s*)?\d{1,4}[A-Za-z]?(?:\([0-9A-Za-z]+\))*'
+    r'(?:\s*(?:[-–]|to|hanggang)\s*\d{1,4}[A-Za-z]?(?:\([0-9A-Za-z]+\))*'
+    r'|\s+(?:and|at|or|&)\s+(?:(?:Articles?|Arts?\.?|Artikulo)\s+)?\d{1,4}[A-Za-z]?(?:\([0-9A-Za-z]+\))*)?)'
+    r'(?![0-9A-Za-z])',
+    re.IGNORECASE,
+)
+
+
+def bold_article_references(text: str) -> str:
+    # Wraps statutory article references in Markdown bold while preserving existing bold spans, headings, and code
+    if not text:
+        return text
+
+    out_lines: List[str] = []
+    in_fence = False
+
+    for line in text.splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            out_lines.append(line)
+            continue
+        if in_fence or re.match(r'^\s*#{1,6}\s', line):
+            out_lines.append(line)
+            continue
+
+        normalized = _PARTIAL_BOLD_PREFIX_RE.sub(r'**\1 \2**', line)
+        normalized = _PARTIAL_BOLD_NUMBER_RE.sub(r'**\1 \2**', normalized)
+
+        parts = _PROTECTED_MARKDOWN_SPAN_RE.split(normalized)
+        for idx in range(0, len(parts), 2):
+            if parts[idx]:
+                parts[idx] = _PLAIN_ARTICLE_REF_RE.sub(r'**\1**', parts[idx])
+        out_lines.append("".join(parts))
+
+    return "\n".join(out_lines)
+
 
 
 

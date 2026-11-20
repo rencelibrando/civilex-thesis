@@ -523,7 +523,7 @@ def _classify_modality(text_lower: str) -> Optional[str]:
     return None
 
 
-def _has_polarity_inversion(claim_lower: str, premise_lower: str) -> bool:
+def _has_polarity_inversion(claim_lower: str, premise_lower: str, coverage: float = 0.0) -> bool:
     """
     Detect if a claim inverts the normative polarity of a premise.
     E.g., Premise: "may choose between fulfillment and rescission"
@@ -531,24 +531,6 @@ def _has_polarity_inversion(claim_lower: str, premise_lower: str) -> bool:
           Premise: "are liable for damages"
           Claim: "cannot be held liable" or "hindi mananagot"
     """
-    claim_modality = _classify_modality(claim_lower)
-    premise_modality = _classify_modality(premise_lower)
-
-    if claim_modality and premise_modality:
-        # Permission in premise + Prohibition in claim = contradiction
-        if premise_modality == 'permission' and claim_modality == 'prohibition':
-            return True
-        # Obligation in premise + Prohibition in claim = contradiction
-        if premise_modality == 'obligation' and claim_modality == 'prohibition':
-            return True
-        # Prohibition in premise + Permission/Obligation in claim = contradiction
-        # BUT: If the premise itself ALSO permits it under conditions (e.g. "may be acquired... but shall not... until..."),
-        # then permission in the claim does not contradict the premise.
-        if premise_modality == 'prohibition' and claim_modality in ('permission', 'obligation'):
-            has_perm_in_premise = any(bool(re.search(r'\b' + re.escape(tok) + r'\b', premise_lower)) for tok in _PERMISSION_TOKENS if tok != 'may' or not any(t_m in premise_lower for t_m in (' ang ', ' ng ', ' sa ')))
-            if not has_perm_in_premise:
-                return True
-
     # Direct negation targeting specific shared legal predicates
     direct_refutations = [
         (('not liable', 'no liability', 'exempt from liability', 'hindi mananagot', 'walang pananagutan', 'free from liability'),
@@ -577,7 +559,36 @@ def _has_polarity_inversion(claim_lower: str, premise_lower: str) -> bool:
         premise_has_pos = any(p in premise_lower for p in pos_patterns) and not premise_has_neg
 
         if (claim_has_neg and premise_has_pos) or (claim_has_pos and premise_has_neg):
+            # Guard against double-recovery proviso ("cannot recover damages twice") falsely refuting general damages claims
+            if 'twice' in premise_lower and 'twice' not in claim_lower:
+                continue
             return True
+
+    # Subordinate or conditional provisos ("cannot recover damages twice", "though the property shall not be delivered till...")
+    # must not trigger coarse deontic inversion against general permission/obligation claims unless the claim addresses that qualifier
+    if any(q_tok in premise_lower and q_tok not in claim_lower for q_tok in ('twice', 'though ', 'although ', 'unless ', 'except ', 'until ', 'till ')):
+        return False
+
+    # Coarse deontic modality inversion requires high predicate overlap (>= 0.60) so unrelated statutory clauses do not collide
+    if coverage < 0.60:
+        return False
+
+    claim_modality = _classify_modality(claim_lower)
+    premise_modality = _classify_modality(premise_lower)
+
+    if claim_modality and premise_modality:
+        if premise_modality == 'permission' and claim_modality == 'prohibition':
+            return True
+        if premise_modality == 'obligation' and claim_modality == 'prohibition':
+            return True
+        if premise_modality == 'prohibition' and claim_modality in ('permission', 'obligation'):
+            has_perm_in_premise = any(
+                bool(re.search(r'\b' + re.escape(tok) + r'\b', premise_lower))
+                for tok in _PERMISSION_TOKENS
+                if tok != 'may' or not any(t_m in premise_lower for t_m in (' ang ', ' ng ', ' sa '))
+            )
+            if not has_perm_in_premise:
+                return True
 
     return False
 
@@ -900,18 +911,24 @@ def verify_claim_symbolic(
     union_coverage, union_premises = _compute_union_coverage(claim_lower, premise_lowers)
     eff_coverage = max(best_coverage, union_coverage)
 
-    # ── Rule 2 & 3: Deontic & Polarity Contradiction (all relevant premises) ──
-    for rel_coverage, rel_premise, rel_premise_lower in ranked_coverages[:3]:
-        if rel_coverage >= 0.25 and rel_premise:
-            if _has_polarity_inversion(claim_lower, rel_premise_lower):
-                return ClaimVerdict(
-                    claim=claim,
-                    verdict='contradicted',
-                    confidence=-1.0,
-                    rule_fired='R2_deontic_polarity_contradiction',
-                    statutory_refs=list(claim_article_ids),
-                    matched_premise=rel_premise[:200],
-                )
+    # ── Rule 2 & 3: Deontic & Polarity Contradiction ──
+    # If the best-matching premise already entails the claim without polarity inversion, do not let a secondary premise's proviso veto it
+    best_premise_lower = ranked_coverages[0][2] if ranked_coverages else ""
+    best_is_consistent = best_coverage >= 0.45 and not _has_polarity_inversion(
+        claim_lower, best_premise_lower, coverage=best_coverage
+    )
+    if not best_is_consistent:
+        for rel_coverage, rel_premise, rel_premise_lower in ranked_coverages[:3]:
+            if rel_coverage >= 0.25 and rel_premise:
+                if _has_polarity_inversion(claim_lower, rel_premise_lower, coverage=rel_coverage):
+                    return ClaimVerdict(
+                        claim=claim,
+                        verdict='contradicted',
+                        confidence=-1.0,
+                        rule_fired='R2_deontic_polarity_contradiction',
+                        statutory_refs=list(claim_article_ids),
+                        matched_premise=rel_premise[:200],
+                    )
 
     # Premise text for the audit trail: union contributors when the union decided it.
     if union_coverage > best_coverage and union_premises:
@@ -1181,11 +1198,20 @@ def _arbitrate_hybrid_verdicts(
                 v.verifier = 'gemma_neural'
                 v.rationale = g_reason
             elif g_verdict == 'contradicted':
-                v.verdict = 'contradicted'
-                v.confidence = -1.0
-                v.rule_fired = 'R_hybrid_gemma_contradiction'
-                v.verifier = 'gemma_neural'
-                v.rationale = g_reason
+                # Require explicit normative negation or polarity opposition so 4B neural NLI does not misclassify neutral factual summaries as contradictions
+                claim_low = _normalize_text(v.claim)
+                has_normative_neg = any(tok in claim_low for tok in _PROHIBITION_TOKENS) or any(
+                    f" {neg} " in f" {claim_low} " for neg in _NEGATION_TOKENS
+                )
+                if has_normative_neg and _extract_article_ids(v.claim):
+                    v.verdict = 'contradicted'
+                    v.confidence = -1.0
+                    v.rule_fired = 'R_hybrid_gemma_contradiction'
+                    v.verifier = 'gemma_neural'
+                    v.rationale = g_reason
+                else:
+                    v.verifier = 'gemma_neural'
+                    v.rationale = g_reason
             elif g_verdict == 'neutral':
                 v.verifier = 'gemma_neural'
                 v.rationale = g_reason

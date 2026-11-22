@@ -27,7 +27,12 @@ export interface TemplateField {
   helperText?: string;
   defaultValue?: string;
   isAmountFigures?: boolean;
+  isNumberWords?: boolean;
   pairedWordsFieldId?: string;
+  visibleWhen?: {
+    fieldId: string;
+    equals: string;
+  };
 }
 
 export interface LegalTemplate {
@@ -37,6 +42,7 @@ export interface LegalTemplate {
   category: TemplateCategory;
   categoryLabel: string;
   description: string;
+  tags?: string[];
   numPages: number;
   sections: Array<"parties" | "subject" | "financial" | "terms" | "execution" | "witnesses">;
   fields: TemplateField[];
@@ -52,4 +58,3 @@ export interface ExtractedFieldResult {
   confidence: number;
   source: "regex_ner" | "llm";
 }
-

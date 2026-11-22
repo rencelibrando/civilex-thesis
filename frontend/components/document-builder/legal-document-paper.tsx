@@ -1,6 +1,15 @@
 "use client";
 
-import React, { useState, useEffect, useMemo, useRef, forwardRef, useImperativeHandle } from "react";
+import React, {
+  useState,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useCallback,
+  forwardRef,
+  useImperativeHandle,
+} from "react";
 import {
   Edit3,
   Eye,
@@ -12,6 +21,11 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import {
+  applyAnchoredSheetZoom,
+  attachPinchZoomListeners,
+  clampPaperZoom,
+} from "@/lib/legal-templates/document-utils";
 import { SignaturesMap } from "./e-signature-modal";
 
 export type MarginPreset = "sc_standard" | "balanced";
@@ -41,12 +55,35 @@ export interface LegalDocumentPaperProps {
   onMarginPresetChange?: (m: MarginPreset) => void;
   fontSize?: FontSizePreset;
   onFontSizeChange?: (f: FontSizePreset) => void;
+  lineSpacing?: LineSpacingPreset;
   viewMode?: ViewMode;
   onViewModeChange?: (mode: ViewMode) => void;
   showMarginGuide?: boolean;
   onShowMarginGuideChange?: (show: boolean) => void;
   zoom?: number;
   onZoomChange?: (zoom: number) => void;
+  onLiveZoomChange?: (zoom: number) => void;
+  editToolbarSlot?: React.ReactNode;
+}
+
+// Highlight unfilled placeholder underscores on screen only
+function renderWithBlankHighlights(text?: string): React.ReactNode {
+  if (!text) return null;
+  const parts = text.split(/(_{3,})/g);
+  if (parts.length === 1) return text;
+  return parts.map((part, i) =>
+    /^_{3,}$/.test(part) ? (
+      <span
+        key={i}
+        className="bg-amber-100/80 text-amber-900 rounded-xs px-0.5 border-b border-amber-400/80"
+        title="Unfilled template blank"
+      >
+        {part}
+      </span>
+    ) : (
+      <React.Fragment key={i}>{part}</React.Fragment>
+    )
+  );
 }
 
 interface ParsedBlock {
@@ -78,6 +115,350 @@ interface ParsedBlock {
   docketItems?: Array<{ label: string; value: string }>;
 }
 
+const FormattedDocumentBody = React.memo(function FormattedDocumentBody({
+  blocks,
+  signatures,
+  onOpenSignatureModal,
+}: {
+  blocks: ParsedBlock[];
+  signatures: SignaturesMap;
+  onOpenSignatureModal?: () => void;
+}) {
+  return (
+    <div className="space-y-4">
+      {blocks.map((block, idx) => {
+        switch (block.type) {
+          case "title":
+            return (
+              <div key={idx} className="text-center pt-2 pb-4">
+                <h1 className="text-base sm:text-lg font-bold tracking-[0.18em] uppercase text-zinc-950 font-serif leading-snug">
+                  {block.raw}
+                </h1>
+                <div className="w-24 h-0.5 bg-zinc-900 mx-auto mt-2"></div>
+              </div>
+            );
+
+          case "preamble":
+            return (
+              <div key={idx} className="text-center py-2">
+                <span className="font-bold tracking-widest text-xs sm:text-sm uppercase text-zinc-950">
+                  {block.raw}
+                </span>
+              </div>
+            );
+
+          case "conjunction":
+            return (
+              <div key={idx} className="text-center py-2">
+                <span className="font-bold tracking-wider text-xs sm:text-sm uppercase text-zinc-800">
+                  {block.raw}
+                </span>
+              </div>
+            );
+
+          case "recital_header":
+            return (
+              <div key={idx} className="text-center py-1.5">
+                <span className="font-bold tracking-wider text-xs sm:text-sm uppercase text-zinc-950">
+                  {block.raw}
+                </span>
+              </div>
+            );
+
+          case "recital":
+          case "operative":
+          case "testimonium":
+            return (
+              <p
+                key={idx}
+                className="text-justify [text-justify:inter-word] indent-8 sm:indent-10 text-zinc-950"
+              >
+                <strong className="font-bold">{block.leadText}</strong>{" "}
+                {renderWithBlankHighlights(block.bodyText)}
+              </p>
+            );
+
+          case "numbered_clause":
+            return (
+              <p
+                key={idx}
+                className="text-justify [text-justify:inter-word] text-zinc-950 pl-0"
+              >
+                <strong className="font-bold mr-1.5">{block.leadText}</strong>
+                <span>{renderWithBlankHighlights(block.bodyText)}</span>
+              </p>
+            );
+
+          case "signatures_bilateral": {
+            if (!block.signatures) return null;
+            const sig1 = block.signatures[0];
+            const sig2 = block.signatures[1];
+            const s1Entry =
+              signatures["party_1"] ||
+              (sig1?.role && signatures[sig1.role.toLowerCase()]) ||
+              (sig1?.name && signatures[sig1.name.toLowerCase()]);
+            const s2Entry =
+              signatures["party_2"] ||
+              (sig2?.role && signatures[sig2.role.toLowerCase()]) ||
+              (sig2?.name && signatures[sig2.name.toLowerCase()]);
+
+            return (
+              <div key={idx} className="grid grid-cols-2 gap-3 sm:gap-10 pt-6 sm:pt-8 pb-4 my-2 select-text">
+                <div className="flex flex-col items-center text-center">
+                  {s1Entry ? (
+                    <div className="h-12 sm:h-16 flex items-end justify-center mb-[-8px] pointer-events-none select-none">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={s1Entry.dataUrl}
+                        alt="E-Signature Party 1"
+                        className="max-h-12 sm:max-h-16 max-w-[120px] sm:max-w-[200px] object-contain"
+                      />
+                    </div>
+                  ) : (
+                    onOpenSignatureModal && (
+                      <button
+                        type="button"
+                        onClick={onOpenSignatureModal}
+                        className="h-8 text-[10px] text-zinc-400 hover:text-blue-600 flex items-center justify-center gap-1 hover:underline cursor-pointer select-none mb-1"
+                      >
+                        <PenTool className="w-3 h-3" />
+                        <span>Sign here</span>
+                      </button>
+                    )
+                  )}
+                  <div className="w-full max-w-[140px] sm:max-w-[220px] border-b-2 border-zinc-900 mb-2"></div>
+                  <span className="font-bold uppercase tracking-wide text-xs sm:text-sm text-zinc-950 truncate max-w-full">
+                    {sig1?.name || "PARTY 1"}
+                  </span>
+                  {sig1?.role && (
+                    <span className="text-[10px] sm:text-xs text-zinc-700 italic truncate max-w-full">
+                      ({sig1.role})
+                    </span>
+                  )}
+                </div>
+
+                <div className="flex flex-col items-center text-center">
+                  {s2Entry ? (
+                    <div className="h-12 sm:h-16 flex items-end justify-center mb-[-8px] pointer-events-none select-none">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={s2Entry.dataUrl}
+                        alt="E-Signature Party 2"
+                        className="max-h-12 sm:max-h-16 max-w-[120px] sm:max-w-[200px] object-contain"
+                      />
+                    </div>
+                  ) : (
+                    onOpenSignatureModal && (
+                      <button
+                        type="button"
+                        onClick={onOpenSignatureModal}
+                        className="h-8 text-[10px] text-zinc-400 hover:text-blue-600 flex items-center justify-center gap-1 hover:underline cursor-pointer select-none mb-1"
+                      >
+                        <PenTool className="w-3 h-3" />
+                        <span>Sign here</span>
+                      </button>
+                    )
+                  )}
+                  <div className="w-full max-w-[140px] sm:max-w-[220px] border-b-2 border-zinc-900 mb-2"></div>
+                  <span className="font-bold uppercase tracking-wide text-xs sm:text-sm text-zinc-950 truncate max-w-full">
+                    {sig2?.name || "PARTY 2"}
+                  </span>
+                  {sig2?.role && (
+                    <span className="text-[10px] sm:text-xs text-zinc-700 italic truncate max-w-full">
+                      ({sig2.role})
+                    </span>
+                  )}
+                </div>
+              </div>
+            );
+          }
+
+          case "signatures_unilateral": {
+            if (!block.signatures) return null;
+            const uSig = block.signatures[0];
+            const uEntry =
+              signatures["party_1"] ||
+              signatures["affiant"] ||
+              signatures["principal"] ||
+              (uSig?.role && signatures[uSig.role.toLowerCase()]) ||
+              (uSig?.name && signatures[uSig.name.toLowerCase()]) ||
+              Object.values(signatures)[0];
+
+            return (
+              <div key={idx} className="flex flex-col items-end pt-8 pb-4 my-2 select-text">
+                <div className="w-48 sm:w-60 flex flex-col items-center text-center">
+                  {uEntry ? (
+                    <div className="h-14 sm:h-16 flex items-end justify-center mb-[-8px] pointer-events-none select-none">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={uEntry.dataUrl}
+                        alt="E-Signature Affiant"
+                        className="max-h-14 sm:max-h-16 max-w-[160px] sm:max-w-[200px] object-contain"
+                      />
+                    </div>
+                  ) : (
+                    onOpenSignatureModal && (
+                      <button
+                        type="button"
+                        onClick={onOpenSignatureModal}
+                        className="h-8 text-[10px] text-zinc-400 hover:text-blue-600 flex items-center justify-center gap-1 hover:underline cursor-pointer select-none mb-1"
+                      >
+                        <PenTool className="w-3 h-3" />
+                        <span>Sign here</span>
+                      </button>
+                    )
+                  )}
+                  <div className="w-full border-b-2 border-zinc-900 mb-2"></div>
+                  <span className="font-bold uppercase tracking-wide text-xs sm:text-sm text-zinc-950">
+                    {uSig?.name || "AFFIANT / PRINCIPAL"}
+                  </span>
+                  {uSig?.role && (
+                    <span className="text-[11px] sm:text-xs text-zinc-700 italic">
+                      ({uSig.role})
+                    </span>
+                  )}
+                </div>
+              </div>
+            );
+          }
+
+          case "witness_header":
+            return (
+              <div key={idx} className="text-center pt-8 pb-2">
+                <span className="font-bold uppercase tracking-wider text-xs sm:text-sm text-zinc-950">
+                  {block.raw}
+                </span>
+              </div>
+            );
+
+          case "witnesses": {
+            if (!block.witnesses) return null;
+            const w1 = block.witnesses[0];
+            const w2 = block.witnesses[1];
+            const w1Entry = signatures["witness_1"];
+            const w2Entry = signatures["witness_2"];
+
+            return (
+              <div key={idx} className="grid grid-cols-2 gap-3 sm:gap-10 pt-4 pb-4 select-text">
+                <div className="flex flex-col items-center text-center">
+                  {w1Entry && (
+                    <div className="h-10 sm:h-12 flex items-end justify-center mb-[-6px] pointer-events-none select-none">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={w1Entry.dataUrl}
+                        alt="Witness 1"
+                        className="max-h-10 sm:max-h-12 max-w-[110px] sm:max-w-[130px] object-contain"
+                      />
+                    </div>
+                  )}
+                  <div className="w-full max-w-[130px] sm:max-w-[200px] border-b border-zinc-800 mb-1.5"></div>
+                  <span className="text-[11px] sm:text-xs text-zinc-800 truncate max-w-full">{w1?.name || "Witness 1"}</span>
+                </div>
+                <div className="flex flex-col items-center text-center">
+                  {w2Entry && (
+                    <div className="h-10 sm:h-12 flex items-end justify-center mb-[-6px] pointer-events-none select-none">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={w2Entry.dataUrl}
+                        alt="Witness 2"
+                        className="max-h-10 sm:max-h-12 max-w-[110px] sm:max-w-[130px] object-contain"
+                      />
+                    </div>
+                  )}
+                  <div className="w-full max-w-[130px] sm:max-w-[200px] border-b border-zinc-800 mb-1.5"></div>
+                  <span className="text-[11px] sm:text-xs text-zinc-800 truncate max-w-full">{w2?.name || "Witness 2"}</span>
+                </div>
+              </div>
+            );
+          }
+
+          case "notarial_header":
+            return (
+              <div key={idx} className="text-center pt-8 pb-3 border-t border-zinc-200 mt-6">
+                <h2 className="text-xs sm:text-sm font-bold tracking-[0.2em] uppercase text-zinc-950">
+                  {block.raw}
+                </h2>
+              </div>
+            );
+
+          case "venue":
+            if (!block.venueLines) return null;
+            return (
+              <div key={idx} className="my-3 font-serif select-text">
+                <div className="flex items-center gap-2">
+                  <span className="tracking-wide uppercase text-xs sm:text-sm text-zinc-950">
+                    {block.venueLines.country}
+                  </span>
+                  <span className="font-bold text-sm text-zinc-900">)</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="tracking-wide uppercase text-xs sm:text-sm text-zinc-950">
+                    {block.venueLines.city}
+                  </span>
+                  <span className="font-bold text-sm text-zinc-900">) S.S.</span>
+                </div>
+              </div>
+            );
+
+          case "deposition":
+            return (
+              <p
+                key={idx}
+                className="text-justify [text-justify:inter-word] indent-8 sm:indent-10 text-zinc-950"
+              >
+                {renderWithBlankHighlights(block.raw)}
+              </p>
+            );
+
+          case "notary_public":
+            return (
+              <div key={idx} className="flex flex-col items-end my-4 select-text">
+                <div className="w-48 sm:w-56 text-center">
+                  <div className="w-full border-b border-zinc-800 mb-2"></div>
+                  <span className="font-bold text-xs sm:text-sm tracking-wide text-zinc-950">
+                    NOTARY PUBLIC
+                  </span>
+                  <div className="text-[10.5px] text-zinc-600 leading-tight mt-1 space-y-0.5 font-sans">
+                    <p>Until December 31, 202___</p>
+                    <p>PTR No. ____________</p>
+                    <p>IBP No. ____________</p>
+                    <p>Roll of Attorneys No. ________</p>
+                  </div>
+                </div>
+              </div>
+            );
+
+          case "docket":
+            if (!block.docketItems) return null;
+            return (
+              <div
+                key={idx}
+                className="border-l-2 border-zinc-300 pl-3 py-1 my-3 text-[11px] sm:text-xs text-zinc-700 font-mono space-y-0.5 select-text"
+              >
+                {block.docketItems.map((item, dIdx) => (
+                  <p key={dIdx}>
+                    <span className="font-semibold text-zinc-800">{item.label}:</span>{" "}
+                    {item.value || "_______;"}
+                  </p>
+                ))}
+              </div>
+            );
+
+          default:
+            return (
+              <p
+                key={idx}
+                className="text-justify [text-justify:inter-word] indent-8 sm:indent-10 text-zinc-950 leading-relaxed"
+              >
+                {renderWithBlankHighlights(block.raw)}
+              </p>
+            );
+        }
+      })}
+    </div>
+  );
+});
+
 export const LegalDocumentPaper = forwardRef<LegalDocumentPaperRef, LegalDocumentPaperProps>(
   function LegalDocumentPaper(
     {
@@ -96,11 +477,15 @@ export const LegalDocumentPaper = forwardRef<LegalDocumentPaperRef, LegalDocumen
       onMarginPresetChange,
       fontSize: controlledFontSize,
       onFontSizeChange,
+      lineSpacing: controlledLineSpacing,
       viewMode: controlledViewMode,
       onViewModeChange,
       showMarginGuide: controlledMarginGuide,
       onShowMarginGuideChange,
       zoom: controlledZoom,
+      onZoomChange,
+      onLiveZoomChange,
+      editToolbarSlot,
     },
     ref
   ) {
@@ -116,24 +501,43 @@ export const LegalDocumentPaper = forwardRef<LegalDocumentPaperRef, LegalDocumen
       }
       return 1.0;
     });
-    const [lineSpacing] = useState<LineSpacingPreset>("1.5");
+    const lineSpacing: LineSpacingPreset = controlledLineSpacing || "1.5";
 
-    // Responsive zoom updates on window resize
+    // Responsive zoom updates only when crossing layout breakpoints
     useEffect(() => {
+      let prevTier =
+        window.innerWidth < 640 ? "sm" : window.innerWidth < 1024 ? "md" : "lg";
       const handleResize = () => {
-        if (window.innerWidth < 640) {
-          setInternalZoom(0.58);
-        } else if (window.innerWidth < 1024) {
-          setInternalZoom(0.85);
-        } else {
-          setInternalZoom(1.0);
-        }
+        const nextTier =
+          window.innerWidth < 640 ? "sm" : window.innerWidth < 1024 ? "md" : "lg";
+        if (nextTier === prevTier) return;
+        prevTier = nextTier;
+        setInternalZoom(nextTier === "sm" ? 0.58 : nextTier === "md" ? 0.85 : 1.0);
       };
       window.addEventListener("resize", handleResize);
       return () => window.removeEventListener("resize", handleResize);
     }, []);
 
     const zoom = controlledZoom !== undefined ? controlledZoom : internalZoom;
+    const zoomRef = useRef(zoom);
+    const appliedZoomRef = useRef(zoom);
+    const onLiveZoomChangeRef = useRef(onLiveZoomChange);
+    useEffect(() => {
+      onLiveZoomChangeRef.current = onLiveZoomChange;
+    }, [onLiveZoomChange]);
+
+    const applyZoom = useCallback(
+      (nextZoom: number) => {
+        const clamped = clampPaperZoom(nextZoom);
+        zoomRef.current = clamped;
+        if (onZoomChange) {
+          onZoomChange(clamped);
+        } else {
+          setInternalZoom(clamped);
+        }
+      },
+      [onZoomChange]
+    );
 
     const viewMode = controlledViewMode !== undefined ? controlledViewMode : internalViewMode;
     const setViewMode = onViewModeChange || setInternalViewMode;
@@ -149,6 +553,89 @@ export const LegalDocumentPaper = forwardRef<LegalDocumentPaperRef, LegalDocumen
     const setShowMarginGuide = onShowMarginGuideChange || setInternalMarginGuide;
 
     const printIframeRef = useRef<HTMLIFrameElement | null>(null);
+    const viewportRef = useRef<HTMLDivElement | null>(null);
+    const wrapperRef = useRef<HTMLDivElement | null>(null);
+    const sheetRef = useRef<HTMLDivElement | null>(null);
+    const [sheetMetrics, setSheetMetrics] = useState<{ baseWidth: number; baseHeight: number }>({
+      baseWidth: 760,
+      baseHeight: 1050,
+    });
+    const sheetMetricsRef = useRef(sheetMetrics);
+
+    const syncZoomDom = useCallback((targetZoom: number) => {
+      const { baseWidth, baseHeight } = sheetMetricsRef.current;
+      applyAnchoredSheetZoom({
+        scrollContainer: null,
+        wrapperEl: wrapperRef.current,
+        sheetEl: sheetRef.current,
+        baseWidth,
+        baseHeight,
+        prevZoom: appliedZoomRef.current,
+        nextZoom: targetZoom,
+      });
+      appliedZoomRef.current = targetZoom;
+    }, []);
+
+    useLayoutEffect(() => {
+      if (viewMode !== "formatted") return;
+      zoomRef.current = zoom;
+      syncZoomDom(zoom);
+    }, [zoom, viewMode, syncZoomDom]);
+
+    useLayoutEffect(() => {
+      sheetMetricsRef.current = sheetMetrics;
+      if (viewMode !== "formatted") return;
+      syncZoomDom(zoomRef.current);
+    }, [sheetMetrics, viewMode, syncZoomDom]);
+
+    // Track natural unscaled sheet dimensions so transform: scale() zooms smoothly without text reflow
+    useEffect(() => {
+      const viewport = viewportRef.current;
+      const sheet = sheetRef.current;
+      if (!viewport || !sheet || viewMode !== "formatted") return;
+
+      const updateMetrics = () => {
+        const vw = viewport.clientWidth;
+        const pad = vw < 640 ? 12 : 48;
+        const avail = Math.max(320, vw - pad);
+        const baseWidth = vw < 640 ? Math.max(520, Math.min(760, avail)) : Math.min(760, avail);
+        const baseHeight = Math.max(1050, sheet.offsetHeight);
+        setSheetMetrics((prev) =>
+          prev.baseWidth === baseWidth && prev.baseHeight === baseHeight
+            ? prev
+            : { baseWidth, baseHeight }
+        );
+      };
+
+      updateMetrics();
+      const ro = new ResizeObserver(updateMetrics);
+      ro.observe(viewport);
+      ro.observe(sheet);
+      return () => ro.disconnect();
+    }, [viewMode, content, fontSize, lineSpacing, marginPreset, signatures]);
+
+    // Support trackpad pinch (wheel + ctrlKey) and mouse Ctrl+Scroll plus 2-finger touch pinch
+    useEffect(() => {
+      const container = viewportRef.current;
+      if (!container || viewMode !== "formatted") return;
+      return attachPinchZoomListeners(container, zoomRef, applyZoom, {
+        onFrame: (nextZoom, focalPoint) => {
+          const { baseWidth, baseHeight } = sheetMetricsRef.current;
+          applyAnchoredSheetZoom({
+            scrollContainer: container,
+            wrapperEl: wrapperRef.current,
+            sheetEl: sheetRef.current,
+            baseWidth,
+            baseHeight,
+            prevZoom: appliedZoomRef.current,
+            nextZoom,
+            focalPoint,
+          });
+          appliedZoomRef.current = nextZoom;
+          onLiveZoomChangeRef.current?.(nextZoom);
+        },
+      });
+    }, [viewMode, applyZoom]);
 
   // Parse document content into structured semantic blocks
   const blocks: ParsedBlock[] = useMemo(() => {
@@ -836,22 +1323,34 @@ export const LegalDocumentPaper = forwardRef<LegalDocumentPaperRef, LegalDocumen
       )}
 
       {/* Main Sheet Display Container */}
-      <div className="flex-1 overflow-y-auto p-1.5 sm:p-6 lg:p-8 flex justify-center items-start">
+      <div
+        ref={viewportRef}
+        className="flex-1 overflow-auto p-1.5 sm:p-6 lg:p-8 flex items-start touch-pan-x touch-pan-y"
+        style={{ scrollbarGutter: "stable" }}
+      >
         {/* 1. Formatted Legal Paper Sheet View */}
         {viewMode === "formatted" && (
           <div
-            className={cn(
-              "w-full max-w-[760px] min-h-[1050px] bg-white text-zinc-950 border border-zinc-200 shadow-2xl rounded-xs select-text relative font-serif ring-1 ring-black/5 transition-all min-w-[520px] xs:min-w-[580px] sm:min-w-0",
-              fontSizeClass,
-              marginPreset === "sc_standard"
-                ? "pl-5 sm:pl-16 lg:pl-20 pr-3.5 sm:pr-12 lg:pr-14 py-6 sm:py-14"
-                : "px-4 sm:px-14 py-6 sm:py-14"
-            )}
-            style={{
-              ...lineSpacingStyle,
-              zoom: zoom,
-            }}
+            ref={wrapperRef}
+            className="mx-auto shrink-0 relative"
           >
+            <div
+              ref={sheetRef}
+              className={cn(
+                "min-h-[1050px] bg-white text-zinc-950 border border-zinc-200 shadow-2xl rounded-xs select-text relative font-serif ring-1 ring-black/5",
+                fontSizeClass,
+                marginPreset === "sc_standard"
+                  ? "pl-5 sm:pl-16 lg:pl-20 pr-3.5 sm:pr-12 lg:pr-14 py-6 sm:py-14"
+                  : "px-4 sm:px-14 py-6 sm:py-14"
+              )}
+              style={{
+                ...lineSpacingStyle,
+                width: sheetMetrics.baseWidth,
+                transformOrigin: "top left",
+                willChange: "transform",
+                contain: "layout style",
+              }}
+            >
             {/* Visual 1.5-inch Binding Guide Line (Supreme Court Rule) */}
             {showMarginGuide && marginPreset === "sc_standard" && (
               <div
@@ -872,354 +1371,37 @@ export const LegalDocumentPaper = forwardRef<LegalDocumentPaperRef, LegalDocumen
             </div>
 
             {/* Structured Semantic Blocks */}
-            <div className="space-y-4">
-              {blocks.map((block, idx) => {
-                switch (block.type) {
-                  case "title":
-                    return (
-                      <div key={idx} className="text-center pt-2 pb-4">
-                        <h1 className="text-base sm:text-lg font-bold tracking-[0.18em] uppercase text-zinc-950 font-serif leading-snug">
-                          {block.raw}
-                        </h1>
-                        <div className="w-24 h-0.5 bg-zinc-900 mx-auto mt-2"></div>
-                      </div>
-                    );
-
-                  case "preamble":
-                    return (
-                      <div key={idx} className="text-center py-2">
-                        <span className="font-bold tracking-widest text-xs sm:text-sm uppercase text-zinc-950">
-                          {block.raw}
-                        </span>
-                      </div>
-                    );
-
-                  case "conjunction":
-                    return (
-                      <div key={idx} className="text-center py-2">
-                        <span className="font-bold tracking-wider text-xs sm:text-sm uppercase text-zinc-800">
-                          {block.raw}
-                        </span>
-                      </div>
-                    );
-
-                  case "recital_header":
-                    return (
-                      <div key={idx} className="text-center py-1.5">
-                        <span className="font-bold tracking-wider text-xs sm:text-sm uppercase text-zinc-950">
-                          {block.raw}
-                        </span>
-                      </div>
-                    );
-
-                  case "recital":
-                  case "operative":
-                  case "testimonium":
-                    return (
-                      <p
-                        key={idx}
-                        className="text-justify [text-justify:inter-word] indent-8 sm:indent-10 text-zinc-950"
-                      >
-                        <strong className="font-bold">{block.leadText}</strong> {block.bodyText}
-                      </p>
-                    );
-
-                  case "numbered_clause":
-                    return (
-                      <p
-                        key={idx}
-                        className="text-justify [text-justify:inter-word] text-zinc-950 pl-0"
-                      >
-                        <strong className="font-bold mr-1.5">{block.leadText}</strong>
-                        <span>{block.bodyText}</span>
-                      </p>
-                    );
-
-                  case "signatures_bilateral": {
-                    if (!block.signatures) return null;
-                    const sig1 = block.signatures[0];
-                    const sig2 = block.signatures[1];
-                    const s1Entry =
-                      signatures["party_1"] ||
-                      (sig1?.role && signatures[sig1.role.toLowerCase()]) ||
-                      (sig1?.name && signatures[sig1.name.toLowerCase()]);
-                    const s2Entry =
-                      signatures["party_2"] ||
-                      (sig2?.role && signatures[sig2.role.toLowerCase()]) ||
-                      (sig2?.name && signatures[sig2.name.toLowerCase()]);
-
-                    return (
-                      <div key={idx} className="grid grid-cols-2 gap-3 sm:gap-10 pt-6 sm:pt-8 pb-4 my-2 select-text">
-                        <div className="flex flex-col items-center text-center">
-                          {s1Entry ? (
-                            <div className="h-12 sm:h-16 flex items-end justify-center mb-[-8px] pointer-events-none select-none">
-                              {/* eslint-disable-next-line @next/next/no-img-element */}
-                              <img
-                                src={s1Entry.dataUrl}
-                                alt="E-Signature Party 1"
-                                className="max-h-12 sm:max-h-16 max-w-[120px] sm:max-w-[200px] object-contain"
-                              />
-                            </div>
-                          ) : (
-                            onOpenSignatureModal && (
-                              <button
-                                type="button"
-                                onClick={onOpenSignatureModal}
-                                className="h-8 text-[10px] text-zinc-400 hover:text-blue-600 flex items-center justify-center gap-1 hover:underline cursor-pointer select-none mb-1"
-                              >
-                                <PenTool className="w-3 h-3" />
-                                <span>Sign here</span>
-                              </button>
-                            )
-                          )}
-                          <div className="w-full max-w-[140px] sm:max-w-[220px] border-b-2 border-zinc-900 mb-2"></div>
-                          <span className="font-bold uppercase tracking-wide text-xs sm:text-sm text-zinc-950 truncate max-w-full">
-                            {sig1?.name || "PARTY 1"}
-                          </span>
-                          {sig1?.role && (
-                            <span className="text-[10px] sm:text-xs text-zinc-700 italic truncate max-w-full">
-                              ({sig1.role})
-                            </span>
-                          )}
-                        </div>
-
-                        <div className="flex flex-col items-center text-center">
-                          {s2Entry ? (
-                            <div className="h-12 sm:h-16 flex items-end justify-center mb-[-8px] pointer-events-none select-none">
-                              {/* eslint-disable-next-line @next/next/no-img-element */}
-                              <img
-                                src={s2Entry.dataUrl}
-                                alt="E-Signature Party 2"
-                                className="max-h-12 sm:max-h-16 max-w-[120px] sm:max-w-[200px] object-contain"
-                              />
-                            </div>
-                          ) : (
-                            onOpenSignatureModal && (
-                              <button
-                                type="button"
-                                onClick={onOpenSignatureModal}
-                                className="h-8 text-[10px] text-zinc-400 hover:text-blue-600 flex items-center justify-center gap-1 hover:underline cursor-pointer select-none mb-1"
-                              >
-                                <PenTool className="w-3 h-3" />
-                                <span>Sign here</span>
-                              </button>
-                            )
-                          )}
-                          <div className="w-full max-w-[140px] sm:max-w-[220px] border-b-2 border-zinc-900 mb-2"></div>
-                          <span className="font-bold uppercase tracking-wide text-xs sm:text-sm text-zinc-950 truncate max-w-full">
-                            {sig2?.name || "PARTY 2"}
-                          </span>
-                          {sig2?.role && (
-                            <span className="text-[10px] sm:text-xs text-zinc-700 italic truncate max-w-full">
-                              ({sig2.role})
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  }
-
-                  case "signatures_unilateral": {
-                    if (!block.signatures) return null;
-                    const uSig = block.signatures[0];
-                    const uEntry =
-                      signatures["party_1"] ||
-                      signatures["affiant"] ||
-                      signatures["principal"] ||
-                      (uSig?.role && signatures[uSig.role.toLowerCase()]) ||
-                      (uSig?.name && signatures[uSig.name.toLowerCase()]) ||
-                      Object.values(signatures)[0];
-
-                    return (
-                      <div key={idx} className="flex flex-col items-end pt-8 pb-4 my-2 select-text">
-                        <div className="w-48 sm:w-60 flex flex-col items-center text-center">
-                          {uEntry ? (
-                            <div className="h-14 sm:h-16 flex items-end justify-center mb-[-8px] pointer-events-none select-none">
-                              {/* eslint-disable-next-line @next/next/no-img-element */}
-                              <img
-                                src={uEntry.dataUrl}
-                                alt="E-Signature Affiant"
-                                className="max-h-14 sm:max-h-16 max-w-[160px] sm:max-w-[200px] object-contain"
-                              />
-                            </div>
-                          ) : (
-                            onOpenSignatureModal && (
-                              <button
-                                type="button"
-                                onClick={onOpenSignatureModal}
-                                className="h-8 text-[10px] text-zinc-400 hover:text-blue-600 flex items-center justify-center gap-1 hover:underline cursor-pointer select-none mb-1"
-                              >
-                                <PenTool className="w-3 h-3" />
-                                <span>Sign here</span>
-                              </button>
-                            )
-                          )}
-                          <div className="w-full border-b-2 border-zinc-900 mb-2"></div>
-                          <span className="font-bold uppercase tracking-wide text-xs sm:text-sm text-zinc-950">
-                            {uSig?.name || "AFFIANT / PRINCIPAL"}
-                          </span>
-                          {uSig?.role && (
-                            <span className="text-[11px] sm:text-xs text-zinc-700 italic">
-                              ({uSig.role})
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  }
-
-                  case "witness_header":
-                    return (
-                      <div key={idx} className="text-center pt-8 pb-2">
-                        <span className="font-bold uppercase tracking-wider text-xs sm:text-sm text-zinc-950">
-                          {block.raw}
-                        </span>
-                      </div>
-                    );
-
-                  case "witnesses": {
-                    if (!block.witnesses) return null;
-                    const w1 = block.witnesses[0];
-                    const w2 = block.witnesses[1];
-                    const w1Entry = signatures["witness_1"];
-                    const w2Entry = signatures["witness_2"];
-
-                    return (
-                      <div key={idx} className="grid grid-cols-2 gap-3 sm:gap-10 pt-4 pb-4 select-text">
-                        <div className="flex flex-col items-center text-center">
-                          {w1Entry && (
-                            <div className="h-10 sm:h-12 flex items-end justify-center mb-[-6px] pointer-events-none select-none">
-                              {/* eslint-disable-next-line @next/next/no-img-element */}
-                              <img
-                                src={w1Entry.dataUrl}
-                                alt="Witness 1"
-                                className="max-h-10 sm:max-h-12 max-w-[110px] sm:max-w-[130px] object-contain"
-                              />
-                            </div>
-                          )}
-                          <div className="w-full max-w-[130px] sm:max-w-[200px] border-b border-zinc-800 mb-1.5"></div>
-                          <span className="text-[11px] sm:text-xs text-zinc-800 truncate max-w-full">{w1?.name || "Witness 1"}</span>
-                        </div>
-                        <div className="flex flex-col items-center text-center">
-                          {w2Entry && (
-                            <div className="h-10 sm:h-12 flex items-end justify-center mb-[-6px] pointer-events-none select-none">
-                              {/* eslint-disable-next-line @next/next/no-img-element */}
-                              <img
-                                src={w2Entry.dataUrl}
-                                alt="Witness 2"
-                                className="max-h-10 sm:max-h-12 max-w-[110px] sm:max-w-[130px] object-contain"
-                              />
-                            </div>
-                          )}
-                          <div className="w-full max-w-[130px] sm:max-w-[200px] border-b border-zinc-800 mb-1.5"></div>
-                          <span className="text-[11px] sm:text-xs text-zinc-800 truncate max-w-full">{w2?.name || "Witness 2"}</span>
-                        </div>
-                      </div>
-                    );
-                  }
-
-                  case "notarial_header":
-                    return (
-                      <div key={idx} className="text-center pt-8 pb-3 border-t border-zinc-200 mt-6">
-                        <h2 className="text-xs sm:text-sm font-bold tracking-[0.2em] uppercase text-zinc-950">
-                          {block.raw}
-                        </h2>
-                      </div>
-                    );
-
-                  case "venue":
-                    if (!block.venueLines) return null;
-                    return (
-                      <div key={idx} className="my-3 font-serif select-text">
-                        <div className="flex items-center gap-2">
-                          <span className="tracking-wide uppercase text-xs sm:text-sm text-zinc-950">
-                            {block.venueLines.country}
-                          </span>
-                          <span className="font-bold text-sm text-zinc-900">)</span>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <span className="tracking-wide uppercase text-xs sm:text-sm text-zinc-950">
-                            {block.venueLines.city}
-                          </span>
-                          <span className="font-bold text-sm text-zinc-900">) S.S.</span>
-                        </div>
-                      </div>
-                    );
-
-                  case "deposition":
-                    return (
-                      <p
-                        key={idx}
-                        className="text-justify [text-justify:inter-word] indent-8 sm:indent-10 text-zinc-950"
-                      >
-                        {block.raw}
-                      </p>
-                    );
-
-                  case "notary_public":
-                    return (
-                      <div key={idx} className="flex flex-col items-end my-4 select-text">
-                        <div className="w-48 sm:w-56 text-center">
-                          <div className="w-full border-b border-zinc-800 mb-2"></div>
-                          <span className="font-bold text-xs sm:text-sm tracking-wide text-zinc-950">
-                            NOTARY PUBLIC
-                          </span>
-                          <div className="text-[10.5px] text-zinc-600 leading-tight mt-1 space-y-0.5 font-sans">
-                            <p>Until December 31, 202___</p>
-                            <p>PTR No. ____________</p>
-                            <p>IBP No. ____________</p>
-                            <p>Roll of Attorneys No. ________</p>
-                          </div>
-                        </div>
-                      </div>
-                    );
-
-                  case "docket":
-                    if (!block.docketItems) return null;
-                    return (
-                      <div
-                        key={idx}
-                        className="border-l-2 border-zinc-300 pl-3 py-1 my-3 text-[11px] sm:text-xs text-zinc-700 font-mono space-y-0.5 select-text"
-                      >
-                        {block.docketItems.map((item, dIdx) => (
-                          <p key={dIdx}>
-                            <span className="font-semibold text-zinc-800">{item.label}:</span>{" "}
-                            {item.value || "_______;"}
-                          </p>
-                        ))}
-                      </div>
-                    );
-
-                  default:
-                    return (
-                      <p
-                        key={idx}
-                        className="text-justify [text-justify:inter-word] indent-8 sm:indent-10 text-zinc-950 leading-relaxed"
-                      >
-                        {block.raw}
-                      </p>
-                    );
-                }
-              })}
-            </div>
+            <FormattedDocumentBody
+              blocks={blocks}
+              signatures={signatures}
+              onOpenSignatureModal={onOpenSignatureModal}
+            />
 
             {/* Official Legal Footer / Docket Indicator */}
             <div className="pt-10 mt-10 border-t border-zinc-200/80 flex items-center justify-between text-[10px] text-zinc-400 font-sans select-none">
               <span>Supreme Court A.M. No. 11-9-4-SC Standard</span>
               <span>Notarial Practice Rules (A.M. 02-8-13-SC)</span>
             </div>
+            </div>
           </div>
         )}
 
         {/* 2. Direct In-Place Document Editor View */}
         {viewMode === "edit" && (
-          <div className="w-full max-w-[760px] min-h-[900px] bg-white text-zinc-950 border border-zinc-300 shadow-xl rounded-xs p-3.5 sm:p-10 font-serif ring-1 ring-black/5 flex flex-col gap-3">
+          <div className="mx-auto w-full max-w-[760px] min-h-[900px] bg-white text-zinc-950 border border-zinc-300 shadow-xl rounded-xs p-3.5 sm:p-10 font-serif ring-1 ring-black/5 flex flex-col gap-3">
             <div className="flex items-center justify-between border-b border-zinc-200 pb-2 font-sans flex-wrap gap-2">
               <div className="flex items-center gap-1.5">
                 <Edit3 className="w-4 h-4 text-amber-600" />
                 <span className="text-xs font-bold text-zinc-900">Direct In-Place Document Editor</span>
               </div>
-              <span className="text-[10px] sm:text-[11px] text-zinc-500">Edits sync live with Word and PDF exports</span>
+              <div className="flex items-center gap-2 flex-wrap">
+                {editToolbarSlot}
+                {!editToolbarSlot && (
+                  <span className="text-[10px] sm:text-[11px] text-zinc-500">
+                    Edits sync live with Word and PDF exports
+                  </span>
+                )}
+              </div>
             </div>
 
             <textarea
@@ -1234,7 +1416,7 @@ export const LegalDocumentPaper = forwardRef<LegalDocumentPaperRef, LegalDocumen
 
         {/* 3. Raw Plaintext Monospace View */}
         {viewMode === "raw" && (
-          <div className="w-full max-w-[760px] bg-white text-zinc-900 border border-zinc-200 shadow-xl rounded-xs p-3.5 sm:p-8 font-mono ring-1 ring-black/5">
+          <div className="mx-auto w-full max-w-[760px] bg-white text-zinc-900 border border-zinc-200 shadow-xl rounded-xs p-3.5 sm:p-8 font-mono ring-1 ring-black/5">
             <pre className="text-xs text-zinc-900 whitespace-pre-wrap select-text leading-relaxed">
               {content}
             </pre>

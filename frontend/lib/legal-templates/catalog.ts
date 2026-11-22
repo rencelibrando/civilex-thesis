@@ -66,7 +66,7 @@ export const CATEGORY_SECTION_LABELS: Record<TemplateCategory, Record<string, st
   },
 };
 
-export const LEGAL_TEMPLATES: LegalTemplate[] = [
+const RAW_LEGAL_TEMPLATES: LegalTemplate[] = [
   {
     id: "deed_of_absolute_sale",
     title: "Deed of Absolute Sale (Real Property)",
@@ -77,7 +77,7 @@ export const LEGAL_TEMPLATES: LegalTemplate[] = [
     numPages: 2,
     sections: ["parties", "subject", "financial", "execution", "witnesses"],
     sectionLabels: {
-    
+
       "parties": "1. Contracting Parties (Seller & Buyer)",
       "subject": "2. Real Property Description & TCT Details",
       "financial": "3. Purchase Consideration (Price in PHP & Words)",
@@ -126,7 +126,7 @@ export const LEGAL_TEMPLATES: LegalTemplate[] = [
     numPages: 3,
     sections: ["parties", "subject", "financial", "execution", "witnesses"],
     sectionLabels: {
-    
+
       "parties": "1. Contracting Parties (Seller & Buyer)",
       "subject": "2. Property Description & TCT Details",
       "financial": "3. Consideration & Purchase Price",
@@ -171,7 +171,7 @@ export const LEGAL_TEMPLATES: LegalTemplate[] = [
     numPages: 2,
     sections: ["parties", "subject", "financial", "execution", "witnesses"],
     sectionLabels: {
-    
+
       "parties": "1. Contracting Parties (Seller & Buyer)",
       "subject": "2. Motor Vehicle Specifications (Make, Engine, Chassis, Plate)",
       "financial": "3. Purchase Consideration",
@@ -214,7 +214,7 @@ export const LEGAL_TEMPLATES: LegalTemplate[] = [
     numPages: 2,
     sections: ["parties", "subject", "financial", "execution", "witnesses"],
     sectionLabels: {
-    
+
       "parties": "1. Donor & Donee Capacities & Relationship",
       "subject": "2. Donated Property Description",
       "financial": "3. Assessed Value of Donated Property",
@@ -256,7 +256,7 @@ export const LEGAL_TEMPLATES: LegalTemplate[] = [
     numPages: 2,
     sections: ["parties", "subject", "financial", "execution", "witnesses"],
     sectionLabels: {
-    
+
       "parties": "1. Assignor & Assignee Capacities",
       "subject": "2. Assigned Rights & Developer Particulars",
       "financial": "3. Consideration for Assignment",
@@ -298,7 +298,7 @@ export const LEGAL_TEMPLATES: LegalTemplate[] = [
     numPages: 2,
     sections: ["parties", "subject", "financial", "terms", "execution", "witnesses"],
     sectionLabels: {
-    
+
       "parties": "1. Contracting Parties (Lessor & Lessee)",
       "subject": "2. Leased Premises Location",
       "financial": "3. Monthly Rent, Advance Rent & Security Deposit",
@@ -343,7 +343,7 @@ export const LEGAL_TEMPLATES: LegalTemplate[] = [
     numPages: 4,
     sections: ["parties", "subject", "financial", "terms", "execution", "witnesses"],
     sectionLabels: {
-    
+
       "parties": "1. Contracting Parties (Lessor & Lessee)",
       "subject": "2. Leased Premises Description & Purpose",
       "financial": "3. Monthly Rental, Advance Deposit & Security Deposit",
@@ -389,7 +389,7 @@ export const LEGAL_TEMPLATES: LegalTemplate[] = [
     numPages: 5,
     sections: ["parties", "subject", "financial", "terms", "execution", "witnesses"],
     sectionLabels: {
-    
+
       "parties": "1. Lessor-Seller & Lessee-Buyer Capacities",
       "subject": "2. Leased Property Subject to Option",
       "financial": "3. Rental Rate, Purchase Price Balance & Payment",
@@ -436,7 +436,7 @@ export const LEGAL_TEMPLATES: LegalTemplate[] = [
     numPages: 2,
     sections: ["parties", "subject", "financial", "terms", "execution", "witnesses"],
     sectionLabels: {
-    
+
       "parties": "1. Contracting Parties (Seller & Buyer)",
       "subject": "2. Subject Real Property Description",
       "financial": "3. Total Consideration, Downpayment & Balance",
@@ -487,7 +487,7 @@ export const LEGAL_TEMPLATES: LegalTemplate[] = [
     numPages: 2,
     sections: ["parties", "subject", "financial", "terms", "execution"],
     sectionLabels: {
-    
+
       "parties": "1. Buyer / Offeror & Seller / Property Owner",
       "subject": "2. Subject Real Property Description",
       "financial": "3. Offered Purchase Price & Earnest Deposit",
@@ -523,7 +523,7 @@ export const LEGAL_TEMPLATES: LegalTemplate[] = [
     numPages: 1,
     sections: ["parties", "subject", "financial", "terms", "execution", "witnesses"],
     sectionLabels: {
-    
+
       "parties": "1. Seller (Recipient) & Buyer (Payor)",
       "subject": "2. Subject Property Description",
       "financial": "3. Earnest Money Sum & Total Purchase Price",
@@ -561,7 +561,7 @@ export const LEGAL_TEMPLATES: LegalTemplate[] = [
     numPages: 1,
     sections: ["parties", "subject", "financial", "terms", "execution"],
     sectionLabels: {
-    
+
       "parties": "1. Property Owner & Real Estate Broker",
       "subject": "2. Property Location & Details",
       "financial": "3. Asking Selling Price & Professional Commission",
@@ -595,7 +595,7 @@ export const LEGAL_TEMPLATES: LegalTemplate[] = [
     numPages: 2,
     sections: ["parties", "financial", "terms", "execution", "witnesses"],
     sectionLabels: {
-    
+
       "parties": "1. Debtor & Creditor Capacities",
       "financial": "2. Indebtedness Amount & Installment Sum",
       "terms": "3. Origin of Debt & Default Covenants",
@@ -640,7 +640,7 @@ export const LEGAL_TEMPLATES: LegalTemplate[] = [
     numPages: 1,
     sections: ["parties", "financial", "terms", "execution"],
     sectionLabels: {
-    
+
       "parties": "1. Payee (Recipient) & Payor Details",
       "financial": "2. Amount Received in Figures & Words",
       "terms": "3. Purpose of Payment & Account Applied",
@@ -668,7 +668,7 @@ export const LEGAL_TEMPLATES: LegalTemplate[] = [
     numPages: 2,
     sections: ["parties", "financial", "terms", "execution", "witnesses"],
     sectionLabels: {
-    
+
       "parties": "1. Borrower (Maker) & Lender (Payee)",
       "financial": "2. Principal Loan Sum & Interest Rate",
       "terms": "3. Maturity Date & Default Penalties",
@@ -708,7 +708,7 @@ export const LEGAL_TEMPLATES: LegalTemplate[] = [
     numPages: 2,
     sections: ["parties", "subject", "financial", "terms", "execution", "witnesses"],
     sectionLabels: {
-    
+
       "parties": "1. Mortgagor (Debtor) & Mortgagee (Creditor)",
       "financial": "2. Secured Indebtedness & Promissory Note Date",
       "subject": "3. Mortgaged Vehicle / Personal Property Specifications",
@@ -755,7 +755,7 @@ export const LEGAL_TEMPLATES: LegalTemplate[] = [
     numPages: 1,
     sections: ["parties", "terms", "execution"],
     sectionLabels: {
-    
+
       "parties": "1. Affiant Identity, Citizenship & Domicile",
       "terms": "2. Sworn Statements of Fact & Declaration Purpose",
       "execution": "3. Jurat & Competent Evidence of Identity"
@@ -791,7 +791,7 @@ export const LEGAL_TEMPLATES: LegalTemplate[] = [
     numPages: 2,
     sections: ["parties", "subject", "terms", "execution"],
     sectionLabels: {
-    
+
       "parties": "1. Affiant Identification & Residence",
       "subject": "2. Lost Document / Item / Vehicle Particulars",
       "terms": "3. Circumstances of Loss, Search & Sworn Undertakings",
@@ -826,7 +826,7 @@ export const LEGAL_TEMPLATES: LegalTemplate[] = [
     numPages: 2,
     sections: ["parties", "terms", "execution"],
     sectionLabels: {
-    
+
       "parties": "1. Complainant / Complaining Witness Information",
       "terms": "2. Criminal Case Particulars & Grounds for Desistance",
       "execution": "3. Execution, Jurat & Prosecutor Conforme"
@@ -862,7 +862,7 @@ export const LEGAL_TEMPLATES: LegalTemplate[] = [
     numPages: 2,
     sections: ["parties", "terms", "execution", "witnesses"],
     sectionLabels: {
-    
+
       "parties": "1. Principal & Attorney-in-Fact Capacities",
       "terms": "2. Scope of General Administrative Powers",
       "execution": "3. Execution, Ratification & Notarial Acknowledgment",
@@ -900,7 +900,7 @@ export const LEGAL_TEMPLATES: LegalTemplate[] = [
     numPages: 2,
     sections: ["parties", "terms", "execution", "witnesses"],
     sectionLabels: {
-    
+
       "parties": "1. Principal & Attorney-in-Fact Capacities",
       "terms": "2. Specific Acts Authorized & Special Powers",
       "execution": "3. Execution, Substitution & Notarial Acknowledgment",
@@ -939,7 +939,7 @@ export const LEGAL_TEMPLATES: LegalTemplate[] = [
     numPages: 2,
     sections: ["parties", "terms", "execution", "witnesses"],
     sectionLabels: {
-    
+
       "parties": "1. Testator Capacity, Domicile & Executors",
       "terms": "2. Real & Personal Property Bequests",
       "execution": "3. Testator Signature & Attestation Clause",
@@ -982,7 +982,7 @@ export const LEGAL_TEMPLATES: LegalTemplate[] = [
     numPages: 3,
     sections: ["parties", "subject", "financial", "terms", "execution", "witnesses"],
     sectionLabels: {
-    
+
       "parties": "1. Contractor & Owner Identification",
       "subject": "2. Project Name, Scope of Work & Location",
       "financial": "3. Contract Price, Downpayment & Schedule",
@@ -1028,7 +1028,7 @@ export const LEGAL_TEMPLATES: LegalTemplate[] = [
     numPages: 1,
     sections: ["parties", "terms", "execution", "witnesses"],
     sectionLabels: {
-    
+
       "parties": "1. Participating Entities & Authorized Representatives",
       "terms": "2. Project Recitals, Responsibilities & Duration",
       "execution": "3. Execution & Formal Signatures",
@@ -1067,7 +1067,7 @@ export const LEGAL_TEMPLATES: LegalTemplate[] = [
     numPages: 1,
     sections: ["parties", "terms", "execution"],
     sectionLabels: {
-    
+
       "parties": "1. Student & Parent / Guardian Details",
       "terms": "2. Event Particulars, Venue & Emergency Contacts",
       "execution": "3. Parent / Guardian Consent & Jurat"
@@ -1098,6 +1098,77 @@ export const LEGAL_TEMPLATES: LegalTemplate[] = [
   },
 ];
 
+const TEMPLATE_SEARCH_TAGS: Record<string, string[]> = {
+  deed_of_absolute_sale: ["benta", "lupa", "bahay", "title", "tct", "real estate", "property sale", "conveyance"],
+  template_doas: ["benta", "lupa", "bahay", "marital consent", "doas", "real estate", "tct"],
+  deed_of_sale_motor_vehicle: ["kotse", "motor", "sasakyan", "car sale", "lto", "or cr", "plate", "chassis"],
+  deed_of_donation: ["regalo", "pamana", "donasyon", "gift", "gratuitous", "property transfer"],
+  deed_of_assignment: ["pasalo", "transfer of rights", "condo", "equity", "assignment"],
+  contract_of_lease_template: ["upa", "upahan", "renta", "paupa", "apartment", "condo", "tenant", "landlord"],
+  lease_contract: ["upa", "upahan", "renta", "commercial lease", "residential lease", "tenant", "landlord"],
+  rent_to_own_contract: ["rent to own", "upa", "hulugan", "option to purchase", "lease purchase"],
+  contract_to_sell: ["hulugan", "installment", "cts", "downpayment", "benta", "real estate"],
+  offer_to_purchase: ["alok", "bilhin", "offer", "real estate", "letter of intent", "earnest"],
+  earnest_money_receipt: ["reservation", "downpayment", "earnest money", "paunang bayad", "receipt"],
+  exclusive_authority_to_sell: ["broker", "ahente", "komisyon", "commission", "listing", "sell property"],
+  acknowledgement_of_debt: ["utang", "pagkakautang", "loan", "debt", "bayad", "iou"],
+  acknowledgement_receipt: ["resibo", "katibayan ng bayad", "payment receipt", "deposit"],
+  promissory_note: ["utang", "kasulatan ng pagbabayad", "promissory", "loan", "interest"],
+  chattel_mortgage: ["sangla", "collateral", "car loan", "vehicle mortgage", "personal property"],
+  general_affidavit: ["sinumpaang salaysay", "sworn statement", "jurat", "notaryo"],
+  affidavit_of_loss: ["nawala", "lost id", "lost or cr", "lto", "sinumpaang salaysay", "replacement"],
+  affidavit_of_desistance: ["urong demanda", "desistance", "settlement", "amicable", "withdraw case"],
+  general_power_of_attorney: ["spa", "gpa", "kinatawan", "authorize", "representative", "agency"],
+  special_power_of_attorney: ["spa", "authorize", "representative", "kinatawan", "claim", "sell"],
+  last_will_and_testament: ["mana", "pamana", "huling habilin", "will", "testator", "estate", "inheritance"],
+  agreement_for_renovation: ["pagawa", "renovation", "contractor", "construction", "house repair"],
+  memorandum_of_agreement: ["moa", "kasunduan", "partnership", "collaboration", "company agreement"],
+  student_consent_and_waiver: ["waiver", "parental consent", "pahintulot ng magulang", "school", "field trip"],
+};
+
+export const LEGAL_TEMPLATES: LegalTemplate[] = RAW_LEGAL_TEMPLATES.map((tmpl) => {
+  const fieldIds = new Set(tmpl.fields.map((f) => f.id));
+  const enrichedFields = tmpl.fields.map((field) => {
+    const next = { ...field };
+
+    // Hide *_spouse fields unless the paired civil/marital status is "married"
+    if (field.id.endsWith("_spouse") && !field.visibleWhen) {
+      const prefix = field.id.slice(0, -"_spouse".length);
+      const statusId = fieldIds.has(`${prefix}_marital_status`)
+        ? `${prefix}_marital_status`
+        : fieldIds.has(`${prefix}_civil_status`)
+          ? `${prefix}_civil_status`
+          : null;
+      if (statusId) {
+        next.visibleWhen = { fieldId: statusId, equals: "married" };
+      }
+    }
+
+    // Wire plain number-to-words for lot_area_sqm when lot_area_words is present
+    if (field.id === "lot_area_sqm" && fieldIds.has("lot_area_words")) {
+      next.isNumberWords = true;
+      next.pairedWordsFieldId = "lot_area_words";
+    }
+
+    // Wire remaining currency figures/words pairs
+    if (field.id.endsWith("_figures") && !field.pairedWordsFieldId) {
+      const wordsId = `${field.id.slice(0, -"_figures".length)}_words`;
+      if (fieldIds.has(wordsId)) {
+        next.isAmountFigures = true;
+        next.pairedWordsFieldId = wordsId;
+      }
+    }
+
+    return next;
+  });
+
+  return {
+    ...tmpl,
+    tags: TEMPLATE_SEARCH_TAGS[tmpl.id] || tmpl.tags || [],
+    fields: enrichedFields,
+  };
+});
+
 export function getTemplateById(id: string): LegalTemplate | undefined {
   return LEGAL_TEMPLATES.find((t) => t.id === id);
 }
@@ -1106,7 +1177,7 @@ export function getTemplatesByCategory(cat: string): LegalTemplate[] {
   return LEGAL_TEMPLATES.filter((t) => t.category === cat);
 }
 
-export function isBuilderDocument(doc: any): boolean {
+export function isBuilderDocument(doc: { canvas_html?: unknown } | null | undefined): boolean {
   if (!doc || !doc.canvas_html) return false;
   try {
     const parsed = typeof doc.canvas_html === "string" ? JSON.parse(doc.canvas_html) : doc.canvas_html;
@@ -1119,7 +1190,7 @@ export function isBuilderDocument(doc: any): boolean {
   }
 }
 
-export function findTemplateForDocument(doc: any): LegalTemplate | null {
+export function findTemplateForDocument(doc: { canvas_html?: unknown } | null | undefined): LegalTemplate | null {
   if (!doc || !doc.canvas_html) return null;
   try {
     const parsed = typeof doc.canvas_html === "string" ? JSON.parse(doc.canvas_html) : doc.canvas_html;

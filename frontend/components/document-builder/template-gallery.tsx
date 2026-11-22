@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useMemo, useCallback } from "react";
+import React, { useState, useEffect, useLayoutEffect, useMemo, useCallback, useRef } from "react";
 import {
   Dialog,
   DialogContent,
@@ -36,6 +36,10 @@ import {
   validateDocumentFilename,
   generateUniqueDocumentFilename,
 } from "@/lib/legal-templates/filename-utils";
+import {
+  applyAnchoredSheetZoom,
+  attachPinchZoomListeners,
+} from "@/lib/legal-templates/document-utils";
 import { cn } from "@/lib/utils";
 
 interface TemplateGalleryProps {
@@ -80,18 +84,101 @@ export function TemplateGallery({
   });
 
   useEffect(() => {
+    let prevTier =
+      window.innerWidth < 640 ? "sm" : window.innerWidth < 1024 ? "md" : "lg";
     const handleResize = () => {
-      if (window.innerWidth < 640) {
-        setPreviewZoom(0.62);
-      } else if (window.innerWidth < 1024) {
-        setPreviewZoom(0.85);
-      } else {
-        setPreviewZoom(1.0);
-      }
+      const nextTier =
+        window.innerWidth < 640 ? "sm" : window.innerWidth < 1024 ? "md" : "lg";
+      if (nextTier === prevTier) return;
+      prevTier = nextTier;
+      setPreviewZoom(nextTier === "sm" ? 0.62 : nextTier === "md" ? 0.85 : 1.0);
     };
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
   }, []);
+
+  const [previewViewportEl, setPreviewViewportEl] = useState<HTMLDivElement | null>(null);
+  const [previewSheetEl, setPreviewSheetEl] = useState<HTMLDivElement | null>(null);
+  const previewWrapperRef = useRef<HTMLDivElement | null>(null);
+  const [previewMetrics, setPreviewMetrics] = useState<{ baseWidth: number; baseHeight: number }>({
+    baseWidth: 560,
+    baseHeight: 720,
+  });
+  const previewMetricsRef = useRef(previewMetrics);
+  const previewZoomRef = useRef(previewZoom);
+  const previewAppliedZoomRef = useRef(previewZoom);
+
+  const syncPreviewZoomDom = useCallback(
+    (targetZoom: number) => {
+      const { baseWidth, baseHeight } = previewMetricsRef.current;
+      applyAnchoredSheetZoom({
+        scrollContainer: null,
+        wrapperEl: previewWrapperRef.current,
+        sheetEl: previewSheetEl,
+        baseWidth,
+        baseHeight,
+        prevZoom: previewAppliedZoomRef.current,
+        nextZoom: targetZoom,
+      });
+      previewAppliedZoomRef.current = targetZoom;
+    },
+    [previewSheetEl]
+  );
+
+  useLayoutEffect(() => {
+    if (!previewTemplate) return;
+    previewZoomRef.current = previewZoom;
+    syncPreviewZoomDom(previewZoom);
+  }, [previewTemplate, previewZoom, syncPreviewZoomDom]);
+
+  useLayoutEffect(() => {
+    previewMetricsRef.current = previewMetrics;
+    if (!previewTemplate) return;
+    syncPreviewZoomDom(previewZoomRef.current);
+  }, [previewTemplate, previewMetrics, syncPreviewZoomDom]);
+
+  useEffect(() => {
+    if (!previewTemplate || !previewViewportEl || !previewSheetEl) return;
+    const updateMetrics = () => {
+      const avail = Math.max(320, previewViewportEl.clientWidth - 16);
+      const baseWidth = previewViewportEl.clientWidth < 640 ? Math.max(500, Math.min(560, avail)) : Math.min(560, avail);
+      const baseHeight = previewSheetEl.offsetHeight;
+      setPreviewMetrics((prev) =>
+        prev.baseWidth === baseWidth && prev.baseHeight === baseHeight
+          ? prev
+          : { baseWidth, baseHeight }
+      );
+    };
+    updateMetrics();
+    const ro = new ResizeObserver(updateMetrics);
+    ro.observe(previewViewportEl);
+    ro.observe(previewSheetEl);
+    return () => ro.disconnect();
+  }, [previewTemplate, previewViewportEl, previewSheetEl]);
+
+  useEffect(() => {
+    if (!previewTemplate || !previewViewportEl) return;
+    const scrollContainer =
+      (previewViewportEl.closest('[data-slot="scroll-area-viewport"]') as HTMLElement | null) ||
+      previewViewportEl;
+    return attachPinchZoomListeners(previewViewportEl, previewZoomRef, setPreviewZoom, {
+      onFrame: (nextZoom, focalPoint) => {
+        const { baseWidth, baseHeight } = previewMetricsRef.current;
+        applyAnchoredSheetZoom({
+          scrollContainer,
+          wrapperEl: previewWrapperRef.current,
+          sheetEl: previewSheetEl,
+          baseWidth,
+          baseHeight,
+          prevZoom: previewAppliedZoomRef.current,
+          nextZoom,
+          focalPoint,
+          layoutHost: previewViewportEl,
+        });
+        previewAppliedZoomRef.current = nextZoom;
+      },
+    });
+  }, [previewTemplate, previewViewportEl, previewSheetEl]);
 
   const categoryCounts = useMemo(() => {
     const counts: Record<string, number> = { all: LEGAL_TEMPLATES.length };
@@ -110,7 +197,8 @@ export function TemplateGallery({
         tmpl.title.toLowerCase().includes(q) ||
         tmpl.description.toLowerCase().includes(q) ||
         tmpl.categoryLabel.toLowerCase().includes(q) ||
-        tmpl.filename.toLowerCase().includes(q);
+        tmpl.filename.toLowerCase().includes(q) ||
+        (tmpl.tags?.some((tag) => tag.toLowerCase().includes(q)) ?? false);
       return matchesCategory && matchesSearch;
     });
   }, [searchQuery, selectedCategory]);
@@ -197,7 +285,7 @@ export function TemplateGallery({
           <Search className="w-4 h-4 text-muted-foreground absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
           <Input
             type="text"
-            placeholder="Search templates (e.g. Deed of Sale, Lease, Affidavit, Loan, SPA, Will, MOA)..."
+            placeholder="Search templates (e.g. Deed of Sale, Lease, SPA, utang, upahan, lupa)..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             aria-label="Search legal document templates"
@@ -551,12 +639,26 @@ export function TemplateGallery({
               </div>
 
               <ScrollArea className="flex-1 min-h-0 p-2 sm:p-5 bg-muted/30 dark:bg-zinc-950/70">
-                <div className="flex justify-center items-start min-h-full">
+                <div
+                  ref={setPreviewViewportEl}
+                  className="flex items-start min-h-full touch-pan-x touch-pan-y"
+                >
                   <div
-                    style={{ zoom: previewZoom }}
-                    className="w-full max-w-[560px] min-w-[500px] sm:min-w-0 bg-white text-zinc-950 shadow-md rounded-xs p-5 sm:p-8 border border-zinc-200 font-serif text-xs leading-relaxed whitespace-pre-wrap select-text ring-1 ring-black/5"
+                    ref={previewWrapperRef}
+                    className="mx-auto shrink-0 relative"
                   >
-                    {previewDocumentText}
+                    <div
+                      ref={setPreviewSheetEl}
+                      style={{
+                        width: previewMetrics.baseWidth,
+                        transformOrigin: "top left",
+                        willChange: "transform",
+                        contain: "layout style",
+                      }}
+                      className="bg-white text-zinc-950 shadow-md rounded-xs p-5 sm:p-8 border border-zinc-200 font-serif text-xs leading-relaxed whitespace-pre-wrap select-text ring-1 ring-black/5"
+                    >
+                      {previewDocumentText}
+                    </div>
                   </div>
                 </div>
               </ScrollArea>

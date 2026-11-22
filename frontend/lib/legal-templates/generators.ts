@@ -13,8 +13,8 @@ function vCurr(values: TemplateValues, figKey: string, wordsKey: string): { figu
   const rawFig = values[figKey]?.trim() || "";
   const rawWords = values[wordsKey]?.trim() || "";
 
-  let figures = rawFig ? formatPhilippineCurrency(rawFig) : "_________________________";
-  let words = rawWords || (rawFig ? convertPesoToWords(rawFig) : "_________________________");
+  const figures = rawFig ? formatPhilippineCurrency(rawFig) : "_________________________";
+  const words = rawWords || (rawFig ? convertPesoToWords(rawFig) : "_________________________");
 
   return { figures, words };
 }

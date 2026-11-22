@@ -20,8 +20,57 @@ import {
   Trash2,
   Image as ImageIcon,
   X,
+  BookmarkCheck,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import {
+  loadSavedSignatures,
+  saveSignatureProfile,
+  deleteSavedSignature,
+  SavedSignatureProfile,
+} from "@/lib/legal-templates/builder-profiles";
+
+function trimSignatureCanvas(source: HTMLCanvasElement): string {
+  const ctx = source.getContext("2d");
+  if (!ctx) return source.toDataURL("image/png");
+  const { width, height } = source;
+  const imgData = ctx.getImageData(0, 0, width, height);
+  const data = imgData.data;
+
+  let minX = width;
+  let minY = height;
+  let maxX = 0;
+  let maxY = 0;
+  let found = false;
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      if (data[(y * width + x) * 4 + 3] > 10) {
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+        found = true;
+      }
+    }
+  }
+
+  if (!found) return source.toDataURL("image/png");
+
+  const pad = 8;
+  const sx = Math.max(0, minX - pad);
+  const sy = Math.max(0, minY - pad);
+  const sw = Math.min(width - sx, maxX - minX + 1 + pad * 2);
+  const sh = Math.min(height - sy, maxY - minY + 1 + pad * 2);
+
+  const trimmed = document.createElement("canvas");
+  trimmed.width = sw;
+  trimmed.height = sh;
+  const tCtx = trimmed.getContext("2d");
+  if (!tCtx) return source.toDataURL("image/png");
+  tCtx.drawImage(source, sx, sy, sw, sh, 0, 0, sw, sh);
+  return trimmed.toDataURL("image/png");
+}
 
 export interface SignatureEntry {
   dataUrl: string;
@@ -39,6 +88,7 @@ interface ESignatureModalProps {
   onSaveSignature: (signerKey: string, signature: SignatureEntry) => void;
   onRemoveSignature: (signerKey: string) => void;
   signerOptions: Array<{ key: string; label: string; name?: string }>;
+  userId?: string;
 }
 
 type DrawMode = "draw" | "upload";
@@ -50,6 +100,7 @@ export function ESignatureModal({
   onSaveSignature,
   onRemoveSignature,
   signerOptions,
+  userId,
 }: ESignatureModalProps) {
   const [activeMode, setActiveMode] = useState<DrawMode>("draw");
   const [selectedSignerKey, setSelectedSignerKey] = useState<string>(
@@ -60,6 +111,10 @@ export function ESignatureModal({
   const [hasDrawn, setHasDrawn] = useState<boolean>(false);
   const [uploadedPreview, setUploadedPreview] = useState<string | null>(null);
   const [transparentizeWhite, setTransparentizeWhite] = useState<boolean>(true);
+  const [saveToVault, setSaveToVault] = useState<boolean>(true);
+  const [savedSignatures, setSavedSignatures] = useState<SavedSignatureProfile[]>(() =>
+    loadSavedSignatures(userId)
+  );
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const isDrawingRef = useRef<boolean>(false);
@@ -256,13 +311,18 @@ export function ESignatureModal({
     if (activeMode === "draw") {
       const canvas = canvasRef.current;
       if (!canvas || !hasDrawn) return;
-      finalDataUrl = canvas.toDataURL("image/png");
+      finalDataUrl = trimSignatureCanvas(canvas);
     } else {
       if (!uploadedPreview) return;
       finalDataUrl = uploadedPreview;
     }
 
     const currentSigner = signerOptions.find((s) => s.key === activeSignerKey);
+    if (saveToVault) {
+      const vaultLabel = currentSigner?.name?.trim() || currentSigner?.label || "My Signature";
+      setSavedSignatures(saveSignatureProfile(vaultLabel, finalDataUrl, userId));
+    }
+
     onSaveSignature(activeSignerKey, {
       dataUrl: finalDataUrl,
       signerRole: currentSigner?.label || activeSignerKey,
@@ -271,6 +331,21 @@ export function ESignatureModal({
     });
 
     onClose();
+  };
+
+  const handleApplySavedSignature = (saved: SavedSignatureProfile) => {
+    const currentSigner = signerOptions.find((s) => s.key === activeSignerKey);
+    onSaveSignature(activeSignerKey, {
+      dataUrl: saved.dataUrl,
+      signerRole: currentSigner?.label || activeSignerKey,
+      signerName: currentSigner?.name || saved.label,
+      timestamp: new Date().toISOString(),
+    });
+    onClose();
+  };
+
+  const handleDeleteSavedSignature = (sigId: string) => {
+    setSavedSignatures(deleteSavedSignature(sigId, userId));
   };
 
   const activeExistingSignature = signatures[activeSignerKey];
@@ -389,6 +464,50 @@ export function ESignatureModal({
                 <Trash2 className="w-3 h-3" />
                 <span>Remove</span>
               </Button>
+            </div>
+          )}
+
+          {/* Reusable Saved Signatures Vault */}
+          {savedSignatures.length > 0 && (
+            <div className="flex flex-col gap-1.5">
+              <div className="flex items-center gap-1.5 text-xs font-semibold text-foreground">
+                <BookmarkCheck className="w-3.5 h-3.5 text-primary" />
+                <span>Saved Signatures (1-Click Apply)</span>
+              </div>
+              <div className="flex items-center gap-2 overflow-x-auto pb-1">
+                {savedSignatures.map((saved) => (
+                  <div
+                    key={saved.id}
+                    className="group relative flex items-center gap-2 px-2.5 py-1.5 rounded-xl border border-border/80 bg-muted/30 hover:border-primary/50 hover:bg-primary/5 transition-colors shrink-0"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => handleApplySavedSignature(saved)}
+                      className="flex items-center gap-2 cursor-pointer text-left"
+                      title={`Apply saved signature (${saved.label})`}
+                    >
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={saved.dataUrl}
+                        alt={saved.label}
+                        className="h-7 max-w-[76px] object-contain bg-white rounded px-1 border border-border/60"
+                      />
+                      <span className="text-[11px] font-medium text-foreground max-w-[90px] truncate">
+                        {saved.label}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteSavedSignature(saved.id)}
+                      className="p-0.5 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 cursor-pointer"
+                      aria-label={`Remove saved signature ${saved.label}`}
+                      title="Remove saved signature"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
 
@@ -591,16 +710,28 @@ export function ESignatureModal({
         </div>
 
         {/* Footer Actions */}
-        <div className="p-3 sm:p-4 border-t border-border bg-muted/30 flex items-center justify-between shrink-0">
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={onClose}
-            className="h-8 text-xs cursor-pointer border-border"
-          >
-            Cancel
-          </Button>
+        <div className="p-3 sm:p-4 border-t border-border bg-muted/30 flex items-center justify-between gap-2 flex-wrap shrink-0">
+          <div className="flex items-center gap-3">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={onClose}
+              className="h-8 text-xs cursor-pointer border-border"
+            >
+              Cancel
+            </Button>
+
+            <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={saveToVault}
+                onChange={(e) => setSaveToVault(e.target.checked)}
+                className="w-3.5 h-3.5 rounded accent-primary cursor-pointer"
+              />
+              <span>Save for future drafts</span>
+            </label>
+          </div>
 
           <Button
             type="button"

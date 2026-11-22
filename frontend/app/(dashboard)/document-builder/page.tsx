@@ -12,22 +12,14 @@ import { useRouter, useSearchParams } from "next/navigation";
 import {
   AlertCircle,
   AlertTriangle,
-  Check,
-  ChevronDown,
-  Download,
   FilePenLine,
-  FileText,
   LayoutGrid,
   Loader2,
   MessageSquare,
   PanelLeftClose,
   PanelLeftOpen,
-  Pencil,
-  PenTool,
   Plus,
-  Printer,
   RefreshCw,
-  Save,
   Search,
   Sliders,
   Trash2,
@@ -46,12 +38,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { supabase } from "@/lib/supabase";
 import { apiUrl } from "@/lib/config";
 import { cn } from "@/lib/utils";
@@ -64,31 +50,17 @@ import {
   findTemplateForDocument,
 } from "@/lib/legal-templates/catalog";
 import { LegalTemplate } from "@/lib/legal-templates/types";
-import { generateDocumentText } from "@/lib/legal-templates/generators";
-import { validateDocumentFilename } from "@/lib/legal-templates/filename-utils";
 import {
   parseBuilderMetadata,
   isTemplateSignatureSupported,
-  getSignerOptionsForFields,
-  exportLegalDocument,
 } from "@/lib/legal-templates/document-utils";
 import { TemplateGallery } from "@/components/document-builder/template-gallery";
 import {
   DocumentBuilderModal,
   BuilderDocument,
 } from "@/components/document-builder/document-builder-modal";
-import {
-  LegalDocumentPaper,
-  LegalDocumentPaperRef,
-  MarginPreset,
-  FontSizePreset,
-  ViewMode,
-} from "@/components/document-builder/legal-document-paper";
-import {
-  ESignatureModal,
-  SignaturesMap,
-  SignatureEntry,
-} from "@/components/document-builder/e-signature-modal";
+import { LegalDocumentPaper } from "@/components/document-builder/legal-document-paper";
+import { SignaturesMap } from "@/components/document-builder/e-signature-modal";
 
 function DocumentBuilderWorkspace() {
   const router = useRouter();
@@ -107,34 +79,18 @@ function DocumentBuilderWorkspace() {
   const [docTextContent, setDocTextContent] = useState("");
   const [docSignatures, setDocSignatures] = useState<SignaturesMap>({});
   const [isLoadingDocContent, setIsLoadingDocContent] = useState(false);
-  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
-  const [isSavingDoc, setIsSavingDoc] = useState(false);
-  const [saveMessage, setSaveMessage] = useState<string | null>(null);
 
-  const [marginPreset, setMarginPreset] = useState<MarginPreset>("sc_standard");
-  const [fontSize, setFontSize] = useState<FontSizePreset>("12pt");
-  const [viewMode, setViewMode] = useState<ViewMode>("formatted");
-  const [showMarginGuide, setShowMarginGuide] = useState(false);
-
-  const [isExportingPdf, setIsExportingPdf] = useState(false);
-  const [isExportingDocx, setIsExportingDocx] = useState(false);
   const [isAnalyzingInChat, setIsAnalyzingInChat] = useState(false);
 
   const [isBuilderOpen, setIsBuilderOpen] = useState(false);
   const [selectedTemplate, setSelectedTemplate] = useState<LegalTemplate | null>(null);
   const [editingDocument, setEditingDocument] = useState<UserDocument | null>(null);
   const [initialBuilderFilename, setInitialBuilderFilename] = useState("");
-  const [isSigModalOpen, setIsSigModalOpen] = useState(false);
-
-  const [isRenaming, setIsRenaming] = useState(false);
-  const [renameValue, setRenameValue] = useState("");
-  const [isSubmittingRename, setIsSubmittingRename] = useState(false);
 
   const [deletingDraft, setDeletingDraft] = useState<UserDocument | null>(null);
   const [isSubmittingDelete, setIsSubmittingDelete] = useState(false);
 
-  const paperRef = useRef<LegalDocumentPaperRef | null>(null);
-  const saveBannerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [userId, setUserId] = useState<string | undefined>(undefined);
   const handledDocParamRef = useRef<string | null>(null);
 
   const savedDrafts = useMemo(
@@ -160,50 +116,10 @@ function DocumentBuilderWorkspace() {
     [activeDocument]
   );
 
-  const activeMetadata = useMemo(
-    () => parseBuilderMetadata(activeDocument),
-    [activeDocument]
-  );
-
   const isSignatureSupported = useMemo(
     () => isTemplateSignatureSupported(activeTemplate),
     [activeTemplate]
   );
-
-  const signerOptions = useMemo(
-    () => getSignerOptionsForFields(activeMetadata.fields || {}),
-    [activeMetadata.fields]
-  );
-
-  const signatureCount = useMemo(() => Object.keys(docSignatures).length, [docSignatures]);
-
-  const renameValidation = useMemo(() => {
-    if (!activeDocument || !isRenaming) {
-      return { isValid: true, sanitizedFilename: "" };
-    }
-    return validateDocumentFilename(renameValue, allDocuments, [
-      activeDocument.id,
-      activeDocument.filename,
-    ]);
-  }, [activeDocument, isRenaming, renameValue, allDocuments]);
-
-  const showSaveToast = useCallback((message: string) => {
-    setSaveMessage(message);
-    if (saveBannerTimerRef.current) {
-      clearTimeout(saveBannerTimerRef.current);
-    }
-    saveBannerTimerRef.current = setTimeout(() => {
-      setSaveMessage(null);
-    }, 4000);
-  }, []);
-
-  useEffect(() => {
-    return () => {
-      if (saveBannerTimerRef.current) {
-        clearTimeout(saveBannerTimerRef.current);
-      }
-    };
-  }, []);
 
   const getAuthToken = useCallback(async (): Promise<string> => {
     const {
@@ -217,6 +133,7 @@ function DocumentBuilderWorkspace() {
       data: { session },
     } = await supabase.auth.getSession();
     if (!session) return [];
+    setUserId(session.user.id);
 
     const res = await fetch(apiUrl("/api/documents"), {
       headers: { Authorization: `Bearer ${session.access_token}` },
@@ -330,10 +247,6 @@ function DocumentBuilderWorkspace() {
     async (doc: UserDocument, updateUrl = true) => {
       setActiveDocument(doc);
       setActionError(null);
-      setSaveMessage(null);
-      setHasUnsavedChanges(false);
-      setIsRenaming(false);
-      setViewMode("formatted");
 
       const meta = parseBuilderMetadata(doc);
       setDocSignatures(meta.signatures || {});
@@ -393,10 +306,7 @@ function DocumentBuilderWorkspace() {
     setActiveDocument(null);
     setDocTextContent("");
     setDocSignatures({});
-    setHasUnsavedChanges(false);
-    setIsRenaming(false);
     setActionError(null);
-    setSaveMessage(null);
     setIsMobileSheetOpen(false);
     if (typeof window !== "undefined") {
       window.history.replaceState({}, "", "/document-builder");
@@ -465,7 +375,6 @@ function DocumentBuilderWorkspace() {
       setDocTextContent(normalized.canvas_content || normalized.extracted_text || "");
       const meta = parseBuilderMetadata(normalized);
       setDocSignatures(meta.signatures || {});
-      setHasUnsavedChanges(false);
       handledDocParamRef.current = normalized.id;
 
       if (typeof window !== "undefined") {
@@ -478,169 +387,6 @@ function DocumentBuilderWorkspace() {
     },
     []
   );
-
-  const persistDraft = useCallback(
-    async (
-      contentOverride?: string,
-      signaturesOverride?: SignaturesMap,
-      toastText = "Saved to Database & Reindexed"
-    ): Promise<boolean> => {
-      if (!activeDocument) return false;
-      const contentToSave = contentOverride !== undefined ? contentOverride : docTextContent;
-      const sigsToSave = signaturesOverride !== undefined ? signaturesOverride : docSignatures;
-
-      try {
-        setIsSavingDoc(true);
-        setActionError(null);
-        const token = await getAuthToken();
-        if (!token) {
-          setActionError("Your session has expired. Please sign in again.");
-          return false;
-        }
-
-        const existingMeta = parseBuilderMetadata(activeDocument);
-        const updatedMetaJson = JSON.stringify({
-          ...existingMeta,
-          template_id: existingMeta.template_id || activeTemplate?.id || "",
-          title: formatDocDisplayName(activeDocument.filename),
-          fields: existingMeta.fields || {},
-          signatures: sigsToSave,
-          is_builder_document: true,
-        });
-
-        const res = await fetch(
-          apiUrl(`/api/documents/${encodeURIComponent(activeDocument.id)}/content`),
-          {
-            method: "PUT",
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: `Bearer ${token}`,
-              "X-Tunnel-Skip-AntiPhishing-Page": "true",
-            },
-            body: JSON.stringify({
-              content: contentToSave,
-              html: updatedMetaJson,
-            }),
-          }
-        );
-
-        if (!res.ok) {
-          const errJson = await res.json().catch(() => ({}));
-          throw new Error(errJson.error || "Failed to save document changes.");
-        }
-
-        const json = await res.json().catch(() => ({}));
-        const updatedAt = json.updated_at || new Date().toISOString();
-        const updatedDoc: UserDocument = {
-          ...activeDocument,
-          canvas_content: contentToSave,
-          extracted_text: contentToSave,
-          canvas_html: updatedMetaJson,
-          canvas_updated_at: updatedAt,
-        };
-
-        setActiveDocument(updatedDoc);
-        setAllDocuments((prev) =>
-          prev.map((d) => (d.id === activeDocument.id ? updatedDoc : d))
-        );
-        setHasUnsavedChanges(false);
-        showSaveToast(toastText);
-        return true;
-      } catch (err) {
-        setActionError(
-          err instanceof Error ? err.message : "Error saving document to database."
-        );
-        return false;
-      } finally {
-        setIsSavingDoc(false);
-      }
-    },
-    [
-      activeDocument,
-      activeTemplate,
-      docTextContent,
-      docSignatures,
-      getAuthToken,
-      showSaveToast,
-    ]
-  );
-
-  const handleSaveSignature = useCallback(
-    (signerKey: string, signature: SignatureEntry) => {
-      if (!isSignatureSupported) return;
-      const nextSignatures: SignaturesMap = {
-        ...docSignatures,
-        [signerKey]: signature,
-      };
-      setDocSignatures(nextSignatures);
-      void persistDraft(docTextContent, nextSignatures, "Signature Saved");
-    },
-    [isSignatureSupported, docSignatures, docTextContent, persistDraft]
-  );
-
-  const handleRemoveSignature = useCallback(
-    (signerKey: string) => {
-      const nextSignatures: SignaturesMap = { ...docSignatures };
-      delete nextSignatures[signerKey];
-      setDocSignatures(nextSignatures);
-      void persistDraft(docTextContent, nextSignatures, "Signature Removed");
-    },
-    [docSignatures, docTextContent, persistDraft]
-  );
-
-  const handleResetToTemplate = useCallback(() => {
-    if (!activeTemplate) return;
-    const regenerated = generateDocumentText(activeTemplate.id, activeMetadata.fields || {});
-    setDocTextContent(regenerated);
-    setHasUnsavedChanges(true);
-  }, [activeTemplate, activeMetadata.fields]);
-
-  const handleRenameSubmit = useCallback(async () => {
-    if (!activeDocument || !renameValidation.isValid || !renameValue.trim()) return;
-    const nextName = renameValue.trim();
-    if (nextName === formatDocDisplayName(activeDocument.filename)) {
-      setIsRenaming(false);
-      return;
-    }
-
-    try {
-      setIsSubmittingRename(true);
-      setActionError(null);
-      const token = await getAuthToken();
-      if (!token) return;
-
-      const res = await fetch(
-        apiUrl(`/api/documents/${encodeURIComponent(activeDocument.id)}/rename`),
-        {
-          method: "PATCH",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify({ filename: nextName }),
-        }
-      );
-
-      if (!res.ok) {
-        const errJson = await res.json().catch(() => ({}));
-        throw new Error(errJson.error || "Failed to rename draft.");
-      }
-
-      const data = await res.json();
-      const resolvedName = data.filename || nextName;
-      const updatedDoc: UserDocument = { ...activeDocument, filename: resolvedName };
-      setActiveDocument(updatedDoc);
-      setAllDocuments((prev) =>
-        prev.map((d) => (d.id === activeDocument.id ? updatedDoc : d))
-      );
-      setIsRenaming(false);
-      showSaveToast("Draft Renamed");
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : "Failed to rename draft.");
-    } finally {
-      setIsSubmittingRename(false);
-    }
-  }, [activeDocument, renameValidation.isValid, renameValue, getAuthToken, showSaveToast]);
 
   const handleDeleteConfirm = useCallback(async () => {
     if (!deletingDraft) return;
@@ -676,51 +422,11 @@ function DocumentBuilderWorkspace() {
     }
   }, [deletingDraft, activeDocument, getAuthToken, handleShowTemplateGallery]);
 
-  const handleExport = useCallback(
-    async (format: "pdf" | "docx" | "txt") => {
-      if (!activeDocument) return;
-      const base = formatDocDisplayName(activeDocument.filename);
-      if (format === "pdf") setIsExportingPdf(true);
-      if (format === "docx") setIsExportingDocx(true);
-      try {
-        await exportLegalDocument({
-          format,
-          filenameBase: base,
-          content: docTextContent,
-          html: paperRef.current?.getHtml?.() || "",
-          signatures: isSignatureSupported ? docSignatures : {},
-          marginPreset,
-          fontSize,
-          onPdfFallback: () => paperRef.current?.print(),
-        });
-      } finally {
-        if (format === "pdf") setIsExportingPdf(false);
-        if (format === "docx") setIsExportingDocx(false);
-      }
-    },
-    [
-      activeDocument,
-      docTextContent,
-      isSignatureSupported,
-      docSignatures,
-      marginPreset,
-      fontSize,
-    ]
-  );
-
-  const handleAnalyzeInChat = useCallback(async () => {
+  const handleAnalyzeInChat = useCallback(() => {
     if (!activeDocument) return;
     setIsAnalyzingInChat(true);
-    try {
-      if (hasUnsavedChanges) {
-        const saved = await persistDraft();
-        if (!saved) return;
-      }
-      router.push(`/chat?doc=${encodeURIComponent(activeDocument.id)}`);
-    } finally {
-      setIsAnalyzingInChat(false);
-    }
-  }, [activeDocument, hasUnsavedChanges, persistDraft, router]);
+    router.push(`/chat?doc=${encodeURIComponent(activeDocument.id)}`);
+  }, [activeDocument, router]);
 
   const renderDraftListContent = (closeSheetOnSelect: boolean) => (
     <>
@@ -1029,67 +735,9 @@ function DocumentBuilderWorkspace() {
 
                 <div className="h-4 w-px bg-border/80 hidden sm:block shrink-0" />
 
-                {isRenaming ? (
-                  <div className="flex items-center gap-1 min-w-0 flex-1 max-w-xs">
-                    <Input
-                      value={renameValue}
-                      onChange={(e) => setRenameValue(e.target.value)}
-                      className={cn(
-                        "h-8 text-xs font-semibold bg-background",
-                        !renameValidation.isValid &&
-                          "border-destructive text-destructive focus-visible:ring-destructive"
-                      )}
-                      autoFocus
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" && renameValidation.isValid && renameValue.trim()) {
-                          void handleRenameSubmit();
-                        } else if (e.key === "Escape") {
-                          setIsRenaming(false);
-                        }
-                      }}
-                    />
-                    <Button
-                      type="button"
-                      size="icon"
-                      variant="ghost"
-                      disabled={isSubmittingRename || !renameValidation.isValid || !renameValue.trim()}
-                      onClick={() => void handleRenameSubmit()}
-                      className="h-7.5 w-7.5 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/10 cursor-pointer shrink-0"
-                      title="Save name"
-                    >
-                      {isSubmittingRename ? (
-                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                      ) : (
-                        <Check className="w-3.5 h-3.5" />
-                      )}
-                    </Button>
-                    <Button
-                      type="button"
-                      size="icon"
-                      variant="ghost"
-                      onClick={() => setIsRenaming(false)}
-                      className="h-7.5 w-7.5 text-muted-foreground cursor-pointer shrink-0"
-                      title="Cancel rename"
-                    >
-                      <X className="w-3.5 h-3.5" />
-                    </Button>
-                  </div>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setRenameValue(formatDocDisplayName(activeDocument.filename));
-                      setIsRenaming(true);
-                    }}
-                    className="flex items-center gap-1.5 min-w-0 group text-left cursor-pointer"
-                    title="Click to rename draft"
-                  >
-                    <span className="text-xs sm:text-sm font-bold text-foreground group-hover:text-primary transition-colors truncate max-w-[160px] sm:max-w-[260px]">
-                      {formatDocDisplayName(activeDocument.filename)}
-                    </span>
-                    <Pencil className="w-3 h-3 text-muted-foreground group-hover:text-primary shrink-0" />
-                  </button>
-                )}
+                <span className="text-xs sm:text-sm font-bold text-foreground truncate max-w-[160px] sm:max-w-[260px]">
+                  {formatDocDisplayName(activeDocument.filename)}
+                </span>
 
                 {activeTemplate && (
                   <Badge
@@ -1097,19 +745,6 @@ function DocumentBuilderWorkspace() {
                     className="hidden xl:inline-flex text-[10px] font-medium border-border/80 shrink-0"
                   >
                     {activeTemplate.categoryLabel}
-                  </Badge>
-                )}
-
-                {hasUnsavedChanges && (
-                  <Badge className="bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30 text-[10px] font-medium shrink-0">
-                    Unsaved
-                  </Badge>
-                )}
-
-                {saveMessage && (
-                  <Badge className="bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30 text-[10px] gap-1 font-medium shrink-0">
-                    <Check className="w-3 h-3" />
-                    <span>{saveMessage}</span>
                   </Badge>
                 )}
               </div>
@@ -1130,121 +765,12 @@ function DocumentBuilderWorkspace() {
                   </Button>
                 )}
 
-                {isSignatureSupported && (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setIsSigModalOpen(true)}
-                    className={cn(
-                      "h-8 gap-1.5 px-2.5 text-xs cursor-pointer",
-                      signatureCount > 0
-                        ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 font-semibold"
-                        : "border-border/80 text-foreground"
-                    )}
-                    title="Draw or upload electronic signatures"
-                  >
-                    <PenTool className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400 shrink-0" />
-                    <span className="hidden md:inline">E-Signature</span>
-                    {signatureCount > 0 && (
-                      <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-emerald-600 text-white font-mono">
-                        {signatureCount}
-                      </span>
-                    )}
-                  </Button>
-                )}
-
-                <Button
-                  type="button"
-                  size="sm"
-                  onClick={() => void persistDraft()}
-                  disabled={isSavingDoc}
-                  className="h-8 gap-1.5 px-2.5 text-xs font-semibold bg-[#100771] hover:bg-[#100771]/90 text-white dark:bg-primary dark:text-primary-foreground dark:hover:bg-primary/90 cursor-pointer shadow-2xs"
-                  title="Save changes to database and reindex for Legal Chat"
-                >
-                  {isSavingDoc ? (
-                    <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
-                  ) : (
-                    <Save className="w-3.5 h-3.5 shrink-0" />
-                  )}
-                  <span className="hidden md:inline">Save to Database &amp; Reindex</span>
-                  <span className="md:hidden">Save</span>
-                </Button>
-
-                <DropdownMenu>
-                  <DropdownMenuTrigger
-                    disabled={isExportingPdf || isExportingDocx}
-                    className="inline-flex items-center gap-1 h-8 px-2.5 rounded-lg border border-border/80 bg-background hover:bg-muted/80 text-xs font-medium text-foreground cursor-pointer shadow-2xs transition-colors disabled:opacity-50"
-                    title="Export legal draft as PDF or Word (.docx)"
-                  >
-                    {isExportingPdf || isExportingDocx ? (
-                      <Loader2 className="w-3.5 h-3.5 animate-spin text-primary" />
-                    ) : (
-                      <Download className="w-3.5 h-3.5 text-primary" />
-                    )}
-                    <span className="hidden sm:inline">Export</span>
-                    <ChevronDown className="w-3 h-3 text-muted-foreground opacity-70" />
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end" className="w-56 p-1.5 bg-card border-border shadow-lg rounded-xl">
-                    <DropdownMenuItem
-                      onClick={() => void handleExport("pdf")}
-                      disabled={isExportingPdf}
-                      className="flex items-center gap-2.5 px-2.5 py-2 text-xs cursor-pointer rounded-lg"
-                    >
-                      <Download className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0" />
-                      <div className="flex flex-col">
-                        <span className="font-semibold text-foreground">Export as PDF</span>
-                        <span className="text-[10px] text-muted-foreground">
-                          SC margins with embedded signatures
-                        </span>
-                      </div>
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      onClick={() => void handleExport("docx")}
-                      disabled={isExportingDocx}
-                      className="flex items-center gap-2.5 px-2.5 py-2 text-xs cursor-pointer rounded-lg"
-                    >
-                      <FileText className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
-                      <div className="flex flex-col">
-                        <span className="font-semibold text-foreground">Export as Word (.docx)</span>
-                        <span className="text-[10px] text-muted-foreground">
-                          Editable Word document with signatures
-                        </span>
-                      </div>
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      onClick={() => paperRef.current?.print()}
-                      className="flex items-center gap-2.5 px-2.5 py-2 text-xs cursor-pointer rounded-lg"
-                    >
-                      <Printer className="w-4 h-4 text-muted-foreground shrink-0" />
-                      <div className="flex flex-col">
-                        <span className="font-semibold text-foreground">Print Document</span>
-                        <span className="text-[10px] text-muted-foreground">
-                          Open browser print preview
-                        </span>
-                      </div>
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      onClick={() => void handleExport("txt")}
-                      className="flex items-center gap-2.5 px-2.5 py-2 text-xs cursor-pointer rounded-lg"
-                    >
-                      <FileText className="w-4 h-4 text-muted-foreground shrink-0" />
-                      <div className="flex flex-col">
-                        <span className="font-semibold text-foreground">Download Plain Text</span>
-                        <span className="text-[10px] text-muted-foreground">
-                          Raw UTF-8 text copy (.txt)
-                        </span>
-                      </div>
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-
                 <Button
                   type="button"
                   variant="outline"
                   size="sm"
                   disabled={isAnalyzingInChat}
-                  onClick={() => void handleAnalyzeInChat()}
+                  onClick={handleAnalyzeInChat}
                   className="h-8 gap-1.5 px-2.5 text-xs font-medium border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-600 hover:text-white cursor-pointer"
                   title="Review this saved legal draft inside Legal Chat"
                 >
@@ -1258,13 +784,6 @@ function DocumentBuilderWorkspace() {
                 </Button>
               </div>
             </div>
-
-            {isRenaming && !renameValidation.isValid && (
-              <div className="px-3 py-1.5 bg-destructive/10 border-b border-destructive/20 text-destructive text-[11px] flex items-center gap-1.5 shrink-0">
-                <AlertCircle className="w-3.5 h-3.5 shrink-0" />
-                <span>{renameValidation.error}</span>
-              </div>
-            )}
 
             {actionError && (
               <div className="px-3 py-2 bg-destructive/10 border-b border-destructive/20 text-destructive text-xs flex items-center justify-between gap-2 shrink-0">
@@ -1291,29 +810,13 @@ function DocumentBuilderWorkspace() {
                 </div>
               ) : (
                 <LegalDocumentPaper
-                  ref={paperRef}
                   content={docTextContent}
-                  onContentChange={(updated) => {
-                    setDocTextContent(updated);
-                    setHasUnsavedChanges(true);
-                  }}
-                  onResetOriginal={activeTemplate ? handleResetToTemplate : undefined}
                   documentTitle={formatDocDisplayName(activeDocument.filename)}
                   signatures={isSignatureSupported ? docSignatures : {}}
-                  onOpenSignatureModal={
-                    isSignatureSupported ? () => setIsSigModalOpen(true) : undefined
-                  }
                   showSignatureToolbarButton={false}
-                  hideToolbar={false}
+                  hideToolbar={true}
                   showSaveButton={false}
-                  marginPreset={marginPreset}
-                  onMarginPresetChange={setMarginPreset}
-                  fontSize={fontSize}
-                  onFontSizeChange={setFontSize}
-                  viewMode={viewMode}
-                  onViewModeChange={setViewMode}
-                  showMarginGuide={showMarginGuide}
-                  onShowMarginGuideChange={setShowMarginGuide}
+                  viewMode="formatted"
                 />
               )}
             </div>
@@ -1329,18 +832,8 @@ function DocumentBuilderWorkspace() {
         existingDocument={editingDocument}
         initialFilename={initialBuilderFilename}
         existingDocuments={allDocuments}
+        userId={userId}
       />
-
-      {activeDocument && isSignatureSupported && (
-        <ESignatureModal
-          isOpen={isSigModalOpen}
-          onClose={() => setIsSigModalOpen(false)}
-          signatures={docSignatures}
-          onSaveSignature={handleSaveSignature}
-          onRemoveSignature={handleRemoveSignature}
-          signerOptions={signerOptions}
-        />
-      )}
 
       <Dialog
         open={Boolean(deletingDraft)}

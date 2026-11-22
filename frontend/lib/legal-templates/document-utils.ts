@@ -120,18 +120,18 @@ export async function exportLegalDocument({
   const payload =
     format === "pdf"
       ? {
-          filename: targetFilename,
-          html,
-          content,
-          signatures,
-          margin_preset: marginPreset,
-          font_size: fontSize,
-        }
+        filename: targetFilename,
+        html,
+        content,
+        signatures,
+        margin_preset: marginPreset,
+        font_size: fontSize,
+      }
       : {
-          filename: targetFilename,
-          content,
-          signatures,
-        };
+        filename: targetFilename,
+        content,
+        signatures,
+      };
 
   let res: Response | null = null;
   try {
@@ -175,4 +175,229 @@ export async function exportLegalDocument({
   } else {
     downloadPlainText(cleanBase, content);
   }
+}
+
+export const MIN_PAPER_ZOOM = 0.5;
+export const MAX_PAPER_ZOOM = 1.5;
+
+export interface ZoomFocalPoint {
+  clientX: number;
+  clientY: number;
+}
+
+export interface PinchZoomOptions {
+  onFrame?: (nextZoom: number, focalPoint?: ZoomFocalPoint) => void;
+  commitDelayMs?: number;
+}
+
+export function clampPaperZoom(value: number): number {
+  const clamped = Math.min(MAX_PAPER_ZOOM, Math.max(MIN_PAPER_ZOOM, value));
+  return Math.round(clamped * 10000) / 10000;
+}
+
+// Imperatively apply sheet scale and wrapper size while anchoring scroll under the pointer
+export function applyAnchoredSheetZoom(params: {
+  scrollContainer: HTMLElement | null;
+  wrapperEl: HTMLElement | null;
+  sheetEl: HTMLElement | null;
+  baseWidth: number;
+  baseHeight: number;
+  prevZoom: number;
+  nextZoom: number;
+  focalPoint?: ZoomFocalPoint;
+  layoutHost?: HTMLElement | null;
+}): void {
+  const {
+    scrollContainer,
+    wrapperEl,
+    sheetEl,
+    baseWidth,
+    baseHeight,
+    prevZoom,
+    nextZoom,
+    focalPoint,
+    layoutHost,
+  } = params;
+
+  let nextScrollLeft: number | null = null;
+  let nextScrollTop: number | null = null;
+
+  if (scrollContainer && sheetEl && focalPoint && prevZoom > 0 && prevZoom !== nextZoom) {
+    const sheetRect = sheetEl.getBoundingClientRect();
+    const hostEl = layoutHost || scrollContainer;
+    const cs = window.getComputedStyle(hostEl);
+    const padX = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0);
+    const availW = Math.max(0, scrollContainer.clientWidth - padX);
+    const oldAutoMarginLeft = Math.max(0, (availW - baseWidth * prevZoom) / 2);
+    const newAutoMarginLeft = Math.max(0, (availW - baseWidth * nextZoom) / 2);
+    const scaleRatio = nextZoom / prevZoom;
+    const relX = focalPoint.clientX - sheetRect.left;
+    const relY = focalPoint.clientY - sheetRect.top;
+
+    nextScrollLeft = Math.max(
+      0,
+      scrollContainer.scrollLeft + relX * (scaleRatio - 1) + (newAutoMarginLeft - oldAutoMarginLeft)
+    );
+    nextScrollTop = Math.max(0, scrollContainer.scrollTop + relY * (scaleRatio - 1));
+  }
+
+  if (wrapperEl) {
+    wrapperEl.style.width = `${baseWidth * nextZoom}px`;
+    wrapperEl.style.height = `${baseHeight * nextZoom}px`;
+  }
+  if (sheetEl) {
+    sheetEl.style.transform = `scale(${nextZoom})`;
+  }
+  if (scrollContainer && nextScrollLeft !== null && nextScrollTop !== null) {
+    scrollContainer.scrollLeft = nextScrollLeft;
+    scrollContainer.scrollTop = nextScrollTop;
+  }
+}
+
+// Attach non-passive wheel (Ctrl/Meta + scroll or trackpad pinch) and 2-finger touch pinch listeners
+export function attachPinchZoomListeners(
+  container: HTMLElement,
+  zoomRef: { current: number },
+  onZoom: (nextZoom: number) => void,
+  options?: PinchZoomOptions
+): () => void {
+  let pinchStartDistance: number | null = null;
+  let pinchStartZoom = zoomRef.current;
+  let rafId: number | null = null;
+  let commitTimer: number | null = null;
+  let pendingZoom: number | null = null;
+  let pendingFocalPoint: ZoomFocalPoint | undefined;
+  let scheduledCommitZoom: number | null = null;
+
+  const onFrame = options?.onFrame;
+  const commitDelayMs = options?.commitDelayMs ?? 120;
+
+  const clearCommitTimer = () => {
+    if (commitTimer !== null) {
+      window.clearTimeout(commitTimer);
+      commitTimer = null;
+    }
+  };
+
+  const commitZoomIfCurrent = (expectedZoom: number) => {
+    if (zoomRef.current === expectedZoom) {
+      onZoom(expectedZoom);
+    }
+  };
+
+  const scheduleCommit = (targetZoom: number) => {
+    clearCommitTimer();
+    scheduledCommitZoom = targetZoom;
+    commitTimer = window.setTimeout(() => {
+      commitTimer = null;
+      if (scheduledCommitZoom !== null) {
+        const expected = scheduledCommitZoom;
+        scheduledCommitZoom = null;
+        commitZoomIfCurrent(expected);
+      }
+    }, commitDelayMs);
+  };
+
+  const scheduleZoom = (nextZoom: number, focalPoint?: ZoomFocalPoint, immediateCommit = false) => {
+    const clamped = clampPaperZoom(nextZoom);
+    zoomRef.current = clamped;
+    pendingZoom = clamped;
+    pendingFocalPoint = focalPoint;
+
+    if (onFrame) {
+      if (immediateCommit) {
+        clearCommitTimer();
+        scheduledCommitZoom = null;
+      } else {
+        scheduleCommit(clamped);
+      }
+    }
+
+    if (rafId === null) {
+      rafId = window.requestAnimationFrame(() => {
+        rafId = null;
+        if (pendingZoom !== null) {
+          const z = pendingZoom;
+          const fp = pendingFocalPoint;
+          pendingZoom = null;
+          pendingFocalPoint = undefined;
+          if (onFrame) {
+            onFrame(z, fp);
+            if (immediateCommit) {
+              commitZoomIfCurrent(z);
+            }
+          } else {
+            onZoom(z);
+          }
+        }
+      });
+    }
+  };
+
+  const getTouchDistance = (t1: Touch, t2: Touch) =>
+    Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
+
+  const getTouchMidpoint = (t1: Touch, t2: Touch): ZoomFocalPoint => ({
+    clientX: (t1.clientX + t2.clientX) / 2,
+    clientY: (t1.clientY + t2.clientY) / 2,
+  });
+
+  const handleWheel = (e: WheelEvent) => {
+    if (!e.ctrlKey && !e.metaKey) return;
+    e.preventDefault();
+    const normalizedDelta =
+      e.deltaMode === 1 ? e.deltaY * 16 : e.deltaMode === 2 ? e.deltaY * 240 : e.deltaY;
+    const clampedDelta = Math.max(-120, Math.min(120, normalizedDelta));
+    const factor = Math.exp(-clampedDelta * 0.0024);
+    scheduleZoom(zoomRef.current * factor, { clientX: e.clientX, clientY: e.clientY });
+  };
+
+  const handleTouchStart = (e: TouchEvent) => {
+    if (e.touches.length === 2) {
+      pinchStartDistance = getTouchDistance(e.touches[0], e.touches[1]);
+      pinchStartZoom = zoomRef.current;
+    }
+  };
+
+  const handleTouchMove = (e: TouchEvent) => {
+    if (e.touches.length === 2 && pinchStartDistance && pinchStartDistance > 0) {
+      e.preventDefault();
+      const currentDistance = getTouchDistance(e.touches[0], e.touches[1]);
+      scheduleZoom(
+        pinchStartZoom * (currentDistance / pinchStartDistance),
+        getTouchMidpoint(e.touches[0], e.touches[1])
+      );
+    }
+  };
+
+  const handleTouchEnd = (e: TouchEvent) => {
+    if (e.touches.length < 2 && pinchStartDistance !== null) {
+      pinchStartDistance = null;
+      if (onFrame) {
+        clearCommitTimer();
+        scheduledCommitZoom = null;
+        if (pendingZoom === null) {
+          onZoom(zoomRef.current);
+        } else {
+          scheduleZoom(pendingZoom, pendingFocalPoint, true);
+        }
+      }
+    }
+  };
+
+  container.addEventListener("wheel", handleWheel, { passive: false });
+  container.addEventListener("touchstart", handleTouchStart, { passive: true });
+  container.addEventListener("touchmove", handleTouchMove, { passive: false });
+  container.addEventListener("touchend", handleTouchEnd, { passive: true });
+
+  return () => {
+    if (rafId !== null) {
+      window.cancelAnimationFrame(rafId);
+    }
+    clearCommitTimer();
+    container.removeEventListener("wheel", handleWheel);
+    container.removeEventListener("touchstart", handleTouchStart);
+    container.removeEventListener("touchmove", handleTouchMove);
+    container.removeEventListener("touchend", handleTouchEnd);
+  };
 }
